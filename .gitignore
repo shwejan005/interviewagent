@@ -3,6 +3,8 @@
 
 # SQLite Databases
 *.db
+*.db-shm
+*.db-wal
 backend/*.db
 
 # Python cache
