@@ -7,6 +7,7 @@ only the context it is explicitly given. No hidden state, no shared memory.
 Pipeline: Screening → Technical → Behavioral → Hiring Recommendation → Committee
 """
 
+import asyncio
 import os
 import re
 import json
@@ -20,8 +21,8 @@ MAX_RETRIES = 3
 RETRY_DELAY = 60  # seconds to wait on rate-limit
 
 
-def _run_crew_with_retry(crew: Crew) -> str:
-    """Run a CrewAI Crew with retry logic for rate-limit errors."""
+def _run_crew_with_retry_sync(crew: Crew) -> str:
+    """Run a CrewAI Crew with retry logic for rate-limit errors (sync)."""
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             result = crew.kickoff()
@@ -38,6 +39,11 @@ def _run_crew_with_retry(crew: Crew) -> str:
                     time.sleep(wait)
                     continue
             raise
+
+
+async def _run_crew_with_retry(crew: Crew) -> str:
+    """Async wrapper — offloads sync crew.kickoff() to a thread."""
+    return await asyncio.to_thread(_run_crew_with_retry_sync, crew)
 
 
 from agents import (
@@ -161,7 +167,7 @@ def _extract_confidence(data: dict) -> float:
 # ── Round 1: Screening ──────────────────────────────────────────────
 
 
-def run_screening(resume: str, role: str) -> dict:
+async def run_screening(resume: str, role: str) -> dict:
     """
     Run the Screening Agent.
     AGENT CONTEXT: Resume + target role.
@@ -171,7 +177,7 @@ def run_screening(resume: str, role: str) -> dict:
     task = create_screening_task(agent, resume, role)
 
     crew = Crew(agents=[agent], tasks=[task], verbose=True)
-    raw_output = _run_crew_with_retry(crew)
+    raw_output = await _run_crew_with_retry(crew)
 
     # Parse structured output
     verdict_data = _parse_json_output(raw_output)
@@ -196,7 +202,7 @@ def run_screening(resume: str, role: str) -> dict:
 # ── Round 2: Technical (Question Generation) ────────────────────────
 
 
-def run_technical_questions(resume: str) -> dict:
+async def run_technical_questions(resume: str) -> dict:
     """
     Generate technical questions.
     AGENT CONTEXT: Resume + round1.txt verdict.
@@ -206,7 +212,7 @@ def run_technical_questions(resume: str) -> dict:
     task = create_technical_question_task(agent, resume, round1_verdict)
 
     crew = Crew(agents=[agent], tasks=[task], verbose=True)
-    questions = _run_crew_with_retry(crew)
+    questions = await _run_crew_with_retry(crew)
 
     return {
         "round": 2,
@@ -214,7 +220,7 @@ def run_technical_questions(resume: str) -> dict:
     }
 
 
-def run_technical_evaluation(resume: str, questions: str, answer: str) -> dict:
+async def run_technical_evaluation(resume: str, questions: str, answer: str) -> dict:
     """
     Evaluate technical answers.
     AGENT CONTEXT: Resume + round1.txt + candidate answers.
@@ -227,7 +233,7 @@ def run_technical_evaluation(resume: str, questions: str, answer: str) -> dict:
     )
 
     crew = Crew(agents=[agent], tasks=[task], verbose=True)
-    raw_output = _run_crew_with_retry(crew)
+    raw_output = await _run_crew_with_retry(crew)
 
     verdict_data = _parse_json_output(raw_output)
     decision = _parse_decision(verdict_data)
@@ -250,7 +256,7 @@ def run_technical_evaluation(resume: str, questions: str, answer: str) -> dict:
 # ── Round 3: Behavioral (Question Generation) ──────────────────────
 
 
-def run_behavioral_question(resume: str) -> dict:
+async def run_behavioral_question(resume: str) -> dict:
     """
     Generate behavioral question.
     AGENT CONTEXT: Resume + round1.txt + round2.txt.
@@ -263,7 +269,7 @@ def run_behavioral_question(resume: str) -> dict:
     )
 
     crew = Crew(agents=[agent], tasks=[task], verbose=True)
-    question = _run_crew_with_retry(crew)
+    question = await _run_crew_with_retry(crew)
 
     return {
         "round": 3,
@@ -271,7 +277,7 @@ def run_behavioral_question(resume: str) -> dict:
     }
 
 
-def run_behavioral_evaluation(resume: str, question: str, answer: str) -> dict:
+async def run_behavioral_evaluation(resume: str, question: str, answer: str) -> dict:
     """
     Evaluate behavioral answer.
     AGENT CONTEXT: Resume + round1.txt + round2.txt + candidate answer.
@@ -285,7 +291,7 @@ def run_behavioral_evaluation(resume: str, question: str, answer: str) -> dict:
     )
 
     crew = Crew(agents=[agent], tasks=[task], verbose=True)
-    raw_output = _run_crew_with_retry(crew)
+    raw_output = await _run_crew_with_retry(crew)
 
     verdict_data = _parse_json_output(raw_output)
     decision = _parse_decision(verdict_data)
@@ -308,7 +314,7 @@ def run_behavioral_evaluation(resume: str, question: str, answer: str) -> dict:
 # ── Round 4: Hiring Recommendation ─────────────────────────────────
 
 
-def run_hiring_recommendation() -> dict:
+async def run_hiring_recommendation() -> dict:
     """
     Run the Hiring Recommendation Agent.
     AGENT CONTEXT: All three round verdicts (no resume, no raw answers).
@@ -324,7 +330,7 @@ def run_hiring_recommendation() -> dict:
     )
 
     crew = Crew(agents=[agent], tasks=[task], verbose=True)
-    raw_output = _run_crew_with_retry(crew)
+    raw_output = await _run_crew_with_retry(crew)
 
     verdict_data = _parse_json_output(raw_output)
     decision = _parse_decision(verdict_data)
@@ -347,7 +353,7 @@ def run_hiring_recommendation() -> dict:
 # ── Final: Committee Evaluator ──────────────────────────────────────
 
 
-def run_hiring_committee() -> dict:
+async def run_hiring_committee() -> dict:
     """
     Run the Hiring Committee Agent (Committee Evaluator).
     AGENT CONTEXT: ONLY verdict outputs from all agents (no resume, no raw answers).
@@ -364,7 +370,7 @@ def run_hiring_committee() -> dict:
     )
 
     crew = Crew(agents=[agent], tasks=[task], verbose=True)
-    raw_output = _run_crew_with_retry(crew)
+    raw_output = await _run_crew_with_retry(crew)
 
     verdict_data = _parse_json_output(raw_output)
     decision = _parse_decision(verdict_data)

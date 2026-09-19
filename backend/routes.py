@@ -89,7 +89,7 @@ async def start_interview(req: StartRequest):
     interview_state["evaluation_id"] = eval_id
 
     # Run Round 1 — Screening Agent (context: resume + role)
-    result = run_screening(req.resume.strip(), req.role.strip())
+    result = await run_screening(req.resume.strip(), req.role.strip())
 
     # Save verdict to database
     db.save_verdict(
@@ -121,7 +121,7 @@ async def start_interview(req: StartRequest):
         }
 
     # PASS or BORDERLINE — generate technical questions for Round 2
-    tech_result = run_technical_questions(get_state()["resume"])
+    tech_result = await run_technical_questions(get_state()["resume"])
     interview_state["questions"]["round2"] = tech_result["questions"]
     db.save_questions(eval_id, 2, tech_result["questions"])
     update_state(round=2)
@@ -166,7 +166,7 @@ async def round2_answer(req: AnswerRequest):
 
     # Run Technical evaluation
     questions = interview_state["questions"]["round2"] or ""
-    result = run_technical_evaluation(state["resume"], questions, req.answer.strip())
+    result = await run_technical_evaluation(state["resume"], questions, req.answer.strip())
 
     # Save verdict to database
     if eval_id:
@@ -199,7 +199,7 @@ async def round2_answer(req: AnswerRequest):
         }
 
     # PASS — generate behavioral question for Round 3
-    behavioral_result = run_behavioral_question(state["resume"])
+    behavioral_result = await run_behavioral_question(state["resume"])
     interview_state["questions"]["round3"] = behavioral_result["question"]
     if eval_id:
         db.save_questions(eval_id, 3, behavioral_result["question"])
@@ -246,7 +246,7 @@ async def round3_answer(req: AnswerRequest):
 
     # Run Behavioral evaluation
     question = interview_state["questions"]["round3"] or ""
-    result = run_behavioral_evaluation(state["resume"], question, req.answer.strip())
+    result = await run_behavioral_evaluation(state["resume"], question, req.answer.strip())
 
     # Save verdict to database
     if eval_id:
@@ -331,7 +331,7 @@ async def final_decision():
 
     # Run Round 4 — Hiring Recommendation Agent
     logger.info("Running Hiring Recommendation Agent...")
-    rec_result = run_hiring_recommendation()
+    rec_result = await run_hiring_recommendation()
     interview_state["verdicts"]["round4"] = "verdicts/round4.txt"
 
     if eval_id:
@@ -348,7 +348,7 @@ async def final_decision():
 
     # Run Committee Evaluator — ONLY sees agent outputs, NOT resume
     logger.info("Running Committee Evaluator...")
-    committee_result = run_hiring_committee()
+    committee_result = await run_hiring_committee()
 
     if eval_id:
         db.save_verdict(
