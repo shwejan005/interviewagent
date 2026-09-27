@@ -5,7 +5,7 @@ These models define the exact JSON structure each agent must produce,
 ensuring deterministic, parseable, and validateable outputs.
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 from typing import Optional
 from enum import Enum
 
@@ -141,6 +141,76 @@ class StartRequest(BaseModel):
 
 class AnswerRequest(BaseModel):
     answer: str = Field(min_length=1, max_length=10_000, description="Candidate's answer")
+
+
+# ── Identity & Access Models ───────────────────────────────────────
+
+
+class RegisterRequest(BaseModel):
+    email: EmailStr = Field(description="Account email address")
+    # 12 chars is a deliberate floor: composition rules (symbols, mixed case)
+    # push users toward predictable substitutions, while length is the factor
+    # that actually resists offline cracking. NIST SP 800-63B agrees.
+    password: str = Field(min_length=12, max_length=256, description="Password, minimum 12 characters")
+    full_name: str = Field(default="", max_length=200)
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=256)
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int = Field(description="Token lifetime in seconds")
+
+
+class MembershipSummary(BaseModel):
+    org_id: int
+    org_name: str
+    org_slug: str
+    role_name: str
+
+
+class ActorResponse(BaseModel):
+    """The authenticated caller's identity, active context, and powers."""
+    user_id: int
+    email: str
+    full_name: str
+    is_platform_admin: bool
+    active_org_id: Optional[int] = None
+    active_role: Optional[str] = None
+    capabilities: list[str] = Field(default_factory=list)
+    memberships: list[MembershipSummary] = Field(default_factory=list)
+
+
+class CreateOrganizationRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    slug: str = Field(
+        min_length=2,
+        max_length=64,
+        pattern=r"^[a-z0-9][a-z0-9-]*[a-z0-9]$",
+        description="URL-safe identifier, lowercase alphanumeric and hyphens",
+    )
+
+
+class OrganizationResponse(BaseModel):
+    id: int
+    name: str
+    slug: str
+    plan: str
+    status: str
+
+
+class AddMemberRequest(BaseModel):
+    email: EmailStr
+    role: str = Field(description="One of the org-scoped system role names")
+
+
+class SetMemberRoleRequest(BaseModel):
+    role: str = Field(description="One of the org-scoped system role names")
+
 
 
 # ── API Response Models ────────────────────────────────────────────

@@ -265,18 +265,293 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_verdicts_canonical
 """
 
 
+# ── Identity, tenancy & audit schema ────────────────────────────────
+#
+# Added in the platform foundation phase. Kept in separate DDL constants from
+# the original interview-pipeline schema above so the two can be reasoned
+# about (and if ever necessary, migrated) independently.
+
+_PG_IDENTITY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS organizations (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    slug TEXT NOT NULL UNIQUE,
+    plan TEXT NOT NULL DEFAULT 'trial',
+    status TEXT NOT NULL DEFAULT 'ACTIVE',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    deleted_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    email TEXT NOT NULL,
+    email_normalized TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    full_name TEXT NOT NULL DEFAULT '',
+    is_platform_admin BOOLEAN NOT NULL DEFAULT FALSE,
+    status TEXT NOT NULL DEFAULT 'ACTIVE',
+    email_verified_at TIMESTAMPTZ,
+    last_login_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    deleted_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS roles (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL DEFAULT '',
+    is_system BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS role_capabilities (
+    role_id INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    capability TEXT NOT NULL,
+    PRIMARY KEY (role_id, capability)
+);
+
+CREATE TABLE IF NOT EXISTS org_memberships (
+    id SERIAL PRIMARY KEY,
+    org_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role_id INTEGER NOT NULL REFERENCES roles(id),
+    status TEXT NOT NULL DEFAULT 'ACTIVE',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    deleted_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS invitations (
+    id SERIAL PRIMARY KEY,
+    org_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    email_normalized TEXT NOT NULL,
+    role_id INTEGER NOT NULL REFERENCES roles(id),
+    token_hash TEXT NOT NULL UNIQUE,
+    invited_by INTEGER REFERENCES users(id),
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    expires_at TIMESTAMPTZ NOT NULL,
+    accepted_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS audit_events (
+    id BIGSERIAL PRIMARY KEY,
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    tier INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    actor_user_id INTEGER,
+    actor_org_id INTEGER,
+    actor_role TEXT,
+    actor_ip TEXT,
+    impersonated_by INTEGER,
+    resource_type TEXT,
+    resource_id TEXT,
+    resource_org_id INTEGER,
+    outcome TEXT NOT NULL DEFAULT 'SUCCESS',
+    detail TEXT NOT NULL DEFAULT '{}',
+    request_id TEXT,
+    prev_hash TEXT,
+    hash TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_membership_user_org
+    ON org_memberships (org_id, user_id) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_membership_user ON org_memberships(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_events(actor_user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_resource ON audit_events(resource_type, resource_id);
+CREATE INDEX IF NOT EXISTS idx_audit_occurred ON audit_events(occurred_at);
+CREATE INDEX IF NOT EXISTS idx_audit_org ON audit_events(actor_org_id);
+"""
+
+_SQLITE_IDENTITY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS organizations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    slug TEXT NOT NULL UNIQUE,
+    plan TEXT NOT NULL DEFAULT 'trial',
+    status TEXT NOT NULL DEFAULT 'ACTIVE',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    deleted_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL,
+    email_normalized TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    full_name TEXT NOT NULL DEFAULT '',
+    is_platform_admin INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'ACTIVE',
+    email_verified_at TEXT,
+    last_login_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    deleted_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS roles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL DEFAULT '',
+    is_system INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS role_capabilities (
+    role_id INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    capability TEXT NOT NULL,
+    PRIMARY KEY (role_id, capability)
+);
+
+CREATE TABLE IF NOT EXISTS org_memberships (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role_id INTEGER NOT NULL REFERENCES roles(id),
+    status TEXT NOT NULL DEFAULT 'ACTIVE',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    deleted_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS invitations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    email_normalized TEXT NOT NULL,
+    role_id INTEGER NOT NULL REFERENCES roles(id),
+    token_hash TEXT NOT NULL UNIQUE,
+    invited_by INTEGER REFERENCES users(id),
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    expires_at TEXT NOT NULL,
+    accepted_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS audit_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    occurred_at TEXT NOT NULL DEFAULT (datetime('now')),
+    tier INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    actor_user_id INTEGER,
+    actor_org_id INTEGER,
+    actor_role TEXT,
+    actor_ip TEXT,
+    impersonated_by INTEGER,
+    resource_type TEXT,
+    resource_id TEXT,
+    resource_org_id INTEGER,
+    outcome TEXT NOT NULL DEFAULT 'SUCCESS',
+    detail TEXT NOT NULL DEFAULT '{}',
+    request_id TEXT,
+    prev_hash TEXT,
+    hash TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_membership_user_org
+    ON org_memberships (org_id, user_id) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_membership_user ON org_memberships(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_events(actor_user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_resource ON audit_events(resource_type, resource_id);
+CREATE INDEX IF NOT EXISTS idx_audit_occurred ON audit_events(occurred_at);
+CREATE INDEX IF NOT EXISTS idx_audit_org ON audit_events(actor_org_id);
+"""
+
+
+# Additive columns retrofitted onto the pre-existing evaluations table.
+# Nullable by necessity: rows created before ownership existed cannot be
+# retroactively attributed, and inventing an owner for them would corrupt the
+# audit story. Unowned rows are treated as legacy and excluded from tenant
+# queries rather than leaked into an arbitrary org.
+_EVALUATION_TENANCY_COLUMNS = (
+    ("org_id", "INTEGER"),
+    ("owner_user_id", "INTEGER"),
+)
+
+
 # ── Initialization ──────────────────────────────────────────────────
+
+def _existing_columns(cur, table: str) -> set[str]:
+    """Return the current column names of a table, for additive migrations."""
+    if USE_POSTGRES:
+        cur.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = %s",
+            (table,),
+        )
+        return {r["column_name"] for r in cur.fetchall()}
+    cur.execute(f"PRAGMA table_info({table})")
+    return {r["name"] for r in cur.fetchall()}
+
+
+def _apply_additive_columns(cur) -> None:
+    """Add tenancy columns to `evaluations` if an older database predates them.
+
+    Kept deliberately narrow: this is not a migration framework, and it only
+    handles the additive, nullable, no-backfill case. Anything requiring a
+    backfill or a type change needs a real migration tool (see DECISIONS.md).
+    """
+    present = _existing_columns(cur, "evaluations")
+    for column, coltype in _EVALUATION_TENANCY_COLUMNS:
+        if column not in present:
+            cur.execute(f"ALTER TABLE evaluations ADD COLUMN {column} {coltype}")
+            logger.info("Added column evaluations.%s", column)
+
+
+def _seed_roles(cur) -> None:
+    """Insert system roles and their capabilities, idempotently.
+
+    Capabilities are re-synced on every startup so that a code change to
+    SYSTEM_ROLES takes effect without a manual migration step.
+    """
+    from rbac import SYSTEM_ROLES
+
+    p = _ph()
+    for role, capabilities in SYSTEM_ROLES.items():
+        cur.execute(f"SELECT id FROM roles WHERE name = {p}", (role.value,))
+        row = cur.fetchone()
+        if row is None:
+            if USE_POSTGRES:
+                cur.execute(
+                    f"INSERT INTO roles (name, is_system) VALUES ({p}, TRUE) RETURNING id",
+                    (role.value,),
+                )
+                role_id = cur.fetchone()["id"]
+            else:
+                cur.execute(
+                    f"INSERT INTO roles (name, is_system) VALUES ({p}, 1)",
+                    (role.value,),
+                )
+                role_id = cur.lastrowid
+        else:
+            role_id = row["id"]
+
+        cur.execute(f"DELETE FROM role_capabilities WHERE role_id = {p}", (role_id,))
+        for capability in sorted(capabilities):
+            cur.execute(
+                f"INSERT INTO role_capabilities (role_id, capability) VALUES ({p}, {p})",
+                (role_id, str(capability)),
+            )
+
 
 def init_db() -> None:
     """Initialize database schema. Safe to call multiple times."""
     if USE_POSTGRES:
         with _get_conn() as (conn, cur):
             cur.execute(_PG_SCHEMA)
+            cur.execute(_PG_IDENTITY_SCHEMA)
+            _apply_additive_columns(cur)
+            _seed_roles(cur)
         logger.info("PostgreSQL database initialized (DATABASE_URL detected).")
     else:
         conn = _sqlite_conn()
         try:
             conn.executescript(_SQLITE_SCHEMA)
+            conn.executescript(_SQLITE_IDENTITY_SCHEMA)
+            cur = conn.cursor()
+            _apply_additive_columns(cur)
+            _seed_roles(cur)
             conn.commit()
             logger.info(
                 "SQLite database initialized (no DATABASE_URL set — "
@@ -287,28 +562,42 @@ def init_db() -> None:
             conn.close()
 
 
+
 # ── Evaluation CRUD ────────────────────────────────────────────────
 
-def create_evaluation(resume_text: str, role: str, candidate_name: str = "") -> int:
-    """Create a new evaluation and return its ID."""
+def create_evaluation(
+    resume_text: str,
+    role: str,
+    candidate_name: str = "",
+    org_id: Optional[int] = None,
+    owner_user_id: Optional[int] = None,
+) -> int:
+    """Create a new evaluation and return its ID.
+
+    org_id and owner_user_id are nullable to preserve the pre-identity
+    behaviour: an unauthenticated caller still gets a working evaluation, it is
+    simply unowned. Unowned rows are excluded from tenant-scoped listings
+    rather than being attributed to an arbitrary organization.
+    """
     p = _ph()
     with _get_conn() as (conn, cur):
         if USE_POSTGRES:
             cur.execute(
-                f"INSERT INTO evaluations (candidate_name, resume_text, role) "
-                f"VALUES ({p}, {p}, {p}) RETURNING id",
-                (candidate_name, resume_text, role),
+                f"INSERT INTO evaluations (candidate_name, resume_text, role, org_id, owner_user_id) "
+                f"VALUES ({p}, {p}, {p}, {p}, {p}) RETURNING id",
+                (candidate_name, resume_text, role, org_id, owner_user_id),
             )
             eval_id = cur.fetchone()["id"]
         else:
             cur.execute(
-                f"INSERT INTO evaluations (candidate_name, resume_text, role) "
-                f"VALUES ({p}, {p}, {p})",
-                (candidate_name, resume_text, role),
+                f"INSERT INTO evaluations (candidate_name, resume_text, role, org_id, owner_user_id) "
+                f"VALUES ({p}, {p}, {p}, {p}, {p})",
+                (candidate_name, resume_text, role, org_id, owner_user_id),
             )
             eval_id = cur.lastrowid
-    logger.info("Created evaluation %s for role '%s'", eval_id, role)
+    logger.info("Created evaluation %s for role '%s' (org=%s)", eval_id, role, org_id)
     return eval_id
+
 
 
 def get_evaluation(eval_id: int) -> Optional[dict]:
@@ -615,3 +904,339 @@ def get_dashboard_stats() -> dict:
         "hire_rate": round(hired / completed * 100, 1) if completed > 0 else 0,
         "avg_score": round(avg_score, 1) if avg_score else 0,
     }
+
+
+# ── Identity: users ────────────────────────────────────────────────
+
+class DuplicateEmailError(Exception):
+    """Raised when registering an email that already exists."""
+
+
+def normalize_email(email: str) -> str:
+    """Casefold and trim for uniqueness comparison.
+
+    Deliberately does NOT strip dots or plus-addressing: those are
+    provider-specific conventions, and treating `a.b@gmail.com` and
+    `ab@gmail.com` as the same identity is wrong for most other providers.
+    """
+    return email.strip().casefold()
+
+
+_USER_PUBLIC_COLUMNS = (
+    "id, email, full_name, is_platform_admin, status, "
+    "email_verified_at, last_login_at, created_at, updated_at"
+)
+
+
+def create_user(
+    email: str,
+    password_hash: str,
+    full_name: str = "",
+    is_platform_admin: bool = False,
+) -> int:
+    """Create a user. Raises DuplicateEmailError if the email is taken."""
+    p = _ph()
+    normalized = normalize_email(email)
+    admin_flag = True if is_platform_admin else False
+    if not USE_POSTGRES:
+        admin_flag = 1 if is_platform_admin else 0
+    try:
+        with _get_conn() as (conn, cur):
+            if USE_POSTGRES:
+                cur.execute(
+                    f"INSERT INTO users (email, email_normalized, password_hash, "
+                    f"full_name, is_platform_admin) VALUES ({p}, {p}, {p}, {p}, {p}) "
+                    f"RETURNING id",
+                    (email.strip(), normalized, password_hash, full_name.strip(), admin_flag),
+                )
+                return cur.fetchone()["id"]
+            cur.execute(
+                f"INSERT INTO users (email, email_normalized, password_hash, "
+                f"full_name, is_platform_admin) VALUES ({p}, {p}, {p}, {p}, {p})",
+                (email.strip(), normalized, password_hash, full_name.strip(), admin_flag),
+            )
+            return cur.lastrowid
+    except _IntegrityError as exc:
+        raise DuplicateEmailError(f"An account already exists for {email}.") from exc
+
+
+def get_user_by_email(email: str) -> Optional[dict]:
+    """Full user row including password_hash. Authentication use only."""
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"SELECT * FROM users WHERE email_normalized = {p} AND deleted_at IS NULL",
+            (normalize_email(email),),
+        )
+        return _row_to_dict(cur.fetchone())
+
+
+def get_user(user_id: int) -> Optional[dict]:
+    """User row without the password hash."""
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"SELECT {_USER_PUBLIC_COLUMNS} FROM users "
+            f"WHERE id = {p} AND deleted_at IS NULL",
+            (user_id,),
+        )
+        return _row_to_dict(cur.fetchone())
+
+
+def touch_user_login(user_id: int) -> None:
+    p = _ph()
+    now = datetime.now(timezone.utc).isoformat()
+    with _get_conn() as (conn, cur):
+        cur.execute(f"UPDATE users SET last_login_at = {p} WHERE id = {p}", (now, user_id))
+
+
+# ── Identity: organizations & membership ───────────────────────────
+
+class DuplicateSlugError(Exception):
+    """Raised when an organization slug is already taken."""
+
+
+def create_organization(name: str, slug: str, plan: str = "trial") -> int:
+    p = _ph()
+    try:
+        with _get_conn() as (conn, cur):
+            if USE_POSTGRES:
+                cur.execute(
+                    f"INSERT INTO organizations (name, slug, plan) "
+                    f"VALUES ({p}, {p}, {p}) RETURNING id",
+                    (name.strip(), slug.strip().casefold(), plan),
+                )
+                return cur.fetchone()["id"]
+            cur.execute(
+                f"INSERT INTO organizations (name, slug, plan) VALUES ({p}, {p}, {p})",
+                (name.strip(), slug.strip().casefold(), plan),
+            )
+            return cur.lastrowid
+    except _IntegrityError as exc:
+        raise DuplicateSlugError(f"An organization already uses the slug '{slug}'.") from exc
+
+
+def get_organization(org_id: int) -> Optional[dict]:
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"SELECT * FROM organizations WHERE id = {p} AND deleted_at IS NULL",
+            (org_id,),
+        )
+        return _row_to_dict(cur.fetchone())
+
+
+def get_role_by_name(name: str) -> Optional[dict]:
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        cur.execute(f"SELECT * FROM roles WHERE name = {p}", (name,))
+        return _row_to_dict(cur.fetchone())
+
+
+def list_organizations(limit: int = 50, offset: int = 0) -> dict:
+    """Cross-tenant organization listing. Platform-admin surfaces only."""
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        cur.execute("SELECT COUNT(*) AS c FROM organizations WHERE deleted_at IS NULL")
+        total = cur.fetchone()["c"]
+        cur.execute(
+            f"SELECT id, name, slug, plan, status, created_at FROM organizations "
+            f"WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT {p} OFFSET {p}",
+            (limit, offset),
+        )
+        return {
+            "organizations": [_row_to_dict(r) for r in cur.fetchall()],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+
+
+
+def create_membership(org_id: int, user_id: int, role_name: str) -> int:
+    """Attach a user to an organization with a role."""
+    role = get_role_by_name(role_name)
+    if role is None:
+        raise ValueError(f"Unknown role: {role_name}")
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        if USE_POSTGRES:
+            cur.execute(
+                f"INSERT INTO org_memberships (org_id, user_id, role_id) "
+                f"VALUES ({p}, {p}, {p}) RETURNING id",
+                (org_id, user_id, role["id"]),
+            )
+            return cur.fetchone()["id"]
+        cur.execute(
+            f"INSERT INTO org_memberships (org_id, user_id, role_id) VALUES ({p}, {p}, {p})",
+            (org_id, user_id, role["id"]),
+        )
+        return cur.lastrowid
+
+
+def get_membership(user_id: int, org_id: int) -> Optional[dict]:
+    """Active membership joining the role name, or None."""
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"SELECT m.id, m.org_id, m.user_id, m.status, r.name AS role_name "
+            f"FROM org_memberships m JOIN roles r ON r.id = m.role_id "
+            f"WHERE m.user_id = {p} AND m.org_id = {p} "
+            f"AND m.deleted_at IS NULL AND m.status = 'ACTIVE'",
+            (user_id, org_id),
+        )
+        return _row_to_dict(cur.fetchone())
+
+
+def list_memberships(user_id: int) -> list[dict]:
+    """All active memberships for a user, with org and role names."""
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"SELECT m.id, m.org_id, m.status, r.name AS role_name, "
+            f"o.name AS org_name, o.slug AS org_slug "
+            f"FROM org_memberships m "
+            f"JOIN roles r ON r.id = m.role_id "
+            f"JOIN organizations o ON o.id = m.org_id "
+            f"WHERE m.user_id = {p} AND m.deleted_at IS NULL "
+            f"AND m.status = 'ACTIVE' AND o.deleted_at IS NULL "
+            f"ORDER BY o.name",
+            (user_id,),
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+
+def list_org_members(org_id: int) -> list[dict]:
+    """All active members of an organization."""
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"SELECT m.id, m.user_id, m.status, r.name AS role_name, "
+            f"u.email, u.full_name "
+            f"FROM org_memberships m "
+            f"JOIN roles r ON r.id = m.role_id "
+            f"JOIN users u ON u.id = m.user_id "
+            f"WHERE m.org_id = {p} AND m.deleted_at IS NULL "
+            f"AND m.status = 'ACTIVE' AND u.deleted_at IS NULL "
+            f"ORDER BY u.full_name, u.email",
+            (org_id,),
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+
+def set_membership_role(org_id: int, user_id: int, role_name: str) -> bool:
+    """Change a member's role. Returns False if no active membership exists."""
+    role = get_role_by_name(role_name)
+    if role is None:
+        raise ValueError(f"Unknown role: {role_name}")
+    p = _ph()
+    now = datetime.now(timezone.utc).isoformat()
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"UPDATE org_memberships SET role_id = {p}, updated_at = {p} "
+            f"WHERE org_id = {p} AND user_id = {p} AND deleted_at IS NULL",
+            (role["id"], now, org_id, user_id),
+        )
+        return cur.rowcount > 0
+
+
+def remove_membership(org_id: int, user_id: int) -> bool:
+    """Soft-delete a membership, preserving the audit trail."""
+    p = _ph()
+    now = datetime.now(timezone.utc).isoformat()
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"UPDATE org_memberships SET deleted_at = {p}, status = 'REMOVED' "
+            f"WHERE org_id = {p} AND user_id = {p} AND deleted_at IS NULL",
+            (now, org_id, user_id),
+        )
+        return cur.rowcount > 0
+
+
+# ── Audit trail ────────────────────────────────────────────────────
+
+def get_last_audit_hash() -> Optional[str]:
+    """Most recent event hash, for chaining the next one."""
+    with _get_conn() as (conn, cur):
+        cur.execute("SELECT hash FROM audit_events ORDER BY id DESC LIMIT 1")
+        row = cur.fetchone()
+        return row["hash"] if row else None
+
+
+def insert_audit_event(event: dict) -> int:
+    """Append one audit event. Caller supplies prev_hash and hash."""
+    p = _ph()
+    columns = (
+        "tier", "action", "actor_user_id", "actor_org_id", "actor_role",
+        "actor_ip", "impersonated_by", "resource_type", "resource_id",
+        "resource_org_id", "outcome", "detail", "request_id", "prev_hash", "hash",
+    )
+    values = tuple(event.get(c) for c in columns)
+    placeholders = ", ".join([p] * len(columns))
+    with _get_conn() as (conn, cur):
+        if USE_POSTGRES:
+            cur.execute(
+                f"INSERT INTO audit_events ({', '.join(columns)}) "
+                f"VALUES ({placeholders}) RETURNING id",
+                values,
+            )
+            return cur.fetchone()["id"]
+        cur.execute(
+            f"INSERT INTO audit_events ({', '.join(columns)}) VALUES ({placeholders})",
+            values,
+        )
+        return cur.lastrowid
+
+
+def list_audit_events(
+    org_id: Optional[int] = None,
+    actor_user_id: Optional[int] = None,
+    action: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict]:
+    """Query the audit log. org_id scopes to one tenant; None means platform-wide."""
+    p = _ph()
+    clauses, params = [], []
+    if org_id is not None:
+        clauses.append(f"(actor_org_id = {p} OR resource_org_id = {p})")
+        params.extend([org_id, org_id])
+    if actor_user_id is not None:
+        clauses.append(f"actor_user_id = {p}")
+        params.append(actor_user_id)
+    if action is not None:
+        clauses.append(f"action = {p}")
+        params.append(action)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.extend([limit, offset])
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"SELECT * FROM audit_events {where} "
+            f"ORDER BY id DESC LIMIT {p} OFFSET {p}",
+            tuple(params),
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+
+def verify_audit_chain(limit: int = 1000) -> dict:
+    """Walk the hash chain and report the first break, if any.
+
+    Detects silent edits and deletions. Does not protect against an attacker
+    who can rewrite every subsequent row — see docs/SECURITY.md.
+    """
+    from audit import compute_event_hash
+
+    with _get_conn() as (conn, cur):
+        cur.execute(f"SELECT * FROM audit_events ORDER BY id ASC LIMIT {_ph()}", (limit,))
+        rows = [_row_to_dict(r) for r in cur.fetchall()]
+
+    expected_prev = None
+    for row in rows:
+        if row["prev_hash"] != expected_prev:
+            return {"valid": False, "broken_at_id": row["id"], "reason": "prev_hash mismatch"}
+        if compute_event_hash(row, row["prev_hash"]) != row["hash"]:
+            return {"valid": False, "broken_at_id": row["id"], "reason": "content hash mismatch"}
+        expected_prev = row["hash"]
+
+    return {"valid": True, "events_checked": len(rows)}
+

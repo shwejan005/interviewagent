@@ -36,6 +36,8 @@ from fastapi.responses import JSONResponse  # noqa: E402
 from starlette.requests import Request  # noqa: E402
 
 from routes import router  # noqa: E402
+from auth_routes import router as auth_router, org_router  # noqa: E402
+from admin_routes import router as admin_router  # noqa: E402
 from database import init_db  # noqa: E402
 from rate_limit import InMemoryRateLimitMiddleware  # noqa: E402
 
@@ -176,6 +178,9 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 # ── Routes ───────────────────────────────────────────────────────────
 
+app.include_router(auth_router)
+app.include_router(org_router)
+app.include_router(admin_router)
 app.include_router(router)
 
 

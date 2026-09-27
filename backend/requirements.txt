@@ -6,3 +6,8 @@ python-multipart>=0.0.9
 pydantic>=2.9.2,<3.0.0
 python-dotenv
 psycopg2-binary>=2.9.9
+
+# Identity & access
+bcrypt>=4.1.0,<6.0.0
+PyJWT>=2.8.0,<3.0.0
+email-validator>=2.0.0,<3.0.0

@@ -14,8 +14,10 @@ interfere with each other.
 import asyncio
 import logging
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+import audit
+from authz import Actor, optional_actor
 from models import (
     StartRequest,
     AnswerRequest,
@@ -90,13 +92,17 @@ async def reset_interview():
 
 
 @router.post("/start")
-async def start_interview(req: StartRequest):
+async def start_interview(req: StartRequest, actor: Optional[Actor] = Depends(optional_actor)):
     """
     Start a new interview evaluation.
     - Creates an isolated evaluation record in the database
     - Runs the Screening Agent with resume + role only (AGENT CONTEXT)
     - Writes the verdict to this evaluation's DECISION MEMORY
     - Returns the structured verdict + next round info
+
+    Authentication is optional for backwards compatibility. When credentials
+    are supplied the evaluation is attributed to that actor and organization;
+    without them it is created unowned, exactly as before.
     """
     resume = req.resume.strip()
     role = req.role.strip()
@@ -110,8 +116,24 @@ async def start_interview(req: StartRequest):
         raise HTTPException(status_code=400, detail=f"Invalid role. Choose from: {AVAILABLE_ROLES}")
 
     evaluation_id = await _db(
-        db.create_evaluation, resume_text=resume, role=role, candidate_name=candidate_name
+        db.create_evaluation,
+        resume_text=resume,
+        role=role,
+        candidate_name=candidate_name,
+        org_id=actor.org_id if actor else None,
+        owner_user_id=actor.user_id if actor else None,
     )
+
+    if actor is not None:
+        audit.record_from_actor(
+            actor,
+            audit.Action.EVALUATION_CREATED,
+            actor_ip=actor.ip,
+            resource_type="evaluation",
+            resource_id=evaluation_id,
+            resource_org_id=actor.org_id,
+            detail={"role": role},
+        )
 
     # Run Round 1 — Screening Agent (context: resume + role)
     try:

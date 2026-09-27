@@ -23,6 +23,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # testing the rate limiter — see test_rate_limit.py for that in isolation.
 os.environ.setdefault("RATE_LIMIT_REQUESTS", "0")
 
+# bcrypt's cost factor is a deliberate production latency trade-off, but the
+# suite hashes passwords hundreds of times and 12 rounds dominates the runtime.
+# 4 is the bcrypt minimum and is appropriate only because these hashes never
+# leave the test process. Read at security.py import time, so it must be set
+# before that module is first imported.
+os.environ.setdefault("BCRYPT_ROUNDS", "4")
+
 import pytest  # noqa: E402
 
 
