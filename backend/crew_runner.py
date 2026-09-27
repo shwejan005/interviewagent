@@ -5,6 +5,13 @@ This is the heart of the AGENT CONTEXT architecture. Each agent receives
 only the context it is explicitly given. No hidden state, no shared memory.
 
 Pipeline: Screening → Technical → Behavioral → Hiring Recommendation → Committee
+
+Every verdict-producing function validates the agent's raw output against its
+Pydantic schema. Malformed output (invalid JSON, wrong types, out-of-range
+scores, or a decision outside the allowed enum) never becomes a business
+decision — it raises AgentOutputError, which the caller must handle explicitly
+(see routes.py) instead of silently defaulting to a score, decision, or
+confidence value.
 """
 
 import asyncio
@@ -13,12 +20,28 @@ import re
 import json
 import time
 import logging
+from typing import Type, TypeVar
+
 from crewai import Crew
+from pydantic import BaseModel, ValidationError
 
 logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 3
 RETRY_DELAY = 60  # seconds to wait on rate-limit
+
+
+class AgentOutputError(Exception):
+    """Raised when agent output fails to parse or validate against its schema.
+
+    This must never be silently converted into a PASS/FAIL/HIRE/REJECT
+    decision — callers persist it as a distinct, clearly-labeled failure for
+    human triage and surface an explicit error to the client.
+    """
+
+    def __init__(self, message: str, raw_output: str):
+        super().__init__(message)
+        self.raw_output = raw_output
 
 
 def _run_crew_with_retry_sync(crew: Crew) -> str:
@@ -62,25 +85,33 @@ from tasks import (
     create_hiring_recommendation_task,
     create_committee_decision_task,
 )
-from state import VERDICTS_DIR
+from models import (
+    ScreeningVerdict,
+    TechnicalVerdict,
+    BehavioralVerdict,
+    HiringRecommendation,
+    CommitteeDecision,
+)
+from state import eval_verdicts_dir
+
+VerdictT = TypeVar("VerdictT", bound=BaseModel)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
-def _read_verdict(filename: str) -> str:
-    """Read a verdict file from DECISION MEMORY."""
-    path = os.path.join(VERDICTS_DIR, filename)
+def _read_verdict(evaluation_id: int, filename: str) -> str:
+    """Read a verdict file from this evaluation's DECISION MEMORY."""
+    path = os.path.join(eval_verdicts_dir(evaluation_id), filename)
     if not os.path.exists(path):
         raise FileNotFoundError(f"Verdict file not found: {path}")
     with open(path, "r") as f:
         return f.read()
 
 
-def _write_verdict(filename: str, content: str) -> str:
-    """Write a verdict file to DECISION MEMORY and return the path."""
-    path = os.path.join(VERDICTS_DIR, filename)
-    os.makedirs(VERDICTS_DIR, exist_ok=True)
+def _write_verdict(evaluation_id: int, filename: str, content: str) -> str:
+    """Write a verdict file to this evaluation's DECISION MEMORY and return the path."""
+    path = os.path.join(eval_verdicts_dir(evaluation_id), filename)
     with open(path, "w") as f:
         f.write(content)
     return path
@@ -88,10 +119,9 @@ def _write_verdict(filename: str, content: str) -> str:
 
 def _parse_json_output(raw_text: str) -> dict:
     """
-    Parse JSON from agent output. Handles common LLM quirks:
-    - Markdown code blocks (```json ... ```)
-    - Leading/trailing whitespace
-    - Mixed content before/after JSON
+    Extract and parse a JSON object from raw agent output. Handles common LLM
+    quirks (markdown code fences, surrounding prose) but never fabricates a
+    fallback value — invalid JSON raises AgentOutputError.
     """
     text = raw_text.strip()
 
@@ -110,68 +140,36 @@ def _parse_json_output(raw_text: str) -> dict:
         return json.loads(text)
     except json.JSONDecodeError as e:
         logger.warning(f"Failed to parse JSON output: {e}")
-        logger.debug(f"Raw output: {raw_text[:500]}")
-        # Return a minimal fallback
-        return {"error": "Failed to parse agent output", "raw": raw_text[:2000]}
+        raise AgentOutputError(f"Agent output is not valid JSON: {e}", raw_text) from e
 
 
-def _parse_decision(verdict_text: str) -> str:
+def _validate_verdict(data: dict, schema: Type[VerdictT], raw_output: str) -> VerdictT:
+    """Validate parsed JSON against the agent's declared Pydantic schema.
+
+    Enforces the allowed decision enum, numeric bounds, and required fields
+    (including confidence — the agent must assert it explicitly; there is no
+    silent default). Any violation raises AgentOutputError.
     """
-    Extract the decision from a verdict string (JSON or plain text).
-    """
-    # Try JSON first
+    if not isinstance(data, dict):
+        raise AgentOutputError("Agent output JSON is not an object.", raw_output)
     try:
-        data = json.loads(verdict_text) if isinstance(verdict_text, str) else verdict_text
-        if isinstance(data, dict) and "decision" in data:
-            return data["decision"].upper()
-    except (json.JSONDecodeError, AttributeError):
-        pass
-
-    # Fallback — regex
-    match = re.search(
-        r"Decision:\s*(PASS|FAIL|BORDERLINE|HIRE|HOLD|REJECT)",
-        str(verdict_text),
-        re.IGNORECASE,
-    )
-    if match:
-        return match.group(1).upper()
-
-    # Last resort — keyword search
-    upper = str(verdict_text).upper()
-    for keyword in ["FAIL", "REJECT", "BORDERLINE", "HOLD", "PASS", "HIRE"]:
-        if keyword in upper:
-            return keyword
-    return "BORDERLINE"
-
-
-def _extract_score(data: dict) -> float:
-    """Extract score from parsed verdict data."""
-    if isinstance(data, dict) and "score" in data:
-        try:
-            return float(data["score"])
-        except (ValueError, TypeError):
-            pass
-    return 0.0
-
-
-def _extract_confidence(data: dict) -> float:
-    """Extract confidence from parsed verdict data."""
-    if isinstance(data, dict) and "confidence" in data:
-        try:
-            return float(data["confidence"])
-        except (ValueError, TypeError):
-            pass
-    return 0.8
+        return schema.model_validate(data)
+    except ValidationError as e:
+        logger.warning(f"Agent output failed schema validation: {e}")
+        raise AgentOutputError(f"Agent output failed schema validation: {e}", raw_output) from e
 
 
 # ── Round 1: Screening ──────────────────────────────────────────────
 
 
-async def run_screening(resume: str, role: str) -> dict:
+async def run_screening(evaluation_id: int, resume: str, role: str) -> dict:
     """
     Run the Screening Agent.
     AGENT CONTEXT: Resume + target role.
-    Writes: verdicts/round1.txt
+    Writes: verdicts/{evaluation_id}/round1.txt
+
+    Raises AgentOutputError if the agent's output cannot be validated —
+    callers must not treat this as a PASS/FAIL/BORDERLINE decision.
     """
     agent = create_screening_agent()
     task = create_screening_task(agent, resume, role)
@@ -179,35 +177,31 @@ async def run_screening(resume: str, role: str) -> dict:
     crew = Crew(agents=[agent], tasks=[task], verbose=True)
     raw_output = await _run_crew_with_retry(crew)
 
-    # Parse structured output
     verdict_data = _parse_json_output(raw_output)
-    decision = _parse_decision(verdict_data)
-    score = _extract_score(verdict_data)
-    confidence = _extract_confidence(verdict_data)
+    verdict = _validate_verdict(verdict_data, ScreeningVerdict, raw_output)
 
-    # Write to DECISION MEMORY (both JSON and raw)
-    _write_verdict("round1.txt", raw_output)
-    _write_verdict("round1.json", json.dumps(verdict_data, indent=2))
+    _write_verdict(evaluation_id, "round1.txt", raw_output)
+    _write_verdict(evaluation_id, "round1.json", verdict.model_dump_json(indent=2))
 
     return {
         "round": 1,
-        "decision": decision,
-        "verdict": verdict_data,
+        "decision": verdict.decision.value,
+        "verdict": verdict.model_dump(mode="json"),
         "verdict_text": raw_output,
-        "score": score,
-        "confidence": confidence,
+        "score": verdict.score,
+        "confidence": verdict.confidence,
     }
 
 
 # ── Round 2: Technical (Question Generation) ────────────────────────
 
 
-async def run_technical_questions(resume: str) -> dict:
+async def run_technical_questions(evaluation_id: int, resume: str) -> dict:
     """
     Generate technical questions.
     AGENT CONTEXT: Resume + round1.txt verdict.
     """
-    round1_verdict = _read_verdict("round1.txt")
+    round1_verdict = _read_verdict(evaluation_id, "round1.txt")
     agent = create_technical_agent()
     task = create_technical_question_task(agent, resume, round1_verdict)
 
@@ -220,13 +214,13 @@ async def run_technical_questions(resume: str) -> dict:
     }
 
 
-async def run_technical_evaluation(resume: str, questions: str, answer: str) -> dict:
+async def run_technical_evaluation(evaluation_id: int, resume: str, questions: str, answer: str) -> dict:
     """
     Evaluate technical answers.
     AGENT CONTEXT: Resume + round1.txt + candidate answers.
-    Writes: verdicts/round2.txt
+    Writes: verdicts/{evaluation_id}/round2.txt
     """
-    round1_verdict = _read_verdict("round1.txt")
+    round1_verdict = _read_verdict(evaluation_id, "round1.txt")
     agent = create_technical_agent()
     task = create_technical_evaluation_task(
         agent, resume, round1_verdict, questions, answer
@@ -236,33 +230,31 @@ async def run_technical_evaluation(resume: str, questions: str, answer: str) -> 
     raw_output = await _run_crew_with_retry(crew)
 
     verdict_data = _parse_json_output(raw_output)
-    decision = _parse_decision(verdict_data)
-    score = _extract_score(verdict_data)
-    confidence = _extract_confidence(verdict_data)
+    verdict = _validate_verdict(verdict_data, TechnicalVerdict, raw_output)
 
-    _write_verdict("round2.txt", raw_output)
-    _write_verdict("round2.json", json.dumps(verdict_data, indent=2))
+    _write_verdict(evaluation_id, "round2.txt", raw_output)
+    _write_verdict(evaluation_id, "round2.json", verdict.model_dump_json(indent=2))
 
     return {
         "round": 2,
-        "decision": decision,
-        "verdict": verdict_data,
+        "decision": verdict.decision.value,
+        "verdict": verdict.model_dump(mode="json"),
         "verdict_text": raw_output,
-        "score": score,
-        "confidence": confidence,
+        "score": verdict.score,
+        "confidence": verdict.confidence,
     }
 
 
 # ── Round 3: Behavioral (Question Generation) ──────────────────────
 
 
-async def run_behavioral_question(resume: str) -> dict:
+async def run_behavioral_question(evaluation_id: int, resume: str) -> dict:
     """
     Generate behavioral question.
     AGENT CONTEXT: Resume + round1.txt + round2.txt.
     """
-    round1_verdict = _read_verdict("round1.txt")
-    round2_verdict = _read_verdict("round2.txt")
+    round1_verdict = _read_verdict(evaluation_id, "round1.txt")
+    round2_verdict = _read_verdict(evaluation_id, "round2.txt")
     agent = create_behavioral_agent()
     task = create_behavioral_question_task(
         agent, resume, round1_verdict, round2_verdict
@@ -277,14 +269,14 @@ async def run_behavioral_question(resume: str) -> dict:
     }
 
 
-async def run_behavioral_evaluation(resume: str, question: str, answer: str) -> dict:
+async def run_behavioral_evaluation(evaluation_id: int, resume: str, question: str, answer: str) -> dict:
     """
     Evaluate behavioral answer.
     AGENT CONTEXT: Resume + round1.txt + round2.txt + candidate answer.
-    Writes: verdicts/round3.txt
+    Writes: verdicts/{evaluation_id}/round3.txt
     """
-    round1_verdict = _read_verdict("round1.txt")
-    round2_verdict = _read_verdict("round2.txt")
+    round1_verdict = _read_verdict(evaluation_id, "round1.txt")
+    round2_verdict = _read_verdict(evaluation_id, "round2.txt")
     agent = create_behavioral_agent()
     task = create_behavioral_evaluation_task(
         agent, resume, round1_verdict, round2_verdict, question, answer
@@ -294,35 +286,33 @@ async def run_behavioral_evaluation(resume: str, question: str, answer: str) -> 
     raw_output = await _run_crew_with_retry(crew)
 
     verdict_data = _parse_json_output(raw_output)
-    decision = _parse_decision(verdict_data)
-    score = _extract_score(verdict_data)
-    confidence = _extract_confidence(verdict_data)
+    verdict = _validate_verdict(verdict_data, BehavioralVerdict, raw_output)
 
-    _write_verdict("round3.txt", raw_output)
-    _write_verdict("round3.json", json.dumps(verdict_data, indent=2))
+    _write_verdict(evaluation_id, "round3.txt", raw_output)
+    _write_verdict(evaluation_id, "round3.json", verdict.model_dump_json(indent=2))
 
     return {
         "round": 3,
-        "decision": decision,
-        "verdict": verdict_data,
+        "decision": verdict.decision.value,
+        "verdict": verdict.model_dump(mode="json"),
         "verdict_text": raw_output,
-        "score": score,
-        "confidence": confidence,
+        "score": verdict.score,
+        "confidence": verdict.confidence,
     }
 
 
 # ── Round 4: Hiring Recommendation ─────────────────────────────────
 
 
-async def run_hiring_recommendation() -> dict:
+async def run_hiring_recommendation(evaluation_id: int) -> dict:
     """
     Run the Hiring Recommendation Agent.
     AGENT CONTEXT: All three round verdicts (no resume, no raw answers).
-    Writes: verdicts/round4.txt
+    Writes: verdicts/{evaluation_id}/round4.txt
     """
-    round1_verdict = _read_verdict("round1.txt")
-    round2_verdict = _read_verdict("round2.txt")
-    round3_verdict = _read_verdict("round3.txt")
+    round1_verdict = _read_verdict(evaluation_id, "round1.txt")
+    round2_verdict = _read_verdict(evaluation_id, "round2.txt")
+    round3_verdict = _read_verdict(evaluation_id, "round3.txt")
 
     agent = create_hiring_recommendation_agent()
     task = create_hiring_recommendation_task(
@@ -333,36 +323,34 @@ async def run_hiring_recommendation() -> dict:
     raw_output = await _run_crew_with_retry(crew)
 
     verdict_data = _parse_json_output(raw_output)
-    decision = _parse_decision(verdict_data)
-    score = _extract_score(verdict_data)
-    confidence = _extract_confidence(verdict_data)
+    verdict = _validate_verdict(verdict_data, HiringRecommendation, raw_output)
 
-    _write_verdict("round4.txt", raw_output)
-    _write_verdict("round4.json", json.dumps(verdict_data, indent=2))
+    _write_verdict(evaluation_id, "round4.txt", raw_output)
+    _write_verdict(evaluation_id, "round4.json", verdict.model_dump_json(indent=2))
 
     return {
         "round": 4,
-        "decision": decision,
-        "verdict": verdict_data,
+        "decision": verdict.decision.value,
+        "verdict": verdict.model_dump(mode="json"),
         "verdict_text": raw_output,
-        "score": score,
-        "confidence": confidence,
+        "score": verdict.score,
+        "confidence": verdict.confidence,
     }
 
 
 # ── Final: Committee Evaluator ──────────────────────────────────────
 
 
-async def run_hiring_committee() -> dict:
+async def run_hiring_committee(evaluation_id: int) -> dict:
     """
     Run the Hiring Committee Agent (Committee Evaluator).
     AGENT CONTEXT: ONLY verdict outputs from all agents (no resume, no raw answers).
     This is a critical design choice — the committee judges on peer verdicts only.
     """
-    round1_verdict = _read_verdict("round1.txt")
-    round2_verdict = _read_verdict("round2.txt")
-    round3_verdict = _read_verdict("round3.txt")
-    recommendation = _read_verdict("round4.txt")
+    round1_verdict = _read_verdict(evaluation_id, "round1.txt")
+    round2_verdict = _read_verdict(evaluation_id, "round2.txt")
+    round3_verdict = _read_verdict(evaluation_id, "round3.txt")
+    recommendation = _read_verdict(evaluation_id, "round4.txt")
 
     agent = create_hiring_committee_agent()
     task = create_committee_decision_task(
@@ -373,15 +361,15 @@ async def run_hiring_committee() -> dict:
     raw_output = await _run_crew_with_retry(crew)
 
     verdict_data = _parse_json_output(raw_output)
-    decision = _parse_decision(verdict_data)
-    confidence = _extract_confidence(verdict_data)
+    verdict = _validate_verdict(verdict_data, CommitteeDecision, raw_output)
 
-    _write_verdict("committee.txt", raw_output)
-    _write_verdict("committee.json", json.dumps(verdict_data, indent=2))
+    _write_verdict(evaluation_id, "committee.txt", raw_output)
+    _write_verdict(evaluation_id, "committee.json", verdict.model_dump_json(indent=2))
 
     return {
-        "decision": decision,
-        "verdict": verdict_data,
+        "decision": verdict.decision.value,
+        "verdict": verdict.model_dump(mode="json"),
         "verdict_text": raw_output,
-        "confidence": confidence,
+        "confidence": verdict.confidence,
     }
+

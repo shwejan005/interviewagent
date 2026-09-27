@@ -4,9 +4,14 @@ API Routes — FastAPI endpoints for the interview pipeline.
 FastAPI handles orchestration only — no decision-making logic here.
 All decisions are made by CrewAI agents via crew_runner.py.
 
-Supports both the legacy session-based flow and new evaluation-based REST API.
+The database is the single source of truth for evaluation status and round
+progress — there is no shared in-memory session. Every mutating endpoint
+takes (or returns) an `evaluation_id` and re-derives state from the database
+on each request, so concurrent evaluations for different candidates cannot
+interfere with each other.
 """
 
+import asyncio
 import logging
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
@@ -14,21 +19,12 @@ from fastapi import APIRouter, HTTPException, Query
 from models import (
     StartRequest,
     AnswerRequest,
-    RoundResponse,
-    EvaluationSummary,
     PipelineStage,
     PipelineStatus,
-    DashboardStats,
 )
-from state import (
-    get_state,
-    update_state,
-    reset_state,
-    interview_state,
-    AVAILABLE_ROLES,
-    PIPELINE_STAGES,
-)
+from state import AVAILABLE_ROLES, PIPELINE_STAGES
 from crew_runner import (
+    AgentOutputError,
     run_screening,
     run_technical_questions,
     run_technical_evaluation,
@@ -43,17 +39,51 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+async def _db(func, *args, **kwargs):
+    """Run a synchronous database call off the event loop."""
+    return await asyncio.to_thread(func, *args, **kwargs)
+
+
+async def _record_agent_output_error(
+    evaluation_id: int, agent_type: str, round_number: int, exc: AgentOutputError
+) -> None:
+    """Persist a failed agent execution for triage without recording a business decision.
+
+    decision='INVALID_OUTPUT' is exempt from the canonical-verdict uniqueness
+    constraint, so a subsequent retry for the same round is still possible.
+    """
+    logger.error(
+        "Agent output invalid (evaluation_id=%s, agent=%s, round=%s): %s",
+        evaluation_id, agent_type, round_number, exc,
+    )
+    try:
+        await _db(
+            db.save_verdict,
+            evaluation_id=evaluation_id,
+            agent_type=agent_type,
+            round_number=round_number,
+            verdict_json={"error": str(exc)},
+            verdict_text=exc.raw_output,
+            score=None,
+            decision="INVALID_OUTPUT",
+            confidence=None,
+        )
+    except db.DuplicateVerdictError:
+        # A canonical verdict already exists for this round — nothing to record.
+        pass
+
+
 # ── POST /reset ──────────────────────────────────────────────────────
 
 
 @router.post("/reset")
 async def reset_interview():
     """
-    Explicitly reset all interview state and clear verdict files.
-    Called by the frontend before starting a new interview.
+    Deprecated no-op, retained for backward compatibility with older clients.
+    Every evaluation is isolated by its own `evaluation_id`; there is no
+    shared session state to reset.
     """
-    reset_state()
-    return {"status": "reset", "message": "Interview state cleared."}
+    return {"status": "ok", "message": "No shared session state to reset."}
 
 
 # ── POST /start ──────────────────────────────────────────────────────
@@ -63,55 +93,57 @@ async def reset_interview():
 async def start_interview(req: StartRequest):
     """
     Start a new interview evaluation.
-    - Resets session context and decision memory
-    - Creates evaluation record in database
-    - Runs ScreeningAgent with resume only (AGENT CONTEXT)
-    - Writes verdict to DECISION MEMORY (verdicts/round1.txt)
-    - Returns structured verdict + next round info
+    - Creates an isolated evaluation record in the database
+    - Runs the Screening Agent with resume + role only (AGENT CONTEXT)
+    - Writes the verdict to this evaluation's DECISION MEMORY
+    - Returns the structured verdict + next round info
     """
-    if not req.resume.strip():
+    resume = req.resume.strip()
+    role = req.role.strip()
+    candidate_name = req.candidate_name.strip()
+
+    if not resume:
         raise HTTPException(status_code=400, detail="Resume cannot be empty.")
-    if not req.role.strip():
+    if not role:
         raise HTTPException(status_code=400, detail="Role must be selected.")
-    if req.role.strip() not in AVAILABLE_ROLES:
+    if role not in AVAILABLE_ROLES:
         raise HTTPException(status_code=400, detail=f"Invalid role. Choose from: {AVAILABLE_ROLES}")
 
-    # Reset everything for a fresh interview
-    reset_state()
-    update_state(resume=req.resume.strip(), role=req.role.strip(), candidate_name=req.candidate_name.strip())
-
-    # Create database record
-    eval_id = db.create_evaluation(
-        resume_text=req.resume.strip(),
-        role=req.role.strip(),
-        candidate_name=req.candidate_name.strip(),
+    evaluation_id = await _db(
+        db.create_evaluation, resume_text=resume, role=role, candidate_name=candidate_name
     )
-    interview_state["evaluation_id"] = eval_id
 
     # Run Round 1 — Screening Agent (context: resume + role)
-    result = await run_screening(req.resume.strip(), req.role.strip())
+    try:
+        result = await run_screening(evaluation_id, resume, role)
+    except AgentOutputError as exc:
+        await _record_agent_output_error(evaluation_id, "screening", 1, exc)
+        raise HTTPException(
+            status_code=502,
+            detail="The screening agent returned an invalid response. Please retry.",
+        ) from exc
 
-    # Save verdict to database
-    db.save_verdict(
-        evaluation_id=eval_id,
+    await _db(
+        db.save_verdict,
+        evaluation_id=evaluation_id,
         agent_type="screening",
         round_number=1,
         verdict_json=result["verdict"],
         verdict_text=result["verdict_text"],
-        score=result.get("score"),
+        score=result["score"],
         decision=result["decision"],
-        confidence=result.get("confidence"),
+        confidence=result["confidence"],
     )
 
-    # Update SESSION CONTEXT
-    interview_state["verdicts"]["round1"] = "verdicts/round1.txt"
     decision = result["decision"]
 
     if decision == "FAIL":
-        update_state(status="REJECTED")
-        db.update_evaluation(eval_id, status="REJECTED", current_round=1, final_decision="REJECT")
+        await _db(
+            db.update_evaluation,
+            evaluation_id, status="REJECTED", current_round=1, final_decision="REJECT",
+        )
         return {
-            "evaluation_id": eval_id,
+            "evaluation_id": evaluation_id,
             "round": 1,
             "decision": "FAIL",
             "verdict": result["verdict"],
@@ -121,19 +153,25 @@ async def start_interview(req: StartRequest):
         }
 
     # PASS or BORDERLINE — generate technical questions for Round 2
-    tech_result = await run_technical_questions(get_state()["resume"])
-    interview_state["questions"]["round2"] = tech_result["questions"]
-    db.save_questions(eval_id, 2, tech_result["questions"])
-    update_state(round=2)
-    db.update_evaluation(eval_id, current_round=2)
+    try:
+        tech_result = await run_technical_questions(evaluation_id, resume)
+    except AgentOutputError as exc:
+        await _record_agent_output_error(evaluation_id, "technical", 2, exc)
+        raise HTTPException(
+            status_code=502,
+            detail="The technical agent failed to generate questions. Please retry.",
+        ) from exc
+
+    await _db(db.save_questions, evaluation_id, 2, tech_result["questions"])
+    await _db(db.update_evaluation, evaluation_id, current_round=2)
 
     return {
-        "evaluation_id": eval_id,
+        "evaluation_id": evaluation_id,
         "round": 1,
         "decision": decision,
         "verdict": result["verdict"],
         "verdict_text": result["verdict_text"],
-        "status": "ONGOING",
+        "status": "IN_PROGRESS",
         "next_round": 2,
         "question": tech_result["questions"],
     }
@@ -143,53 +181,70 @@ async def start_interview(req: StartRequest):
 
 
 @router.post("/round/2/answer")
-async def round2_answer(req: AnswerRequest):
+async def round2_answer(
+    req: AnswerRequest,
+    evaluation_id: int = Query(..., description="Evaluation ID returned by /start"),
+):
     """
     Submit answer for Round 2 (Technical).
-    - Runs TechnicalAgent with AGENT CONTEXT (resume + round1.txt)
-    - Writes verdict to verdicts/round2.txt
-    - Returns verdict + next round or rejection
+    - Runs the Technical Agent with AGENT CONTEXT (resume + round1 verdict)
+    - Writes the verdict to this evaluation's DECISION MEMORY
+    - Returns the verdict + next round or rejection
     """
-    state = get_state()
-
-    if state["status"] != "ONGOING":
-        raise HTTPException(status_code=400, detail=f"Interview is {state['status']}.")
-    if not req.answer.strip():
+    answer = req.answer.strip()
+    if not answer:
         raise HTTPException(status_code=400, detail="Answer cannot be empty.")
 
-    eval_id = state.get("evaluation_id")
+    evaluation = await _db(db.get_evaluation, evaluation_id)
+    if evaluation is None:
+        raise HTTPException(status_code=404, detail="Evaluation not found.")
+    if evaluation["status"] != "IN_PROGRESS":
+        raise HTTPException(status_code=400, detail=f"Evaluation is {evaluation['status']}.")
+    if evaluation["current_round"] != 2:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Evaluation is at round {evaluation['current_round']}, not round 2.",
+        )
+    if await _db(db.get_verdict_by_round, evaluation_id, 2) is not None:
+        raise HTTPException(status_code=409, detail="Round 2 has already been evaluated.")
 
-    # Store answer
-    interview_state["answers"]["round2"].append(req.answer.strip())
-    if eval_id:
-        db.save_answer(eval_id, 2, req.answer.strip())
+    await _db(db.save_answer, evaluation_id, 2, answer)
 
-    # Run Technical evaluation
-    questions = interview_state["questions"]["round2"] or ""
-    result = await run_technical_evaluation(state["resume"], questions, req.answer.strip())
+    questions = await _db(db.get_questions, evaluation_id, 2) or ""
 
-    # Save verdict to database
-    if eval_id:
-        db.save_verdict(
-            evaluation_id=eval_id,
+    try:
+        result = await run_technical_evaluation(evaluation_id, evaluation["resume_text"], questions, answer)
+    except AgentOutputError as exc:
+        await _record_agent_output_error(evaluation_id, "technical", 2, exc)
+        raise HTTPException(
+            status_code=502,
+            detail="The technical agent returned an invalid response. Please retry.",
+        ) from exc
+
+    try:
+        await _db(
+            db.save_verdict,
+            evaluation_id=evaluation_id,
             agent_type="technical",
             round_number=2,
             verdict_json=result["verdict"],
             verdict_text=result["verdict_text"],
-            score=result.get("score"),
+            score=result["score"],
             decision=result["decision"],
-            confidence=result.get("confidence"),
+            confidence=result["confidence"],
         )
+    except db.DuplicateVerdictError as exc:
+        raise HTTPException(status_code=409, detail="Round 2 has already been evaluated.") from exc
 
-    interview_state["verdicts"]["round2"] = "verdicts/round2.txt"
     decision = result["decision"]
 
     if decision == "FAIL":
-        update_state(status="REJECTED")
-        if eval_id:
-            db.update_evaluation(eval_id, status="REJECTED", current_round=2, final_decision="REJECT")
+        await _db(
+            db.update_evaluation,
+            evaluation_id, status="REJECTED", current_round=2, final_decision="REJECT",
+        )
         return {
-            "evaluation_id": eval_id,
+            "evaluation_id": evaluation_id,
             "round": 2,
             "decision": "FAIL",
             "verdict": result["verdict"],
@@ -199,21 +254,25 @@ async def round2_answer(req: AnswerRequest):
         }
 
     # PASS — generate behavioral question for Round 3
-    behavioral_result = await run_behavioral_question(state["resume"])
-    interview_state["questions"]["round3"] = behavioral_result["question"]
-    if eval_id:
-        db.save_questions(eval_id, 3, behavioral_result["question"])
-    update_state(round=3)
-    if eval_id:
-        db.update_evaluation(eval_id, current_round=3)
+    try:
+        behavioral_result = await run_behavioral_question(evaluation_id, evaluation["resume_text"])
+    except AgentOutputError as exc:
+        await _record_agent_output_error(evaluation_id, "behavioral", 3, exc)
+        raise HTTPException(
+            status_code=502,
+            detail="The behavioral agent failed to generate a question. Please retry.",
+        ) from exc
+
+    await _db(db.save_questions, evaluation_id, 3, behavioral_result["question"])
+    await _db(db.update_evaluation, evaluation_id, current_round=3)
 
     return {
-        "evaluation_id": eval_id,
+        "evaluation_id": evaluation_id,
         "round": 2,
         "decision": decision,
         "verdict": result["verdict"],
         "verdict_text": result["verdict_text"],
-        "status": "ONGOING",
+        "status": "IN_PROGRESS",
         "next_round": 3,
         "question": behavioral_result["question"],
     }
@@ -223,53 +282,70 @@ async def round2_answer(req: AnswerRequest):
 
 
 @router.post("/round/3/answer")
-async def round3_answer(req: AnswerRequest):
+async def round3_answer(
+    req: AnswerRequest,
+    evaluation_id: int = Query(..., description="Evaluation ID returned by /start"),
+):
     """
     Submit answer for Round 3 (Behavioral).
-    - Runs BehavioralAgent with AGENT CONTEXT
-    - Writes verdict to verdicts/round3.txt
-    - Returns completion status
+    - Runs the Behavioral Agent with AGENT CONTEXT
+    - Writes the verdict to this evaluation's DECISION MEMORY
+    - Returns completion status (recommendation + committee run at /final-decision)
     """
-    state = get_state()
-
-    if state["status"] != "ONGOING":
-        raise HTTPException(status_code=400, detail=f"Interview is {state['status']}.")
-    if not req.answer.strip():
+    answer = req.answer.strip()
+    if not answer:
         raise HTTPException(status_code=400, detail="Answer cannot be empty.")
 
-    eval_id = state.get("evaluation_id")
+    evaluation = await _db(db.get_evaluation, evaluation_id)
+    if evaluation is None:
+        raise HTTPException(status_code=404, detail="Evaluation not found.")
+    if evaluation["status"] != "IN_PROGRESS":
+        raise HTTPException(status_code=400, detail=f"Evaluation is {evaluation['status']}.")
+    if evaluation["current_round"] != 3:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Evaluation is at round {evaluation['current_round']}, not round 3.",
+        )
+    if await _db(db.get_verdict_by_round, evaluation_id, 3) is not None:
+        raise HTTPException(status_code=409, detail="Round 3 has already been evaluated.")
 
-    # Store answer
-    interview_state["answers"]["round3"].append(req.answer.strip())
-    if eval_id:
-        db.save_answer(eval_id, 3, req.answer.strip())
+    await _db(db.save_answer, evaluation_id, 3, answer)
 
-    # Run Behavioral evaluation
-    question = interview_state["questions"]["round3"] or ""
-    result = await run_behavioral_evaluation(state["resume"], question, req.answer.strip())
+    question = await _db(db.get_questions, evaluation_id, 3) or ""
 
-    # Save verdict to database
-    if eval_id:
-        db.save_verdict(
-            evaluation_id=eval_id,
+    try:
+        result = await run_behavioral_evaluation(evaluation_id, evaluation["resume_text"], question, answer)
+    except AgentOutputError as exc:
+        await _record_agent_output_error(evaluation_id, "behavioral", 3, exc)
+        raise HTTPException(
+            status_code=502,
+            detail="The behavioral agent returned an invalid response. Please retry.",
+        ) from exc
+
+    try:
+        await _db(
+            db.save_verdict,
+            evaluation_id=evaluation_id,
             agent_type="behavioral",
             round_number=3,
             verdict_json=result["verdict"],
             verdict_text=result["verdict_text"],
-            score=result.get("score"),
+            score=result["score"],
             decision=result["decision"],
-            confidence=result.get("confidence"),
+            confidence=result["confidence"],
         )
+    except db.DuplicateVerdictError as exc:
+        raise HTTPException(status_code=409, detail="Round 3 has already been evaluated.") from exc
 
-    interview_state["verdicts"]["round3"] = "verdicts/round3.txt"
     decision = result["decision"]
 
     if decision == "FAIL":
-        update_state(status="REJECTED")
-        if eval_id:
-            db.update_evaluation(eval_id, status="REJECTED", current_round=3, final_decision="REJECT")
+        await _db(
+            db.update_evaluation,
+            evaluation_id, status="REJECTED", current_round=3, final_decision="REJECT",
+        )
         return {
-            "evaluation_id": eval_id,
+            "evaluation_id": evaluation_id,
             "round": 3,
             "decision": "FAIL",
             "verdict": result["verdict"],
@@ -278,13 +354,14 @@ async def round3_answer(req: AnswerRequest):
             "message": "The candidate did not pass the behavioral round.",
         }
 
-    # PASS or BORDERLINE — mark complete (recommendation + committee happen at /final-decision)
-    update_state(status="COMPLETE", round=4)
-    if eval_id:
-        db.update_evaluation(eval_id, current_round=4)
+    # PASS or BORDERLINE — rounds are done; recommendation + committee run at /final-decision.
+    # The evaluation row's `status` column stays IN_PROGRESS (final_decision is not
+    # yet known); the response's own `status` field tells the client the
+    # answer phase is complete and it should call /final-decision next.
+    await _db(db.update_evaluation, evaluation_id, current_round=4)
 
     return {
-        "evaluation_id": eval_id,
+        "evaluation_id": evaluation_id,
         "round": 3,
         "decision": decision,
         "verdict": result["verdict"],
@@ -298,20 +375,23 @@ async def round3_answer(req: AnswerRequest):
 
 
 @router.get("/final-decision")
-async def final_decision():
+async def final_decision(
+    evaluation_id: int = Query(..., description="Evaluation ID returned by /start"),
+):
     """
     Get the final hiring decision.
-    - Runs HiringRecommendationAgent (Round 4)
-    - Runs HiringCommitteeAgent (Committee Evaluator)
+    - Runs the Hiring Recommendation Agent (Round 4)
+    - Runs the Committee Evaluator (Final)
     - Neither agent sees the resume or raw answers
-    - Returns final decision + full rationale
+    - Idempotent: replays the persisted committee verdict if already finalized
     """
-    state = get_state()
-    eval_id = state.get("evaluation_id")
+    evaluation = await _db(db.get_evaluation, evaluation_id)
+    if evaluation is None:
+        raise HTTPException(status_code=404, detail="Evaluation not found.")
 
-    if state["status"] == "REJECTED":
+    if evaluation["status"] == "REJECTED":
         return {
-            "evaluation_id": eval_id,
+            "evaluation_id": evaluation_id,
             "decision": "REJECT",
             "verdict": {"decision": "REJECT", "reason": "Candidate was rejected in an earlier round."},
             "verdict_text": "Candidate was rejected in an earlier round.",
@@ -319,65 +399,109 @@ async def final_decision():
             "status": "REJECTED",
         }
 
-    if state["status"] != "COMPLETE":
+    if evaluation["current_round"] < 4:
         raise HTTPException(
             status_code=400,
             detail="Interview is not complete. All rounds must be finished first.",
         )
 
-    # Check for cached decision
-    if state["final_decision"]:
-        return state["final_decision"]
+    # Idempotent replay: if already finalized, return the persisted result
+    # instead of re-running (and re-billing) the recommendation/committee agents.
+    if evaluation["status"] == "COMPLETE" and evaluation["final_decision"]:
+        committee_verdict = await _db(db.get_verdict_by_round, evaluation_id, 5)
+        if committee_verdict is not None:
+            recommendation_verdict = await _db(db.get_verdict_by_round, evaluation_id, 4)
+            return {
+                "evaluation_id": evaluation_id,
+                "decision": evaluation["final_decision"],
+                "verdict": committee_verdict["verdict_json"],
+                "verdict_text": committee_verdict["verdict_text"],
+                "rationale": committee_verdict["verdict_text"],
+                "recommendation": recommendation_verdict["verdict_json"] if recommendation_verdict else None,
+                "recommendation_text": recommendation_verdict["verdict_text"] if recommendation_verdict else None,
+                "overall_score": evaluation["overall_score"],
+                "confidence": committee_verdict["confidence"],
+                "status": "COMPLETE",
+            }
+
+    if await _db(db.get_verdict_by_round, evaluation_id, 4) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Final decision is already being processed for this evaluation.",
+        )
 
     # Run Round 4 — Hiring Recommendation Agent
-    logger.info("Running Hiring Recommendation Agent...")
-    rec_result = await run_hiring_recommendation()
-    interview_state["verdicts"]["round4"] = "verdicts/round4.txt"
+    logger.info("Running Hiring Recommendation Agent for evaluation %s...", evaluation_id)
+    try:
+        rec_result = await run_hiring_recommendation(evaluation_id)
+    except AgentOutputError as exc:
+        await _record_agent_output_error(evaluation_id, "recommendation", 4, exc)
+        raise HTTPException(
+            status_code=502,
+            detail="The recommendation agent returned an invalid response. Please retry.",
+        ) from exc
 
-    if eval_id:
-        db.save_verdict(
-            evaluation_id=eval_id,
+    try:
+        await _db(
+            db.save_verdict,
+            evaluation_id=evaluation_id,
             agent_type="recommendation",
             round_number=4,
             verdict_json=rec_result["verdict"],
             verdict_text=rec_result["verdict_text"],
-            score=rec_result.get("score"),
+            score=rec_result["score"],
             decision=rec_result["decision"],
-            confidence=rec_result.get("confidence"),
+            confidence=rec_result["confidence"],
         )
+    except db.DuplicateVerdictError as exc:
+        raise HTTPException(status_code=409, detail="Final decision is already being processed.") from exc
 
     # Run Committee Evaluator — ONLY sees agent outputs, NOT resume
-    logger.info("Running Committee Evaluator...")
-    committee_result = await run_hiring_committee()
+    logger.info("Running Committee Evaluator for evaluation %s...", evaluation_id)
+    try:
+        committee_result = await run_hiring_committee(evaluation_id)
+    except AgentOutputError as exc:
+        await _record_agent_output_error(evaluation_id, "committee", 5, exc)
+        raise HTTPException(
+            status_code=502,
+            detail="The committee evaluator returned an invalid response. Please retry.",
+        ) from exc
 
-    if eval_id:
-        db.save_verdict(
-            evaluation_id=eval_id,
+    try:
+        await _db(
+            db.save_verdict,
+            evaluation_id=evaluation_id,
             agent_type="committee",
             round_number=5,
             verdict_json=committee_result["verdict"],
             verdict_text=committee_result["verdict_text"],
             decision=committee_result["decision"],
-            confidence=committee_result.get("confidence"),
+            confidence=committee_result["confidence"],
         )
+    except db.DuplicateVerdictError as exc:
+        raise HTTPException(status_code=409, detail="Final decision is already being processed.") from exc
 
-    # Calculate overall score (average of all round scores)
-    all_verdicts = db.get_verdicts(eval_id) if eval_id else []
-    scores = [v["score"] for v in all_verdicts if v.get("score") is not None]
+    # Overall score is the average of the genuine round evaluations (screening,
+    # technical, behavioral) only — the recommendation's own score already
+    # synthesizes those three and would otherwise double-count in the average.
+    all_verdicts = await _db(db.get_verdicts, evaluation_id)
+    scores = [
+        v["score"] for v in all_verdicts
+        if v["round_number"] in (1, 2, 3) and v["score"] is not None
+    ]
     overall_score = round(sum(scores) / len(scores), 1) if scores else None
 
-    if eval_id:
-        db.update_evaluation(
-            eval_id,
-            status="COMPLETE",
-            current_round=5,
-            final_decision=committee_result["decision"],
-            overall_score=overall_score,
-        )
+    await _db(
+        db.update_evaluation,
+        evaluation_id,
+        status="COMPLETE",
+        current_round=5,
+        final_decision=committee_result["decision"],
+        overall_score=overall_score,
+    )
 
-    # Build response
-    final = {
-        "evaluation_id": eval_id,
+    return {
+        "evaluation_id": evaluation_id,
         "decision": committee_result["decision"],
         "verdict": committee_result["verdict"],
         "verdict_text": committee_result["verdict_text"],
@@ -385,12 +509,9 @@ async def final_decision():
         "recommendation": rec_result["verdict"],
         "recommendation_text": rec_result["verdict_text"],
         "overall_score": overall_score,
-        "confidence": committee_result.get("confidence", 0.8),
+        "confidence": committee_result["confidence"],
         "status": "COMPLETE",
     }
-    interview_state["final_decision"] = final
-
-    return final
 
 
 # ── GET /roles ───────────────────────────────────────────────────────
@@ -406,19 +527,26 @@ async def get_available_roles():
 
 
 @router.get("/status")
-async def get_interview_status():
-    """Return current interview state (for frontend polling / debugging)."""
-    state = get_state()
+async def get_interview_status(
+    evaluation_id: int = Query(..., description="Evaluation ID returned by /start"),
+):
+    """Return the current status of one evaluation, derived from the database."""
+    evaluation = await _db(db.get_evaluation_public, evaluation_id)
+    if evaluation is None:
+        raise HTTPException(status_code=404, detail="Evaluation not found.")
+
+    verdicts = await _db(db.get_verdicts, evaluation_id)
+    completed_rounds = {
+        v["round_number"] for v in verdicts if v["decision"] != "INVALID_OUTPUT"
+    }
+
     return {
-        "evaluation_id": state.get("evaluation_id"),
-        "round": state["round"],
-        "status": state["status"],
-        "role": state["role"],
-        "candidate_name": state.get("candidate_name", ""),
-        "has_resume": bool(state["resume"]),
-        "verdicts": {
-            k: v is not None for k, v in state["verdicts"].items()
-        },
+        "evaluation_id": evaluation_id,
+        "round": evaluation["current_round"],
+        "status": evaluation["status"],
+        "role": evaluation["role"],
+        "candidate_name": evaluation.get("candidate_name", ""),
+        "verdicts": {f"round{n}": n in completed_rounds for n in (1, 2, 3, 4, 5)},
     }
 
 
@@ -431,14 +559,16 @@ async def list_evaluations(
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
-    """List all evaluations with optional filtering."""
-    evaluations = db.list_evaluations(status=status, limit=limit, offset=offset)
-    total = db.count_evaluations(status=status)
+    """List evaluations with optional filtering (resume text is never included)."""
+    evaluations = await _db(db.list_evaluations, status=status, limit=limit, offset=offset)
+    total = await _db(db.count_evaluations, status=status)
 
-    # Enrich with verdict summaries
+    # Batch-fetch verdict summaries in a single query instead of one per evaluation.
+    summaries = await _db(db.get_verdict_summaries, [ev["id"] for ev in evaluations])
+
     enriched = []
     for ev in evaluations:
-        verdicts = db.get_verdicts(ev["id"])
+        verdicts = summaries.get(ev["id"], [])
         ev["verdict_count"] = len(verdicts)
         ev["verdicts_summary"] = [
             {
@@ -461,12 +591,12 @@ async def list_evaluations(
 
 @router.get("/evaluations/{eval_id}")
 async def get_evaluation(eval_id: int):
-    """Get full evaluation details including all verdicts."""
-    evaluation = db.get_evaluation(eval_id)
+    """Get evaluation summary + all verdicts. Resume text is never included here."""
+    evaluation = await _db(db.get_evaluation_public, eval_id)
     if not evaluation:
         raise HTTPException(status_code=404, detail="Evaluation not found.")
 
-    verdicts = db.get_verdicts(eval_id)
+    verdicts = await _db(db.get_verdicts, eval_id)
 
     return {
         "evaluation": evaluation,
@@ -476,25 +606,29 @@ async def get_evaluation(eval_id: int):
 
 @router.get("/evaluations/{eval_id}/report")
 async def get_evaluation_report(eval_id: int):
-    """Get a structured evaluation report."""
-    evaluation = db.get_evaluation(eval_id)
+    """Get a structured evaluation report. Resume text is never included here."""
+    evaluation = await _db(db.get_evaluation_public, eval_id)
     if not evaluation:
         raise HTTPException(status_code=404, detail="Evaluation not found.")
 
-    verdicts = db.get_verdicts(eval_id)
+    verdicts = await _db(db.get_verdicts, eval_id)
 
-    # Build pipeline stages
+    # Build pipeline stages — prefer the canonical verdict over any recorded
+    # INVALID_OUTPUT failure for the same round, so a retried failure doesn't
+    # hide the eventual successful result.
     stages = []
     for ps in PIPELINE_STAGES:
-        verdict = next(
-            (v for v in verdicts if v["round_number"] == ps["stage"]),
-            None,
-        )
+        stage_verdicts = [v for v in verdicts if v["round_number"] == ps["stage"]]
+        verdict = next((v for v in stage_verdicts if v["decision"] != "INVALID_OUTPUT"), None)
+        failed_output = verdict is None and any(v["decision"] == "INVALID_OUTPUT" for v in stage_verdicts)
+
         stage_status = "complete" if verdict else "pending"
         if evaluation["current_round"] == ps["stage"] and evaluation["status"] == "IN_PROGRESS":
             stage_status = "active"
         if verdict and verdict["decision"] in ("FAIL", "REJECT"):
             stage_status = "failed"
+        if failed_output:
+            stage_status = "agent_output_invalid"
 
         stages.append({
             "stage": ps["stage"],
@@ -522,19 +656,18 @@ async def get_evaluation_report(eval_id: int):
 
 @router.get("/evaluations/{eval_id}/pipeline")
 async def get_pipeline_status(eval_id: int):
-    """Get pipeline status for an evaluation."""
-    evaluation = db.get_evaluation(eval_id)
+    """Get pipeline status for an evaluation. Resume text is never included here."""
+    evaluation = await _db(db.get_evaluation_public, eval_id)
     if not evaluation:
         raise HTTPException(status_code=404, detail="Evaluation not found.")
 
-    verdicts = db.get_verdicts(eval_id)
+    verdicts = await _db(db.get_verdicts, eval_id)
 
     stages = []
     for ps in PIPELINE_STAGES:
-        verdict = next(
-            (v for v in verdicts if v["round_number"] == ps["stage"]),
-            None,
-        )
+        stage_verdicts = [v for v in verdicts if v["round_number"] == ps["stage"]]
+        verdict = next((v for v in stage_verdicts if v["decision"] != "INVALID_OUTPUT"), None)
+
         stage_status = "complete" if verdict else "pending"
         if evaluation["current_round"] == ps["stage"] and evaluation["status"] == "IN_PROGRESS":
             stage_status = "active"
@@ -562,5 +695,5 @@ async def get_pipeline_status(eval_id: int):
 @router.get("/dashboard/stats")
 async def get_dashboard_stats():
     """Get aggregated dashboard statistics."""
-    stats = db.get_dashboard_stats()
-    return stats
+    return await _db(db.get_dashboard_stats)
+

@@ -47,7 +47,7 @@ class EvaluationStatus(str, Enum):
 
 class ScreeningVerdict(BaseModel):
     """Output from the Resume Screening Agent."""
-    decision: str = Field(description="PASS, BORDERLINE, or FAIL")
+    decision: ScreeningDecision = Field(description="PASS, BORDERLINE, or FAIL")
     score: float = Field(ge=0, le=10, description="Score from 0 to 10")
     strengths: list[str] = Field(description="Key strengths identified")
     weaknesses: list[str] = Field(description="Key weaknesses identified")
@@ -56,7 +56,7 @@ class ScreeningVerdict(BaseModel):
     skills_extracted: list[str] = Field(default_factory=list, description="Technical skills extracted from resume")
     experience_years: Optional[int] = Field(default=None, description="Estimated years of experience")
     recommended_questions: list[str] = Field(description="2-3 questions for the next round")
-    confidence: float = Field(ge=0, le=1, default=0.8, description="Confidence in this assessment (0-1)")
+    confidence: float = Field(ge=0, le=1, description="Confidence in this assessment (0-1); the agent must assert this explicitly")
 
 
 class QuestionEvaluation(BaseModel):
@@ -70,19 +70,19 @@ class QuestionEvaluation(BaseModel):
 
 class TechnicalVerdict(BaseModel):
     """Output from the Technical Interview Agent."""
-    decision: str = Field(description="PASS or FAIL")
+    decision: RoundDecision = Field(description="PASS or FAIL")
     score: float = Field(ge=0, le=10, description="Overall technical score 0-10")
     question_evaluations: list[QuestionEvaluation] = Field(description="Per-question evaluations")
     strengths: list[str] = Field(description="Technical strengths demonstrated")
     weaknesses: list[str] = Field(description="Technical weaknesses identified")
     reasoning: str = Field(description="Detailed technical evaluation")
     coding_quality: Optional[float] = Field(default=None, ge=0, le=10, description="Code quality if applicable")
-    confidence: float = Field(ge=0, le=1, default=0.8, description="Confidence in this assessment (0-1)")
+    confidence: float = Field(ge=0, le=1, description="Confidence in this assessment (0-1); the agent must assert this explicitly")
 
 
 class BehavioralVerdict(BaseModel):
     """Output from the Behavioral Interview Agent."""
-    decision: str = Field(description="PASS, BORDERLINE, or FAIL")
+    decision: BehavioralDecision = Field(description="PASS, BORDERLINE, or FAIL")
     score: float = Field(ge=0, le=10, description="Overall behavioral score 0-10")
     star_evaluation: str = Field(description="Assessment of STAR response quality")
     leadership: float = Field(ge=0, le=10, description="Leadership score 0-10")
@@ -94,19 +94,19 @@ class BehavioralVerdict(BaseModel):
     strengths: list[str] = Field(description="Behavioral strengths")
     weaknesses: list[str] = Field(description="Behavioral weaknesses")
     reasoning: str = Field(description="Detailed behavioral evaluation")
-    confidence: float = Field(ge=0, le=1, default=0.8, description="Confidence in this assessment (0-1)")
+    confidence: float = Field(ge=0, le=1, description="Confidence in this assessment (0-1); the agent must assert this explicitly")
 
 
 class HiringRecommendation(BaseModel):
     """Output from the Hiring Recommendation Agent."""
-    decision: str = Field(description="HIRE, HOLD, or REJECT")
+    decision: HiringDecision = Field(description="HIRE, HOLD, or REJECT")
     score: float = Field(ge=0, le=10, description="Overall recommendation score 0-10")
     detailed_recommendation: str = Field(description="Comprehensive recommendation narrative")
     risks: list[str] = Field(description="Identified hiring risks")
     positives: list[str] = Field(description="Key positives supporting hire")
     suggested_role: str = Field(description="Suggested role/level for the candidate")
     growth_areas: list[str] = Field(default_factory=list, description="Areas for development")
-    confidence: float = Field(ge=0, le=1, default=0.8, description="Confidence in this recommendation (0-1)")
+    confidence: float = Field(ge=0, le=1, description="Confidence in this recommendation (0-1); the agent must assert this explicitly")
 
 
 class RoundSummary(BaseModel):
@@ -119,8 +119,8 @@ class RoundSummary(BaseModel):
 
 class CommitteeDecision(BaseModel):
     """Output from the Committee Evaluator — the final decision."""
-    decision: str = Field(description="HIRE, HOLD, or REJECT")
-    confidence: float = Field(ge=0, le=1, description="Confidence in this decision (0-1)")
+    decision: HiringDecision = Field(description="HIRE, HOLD, or REJECT")
+    confidence: float = Field(ge=0, le=1, description="Confidence in this decision (0-1); the agent must assert this explicitly")
     executive_summary: str = Field(description="One-paragraph executive summary")
     round_summaries: list[RoundSummary] = Field(description="Summary of each evaluation round")
     overall_assessment: str = Field(description="Detailed overall assessment")
@@ -134,13 +134,13 @@ class CommitteeDecision(BaseModel):
 
 
 class StartRequest(BaseModel):
-    resume: str = Field(min_length=1, description="Candidate resume text")
-    role: str = Field(min_length=1, description="Target role")
-    candidate_name: str = Field(default="", description="Candidate name (optional)")
+    resume: str = Field(min_length=1, max_length=20_000, description="Candidate resume text")
+    role: str = Field(min_length=1, max_length=200, description="Target role")
+    candidate_name: str = Field(default="", max_length=200, description="Candidate name (optional)")
 
 
 class AnswerRequest(BaseModel):
-    answer: str = Field(min_length=1, description="Candidate's answer")
+    answer: str = Field(min_length=1, max_length=10_000, description="Candidate's answer")
 
 
 # ── API Response Models ────────────────────────────────────────────

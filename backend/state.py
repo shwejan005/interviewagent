@@ -1,21 +1,14 @@
 """
-SESSION CONTEXT — In-memory interview state.
+Shared constants and per-evaluation decision-memory paths.
 
-This is short-lived, mutable, session-scoped state that tracks
-the current interview progress. In production this would be
-backed by Redis or a session store; in-memory is correct for
-this scope.
-
-The pipeline now has 5 stages:
-  Round 1: Resume Screening
-  Round 2: Technical Interview
-  Round 3: Behavioral Interview
-  Round 4: Hiring Recommendation (auto — no candidate input)
-  Final:   Committee Decision (auto — no candidate input)
+There is no process-global interview session anymore. Every evaluation is
+identified by its database row ID (`evaluation_id`), and the database is the
+single source of truth for status, current round, and round history. This
+avoids the class of bugs where a shared in-memory dict is read/written by
+concurrent requests for different candidates.
 """
 
 import os
-import shutil
 
 VERDICTS_DIR = os.path.join(os.path.dirname(__file__), "verdicts")
 
@@ -45,57 +38,15 @@ PIPELINE_STAGES = [
 ]
 
 
-def _empty_state() -> dict:
-    return {
-        "evaluation_id": None,
-        "round": 1,
-        "status": "ONGOING",  # ONGOING | REJECTED | COMPLETE
-        "resume": "",
-        "role": "",
-        "candidate_name": "",
-        "answers": {
-            "round2": [],
-            "round3": [],
-        },
-        "verdicts": {
-            "round1": None,
-            "round2": None,
-            "round3": None,
-            "round4": None,  # Hiring Recommendation
-        },
-        "questions": {
-            "round2": None,
-            "round3": None,
-        },
-        "final_decision": None,
-    }
+def eval_verdicts_dir(evaluation_id: int) -> str:
+    """Return the decision-memory directory for one evaluation.
 
-
-# Global in-memory state for the current interview session
-interview_state: dict = _empty_state()
-
-
-def reset_state() -> None:
-    """Reset session context and clear verdict files for a new interview."""
-    global interview_state
-    interview_state = _empty_state()
-
-    # Clear and recreate verdicts directory (DECISION MEMORY)
-    if os.path.exists(VERDICTS_DIR):
-        shutil.rmtree(VERDICTS_DIR)
-    os.makedirs(VERDICTS_DIR, exist_ok=True)
-
-
-def get_state() -> dict:
-    """Return the current interview state."""
-    return interview_state
-
-
-def update_state(**kwargs) -> None:
-    """Update specific keys in the interview state."""
-    for key, value in kwargs.items():
-        if key in interview_state:
-            interview_state[key] = value
+    Each evaluation gets its own subdirectory keyed by ID, so concurrent
+    evaluations can never read or overwrite each other's verdict files.
+    """
+    path = os.path.join(VERDICTS_DIR, str(evaluation_id))
+    os.makedirs(path, exist_ok=True)
+    return path
 
 
 # Ensure verdicts directory exists on import

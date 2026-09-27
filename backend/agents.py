@@ -7,10 +7,21 @@ only the context it is explicitly given (AGENT CONTEXT principle).
 Pipeline: Screening → Technical → Behavioral → Hiring Recommendation → Committee
 """
 
-from crewai import Agent
+import os
+
+from crewai import LLM, Agent
 
 # LLM model — Gemini 2.5 Flash via LiteLLM provider prefix
 LLM_MODEL = "gemini/gemini-2.5-flash"
+
+# LLM model — local Copilot proxy (OpenAI-compatible), used instead of Gemini above.
+# Proxy is served by a VS Code extension at http://127.0.0.1:9999/v1/chat/completions.
+LLM_MODEL = LLM(
+    model="openai/gpt-5.6-luna",
+    base_url="http://127.0.0.1:9999/v1",
+    api_key=os.getenv("COPILOT_PROXY_API_KEY", "not-needed"),
+    custom_openai=True,
+)
 
 
 def create_screening_agent() -> Agent:

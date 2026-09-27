@@ -25,16 +25,19 @@ import logging
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from starlette.requests import Request
 
-from routes import router
-from database import init_db
-
-# Load environment variables from .env file
+# Must run before importing routes/database — database.py reads DATABASE_URL
+# at import time, so loading .env after that import would silently miss it.
 load_dotenv()
+
+from fastapi import FastAPI  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
+from starlette.requests import Request  # noqa: E402
+
+from routes import router  # noqa: E402
+from database import init_db  # noqa: E402
+from rate_limit import InMemoryRateLimitMiddleware  # noqa: E402
 
 # Configure logging
 logging.basicConfig(
@@ -53,11 +56,47 @@ async def lifespan(app: FastAPI):
     """Application startup and shutdown events."""
     # Startup
     logger.info("Initializing Evalia backend...")
+    if not os.getenv("GEMINI_API_KEY"):
+        logger.warning(
+            "GEMINI_API_KEY is not set. Agent calls will fail until it is configured."
+        )
+    _validate_startup_config()
     init_db()
     logger.info("Database initialized.")
     yield
     # Shutdown
     logger.info("Shutting down Evalia backend.")
+
+
+def _validate_startup_config() -> None:
+    """Fail loudly (but not fatally) on configuration combinations that are
+    silently insecure or inappropriate for a real deployment. This does not
+    replace a full settings/validation layer (PRODUCTION_ROADMAP.md P1/T010
+    remains open) — it catches the cheapest, highest-value mistakes.
+    """
+    app_env = os.getenv("APP_ENV", "development").strip().lower()
+
+    if "*" in cors_origins:
+        logger.warning(
+            "CORS_ORIGINS includes '*' while allow_credentials=True. Browsers reject "
+            "this combination outright, and it is not narrowed to trusted origins. "
+            "Set CORS_ORIGINS to an explicit comma-separated allowlist."
+        )
+
+    if app_env == "production" and not os.getenv("DATABASE_URL", "").strip():
+        logger.warning(
+            "APP_ENV=production but DATABASE_URL is not set — falling back to a local "
+            "SQLite file. SQLite has not been validated for concurrent multi-worker "
+            "production use; set DATABASE_URL to a managed PostgreSQL instance."
+        )
+
+    if app_env == "production" and not os.getenv("GEMINI_API_KEY"):
+        logger.warning(
+            "APP_ENV=production but no GEMINI_API_KEY is set. Confirm agents.py is "
+            "intentionally pointed at a non-Gemini provider (see LLM_MODEL in agents.py) "
+            "before deploying — a hardcoded local-proxy override left in place would "
+            "silently break in any environment where that proxy isn't reachable."
+        )
 
 
 app = FastAPI(
@@ -69,6 +108,27 @@ app = FastAPI(
     ),
     version="2.0.0",
     lifespan=lifespan,
+)
+
+
+# ── Rate limiting ────────────────────────────────────────────────────
+# Basic single-process abuse protection (e.g. a script hammering /start,
+# which triggers a paid LLM call per request). Set RATE_LIMIT_REQUESTS=0 to
+# disable. See rate_limit.py for scope and honest limitations.
+#
+# Registered BEFORE CORSMiddleware below: Starlette builds its middleware
+# stack so the LAST-registered middleware ends up outermost. CORS must be
+# outermost so that a response short-circuited by the rate limiter (e.g. a
+# 429) still gets CORS headers attached — otherwise a browser client sees
+# an opaque CORS failure instead of the actual 429 + Retry-After response.
+
+RATE_LIMIT_REQUESTS = int(os.getenv("RATE_LIMIT_REQUESTS", "60"))
+RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
+
+app.add_middleware(
+    InMemoryRateLimitMiddleware,
+    requests_per_window=RATE_LIMIT_REQUESTS,
+    window_seconds=RATE_LIMIT_WINDOW_SECONDS,
 )
 
 
@@ -106,9 +166,11 @@ async def global_exception_handler(request: Request, exc: Exception):
             },
         )
 
+    # Never echo raw exception text to the client — it can leak internal
+    # paths, queries, or provider error details. Full details are logged above.
     return JSONResponse(
         status_code=500,
-        content={"detail": f"Server error: {error_msg}"},
+        content={"detail": "An unexpected server error occurred. Please try again."},
     )
 
 
