@@ -1,147 +1,139 @@
 # Evalia — Multi-Agent Interview Evaluation System
 
-Evalia is an enterprise-grade candidate evaluation pipeline powered by **5 specialized CrewAI agents** using **Google Gemini AI**. Each stage produces a structured, Pydantic-validated verdict, culminating in an independent Hiring Committee decision isolated from raw resume bias.
+Evalia is a five-stage candidate evaluation pipeline built on **CrewAI**:
+resume screening, a technical round, a behavioral round, a synthesized
+hiring recommendation, and a final committee decision that is deliberately
+isolated from the candidate's resume and raw answers to reduce
+resume-based bias. Every agent's output is validated against a strict
+Pydantic schema before it can become a business decision — malformed or
+invalid LLM output is recorded as a distinct execution failure, never
+silently turned into a PASS/FAIL/HIRE/REJECT verdict.
 
----
+> **Full documentation lives in [`docs/`](docs/README.md).** This README is
+> a short entry point; `docs/` has the complete, source-verified detail on
+> architecture, the API contract, the database schema, setup, testing, and
+> — importantly — an honest account of what is and isn't production-ready
+> yet ([`docs/GAP_ANALYSIS.md`](docs/GAP_ANALYSIS.md) and
+> [`docs/SECURITY.md`](docs/SECURITY.md)).
 
-## Architecture
+## What this is (and isn't)
 
-### Memory Architecture (3 Types)
+This is a working prototype with real correctness/safety fixes applied to
+its core evaluation pipeline (evaluation-scoped state, strict output
+validation, PII-safe API responses, idempotent finalization — see
+[`docs/CHANGELOG.md`](docs/CHANGELOG.md)) and a real automated test suite
+(38 backend tests, CI-enforced). **It has no authentication, no
+multi-tenancy, and no durable job queue.** Do not expose it to the public
+internet without adding an access-control layer in front of it. See
+[`docs/SECURITY.md`](docs/SECURITY.md) for the full, specific list of what
+is and isn't protected.
 
-| Type | Storage | Purpose | Mutability |
-|------|---------|---------|------------|
-| **Session Context** | In-memory (`state.py`) | Current interview session state | Mutable, session-scoped |
-| **Decision Memory** | SQLite (`database.py`) + JSON files (`verdicts/`) | Persistent agent verdicts & evaluation logs | Immutable audit trail |
-| **Agent Context** | Explicit passing (`crew_runner.py`) | Scoped context passed to each agent | Read-only, deterministic |
+Two other documents at the repository root describe **planning**, not
+current state: [`CODEBASE_REVIEW.md`](CODEBASE_REVIEW.md) (a prior
+evidence-based review of bugs and gaps) and
+[`PRODUCTION_ROADMAP.md`](PRODUCTION_ROADMAP.md) (a proposed multi-phase
+plan to close them). [`docs/GAP_ANALYSIS.md`](docs/GAP_ANALYSIS.md) is the
+up-to-date, task-by-task comparison of that roadmap against what has
+actually been implemented.
 
-### Pipeline Flow
+## Architecture, in brief
 
 ```
-Resume Upload → Round 1 (Screening) → Round 2 (Technical) → Round 3 (Behavioral) → Round 4 (Recommendation) → Committee Decision
-                    ↓ FAIL: REJECT        ↓ FAIL: REJECT        ↓ FAIL: REJECT
+Resume → Screening Agent → Technical Agent → Behavioral Agent → Recommendation Agent → Committee Evaluator
+              ↓ FAIL: REJECT      ↓ FAIL: REJECT      ↓ FAIL: REJECT
 ```
 
-### Context Flow (Bias Isolation)
+The Recommendation and Committee agents receive **only** prior agents'
+structured verdicts — never the resume or raw candidate answers — by
+explicit, function-argument-level context passing (no shared/global state).
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full request
+lifecycle, the LLM provider configuration (this repository currently points
+at a local OpenAI-compatible proxy, not Gemini, by default — see that doc
+before assuming otherwise), and exactly what this design does and doesn't
+protect against.
 
-| Agent | Resume | Round 1 | Round 2 | Round 3 | Round 4 |
-|-------|--------|---------|---------|---------|---------|
-| Screening Agent | YES | — | — | — | — |
-| Technical Agent | YES | YES | — | — | — |
-| Behavioral Agent | YES | YES | YES | — | — |
-| Recommendation Agent | NO | YES | YES | YES | — |
-| Committee Evaluator | NO | YES | YES | YES | YES |
+- **Frontend:** Next.js 14 (App Router) + Tailwind CSS
+- **Backend:** FastAPI (Python 3.11) + Pydantic v2
+- **Agent framework:** CrewAI
+- **Persistence:** PostgreSQL (when `DATABASE_URL` is set) or local SQLite
+  (fallback) — see [`docs/DATA_MODEL.md`](docs/DATA_MODEL.md)
 
-> **Bias Isolation**: The Committee Evaluator receives ONLY peer agent verdicts — raw resumes and candidate details are explicitly excluded to ensure decisions judge demonstrated interview evidence alone.
-
----
-
-## Tech Stack
-
-- **Frontend**: Next.js 14 (App Router) + Tailwind CSS + Framer Motion
-- **Backend**: FastAPI (Python 3.11+) + Pydantic v2
-- **Agent Framework**: CrewAI
-- **LLM Engine**: Google Gemini 2.5 Flash
-- **Persistence**: SQLite (`database.py`) + structured JSON verdict logs (`verdicts/`)
-
----
-
-## Project Structure
+## Project structure
 
 ```
 interviewagent/
 ├── backend/
-│   ├── main.py              # FastAPI entry point & CORS configuration
-│   ├── routes.py            # RESTful API endpoints for pipeline & dashboards
-│   ├── database.py          # SQLite persistence & query layer
-│   ├── models.py            # Pydantic schemas for structured JSON output
-│   ├── agents.py            # 5 CrewAI agent definitions
-│   ├── tasks.py             # Task prompts enforcing JSON output schemas
-│   ├── crew_runner.py       # Multi-agent orchestrator & rate-limit retries
-│   ├── state.py             # Session state & 5-stage pipeline definitions
-│   ├── verdicts/            # Runtime decision memory (JSON & text)
-│   └── requirements.txt
+│   ├── main.py              # FastAPI entry point, CORS, rate limiting, startup validation
+│   ├── routes.py            # API endpoints — orchestration only, no decision logic
+│   ├── database.py          # PostgreSQL/SQLite persistence layer
+│   ├── models.py            # Pydantic schemas (strict enums, bounded fields)
+│   ├── agents.py            # 5 CrewAI agent definitions + LLM provider config
+│   ├── tasks.py             # Per-round prompt/task definitions
+│   ├── crew_runner.py       # Orchestration, output parsing/validation
+│   ├── state.py             # Static constants + per-evaluation verdict paths
+│   ├── rate_limit.py        # Basic in-memory per-IP rate limiting middleware
+│   ├── tests/                # pytest suite — see docs/TESTING.md
+│   ├── verdicts/             # Per-evaluation decision-memory files (gitignored)
+│   └── requirements.txt / requirements-dev.txt
 ├── frontend/
-│   ├── app/
-│   │   ├── layout.tsx       # Root layout & SEO metadata
-│   │   ├── page.tsx         # Sleek 12-section overview page
-│   │   ├── interview/       # Candidate setup & resume submission
-│   │   ├── round/[id]/      # Technical & behavioral interview rounds
-│   │   ├── result/          # Structured evaluation report
-│   │   └── dashboard/       # Recruiter dashboard & evaluation detail views
-│   ├── package.json
-│   ├── next.config.js       # API proxy configuration to FastAPI
-│   └── tailwind.config.js
-└── README.md
+│   └── app/                  # interview/, round/[id]/, result/, dashboard/, etc.
+├── docs/                     # Full documentation set — start at docs/README.md
+└── .github/workflows/ci.yml  # Backend tests + frontend type-check on every PR
 ```
 
----
+## Quick start
 
-## Setup & Run Instructions
+Full instructions (including environment variables, Windows-specific
+notes, and known environment gotchas) are in
+[`docs/SETUP.md`](docs/SETUP.md). Short version:
 
-### Prerequisites
-
-- **Python 3.11+**
-- **Node.js 18+**
-- A **Google Gemini API Key** (configured in `backend/.env`)
-
----
-
-### 1. Start Backend (FastAPI)
-
-```bash
+```powershell
+# Backend
 cd backend
-
-# Create virtual environment (optional but recommended)
-python3 -m venv venv
-source venv/bin/activate
-
-# Install Python dependencies
 pip install -r requirements.txt
-
-# Start the FastAPI server (runs on port 8000)
+# copy ../.env.example to ../.env and configure GEMINI_API_KEY or your LLM provider
 uvicorn main:app --reload --port 8000
-```
 
----
-
-### 2. Start Frontend (Next.js)
-
-```bash
+# Frontend (separate terminal)
 cd frontend
-
-# Install Node dependencies
 npm install
-
-# Start Next.js development server (runs on port 3000)
 npm run dev
 ```
 
----
+Open `http://localhost:3000`.
 
-### 3. Open in Browser
+## Running the tests
 
-Navigate to **[http://localhost:3000](http://localhost:3000)** in your browser.
+```powershell
+cd backend
+pip install -r requirements.txt -r requirements-dev.txt
+pytest -v
 
-> Note: The Next.js dev server automatically proxies `/api/*` requests to the FastAPI backend running at `http://127.0.0.1:8000`.
+cd ../frontend
+npm run typecheck
+```
 
----
+Both are run on every push/PR via `.github/workflows/ci.yml`. See
+[`docs/TESTING.md`](docs/TESTING.md) for what is and isn't covered.
 
-## REST API Endpoints
+## API summary
 
-| Method | Endpoint | Description |
+See [`docs/API_REFERENCE.md`](docs/API_REFERENCE.md) for the complete,
+field-by-field contract (request/response shapes, every status code and
+when it occurs). Endpoints at a glance:
+
+| Method | Endpoint | Purpose |
 |--------|----------|-------------|
-| `POST` | `/start` | Reset session, create evaluation, run Screening Agent |
-| `POST` | `/round/2/answer` | Submit technical answer, run Technical Agent |
-| `POST` | `/round/3/answer` | Submit behavioral answer, run Behavioral Agent |
-| `GET` | `/final-decision` | Run Recommendation Agent & Committee Evaluator |
-| `GET` | `/evaluations` | List all evaluations with filtering & pagination |
-| `GET` | `/evaluations/{id}` | Get evaluation detail with all agent verdicts |
-| `GET` | `/evaluations/{id}/report` | Get full structured evaluation report |
-| `GET` | `/dashboard/stats` | Get aggregated stats (total, hired, hire rate, avg score) |
-| `GET` | `/roles` | List available target engineering roles |
-| `GET` | `/status` | Check current session status |
-
----
+| `POST` | `/start` | Create an evaluation, run screening (+ generate technical questions on PASS) |
+| `POST` | `/round/2/answer` | Submit + evaluate the technical answer |
+| `POST` | `/round/3/answer` | Submit + evaluate the behavioral answer |
+| `GET`  | `/final-decision` | Run recommendation + committee agents; idempotent |
+| `GET`  | `/status` | Lightweight per-evaluation status poll |
+| `GET`  | `/roles` | List selectable target roles |
+| `GET`  | `/evaluations` | List evaluations (PII-safe, paginated) |
+| `GET`  | `/evaluations/{id}` | Full verdict history for one evaluation (PII-safe) |
+| `GET`  | `/evaluations/{id}/report` | Structured per-stage pipeline report |
+| `GET`  | `/dashboard/stats` | Aggregate counters across all evaluations |
 
 ## License
 
