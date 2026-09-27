@@ -33,8 +33,14 @@ backend/verdicts/*.json
 
 .next
 node_modules
+*.tsbuildinfo
 /.DS_Store
 .neon
+
+# Test/coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
 
 # Personal files
 resume.tex
