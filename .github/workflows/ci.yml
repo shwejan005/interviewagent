@@ -1,0 +1,72 @@
+name: CI
+
+# Runs the backend regression suite (no live LLM calls — see docs/TESTING.md)
+# and a frontend TypeScript type-check on every push/PR. This is the first
+# CI workflow for this repository (PRODUCTION_ROADMAP.md P0/T003).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend-tests:
+    name: Backend tests (pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run tests
+        # No GEMINI_API_KEY / LLM proxy is configured or required: every test
+        # monkeypatches crew_runner's agent-calling functions instead of
+        # calling a live model. See docs/TESTING.md.
+        run: pytest -v --cov=. --cov-report=term-missing
+
+  frontend-typecheck:
+    name: Frontend type-check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        # `next build` is intentionally not run in CI: it requires outbound
+        # network access to fetch Google Fonts at build time (next/font/google)
+        # and will fail in network-restricted runners for a reason unrelated
+        # to code correctness. `npm run typecheck` covers the same
+        # type-safety contract without that dependency. See docs/TESTING.md.
+        #
+        # Note: use `npm run typecheck`, not a bare `npx tsc`. In this
+        # project's environment, `npx tsc` has been observed to ignore the
+        # locally installed `typescript` devDependency and instead try to
+        # install an unrelated npm package literally named "tsc". `npm run`
+        # correctly resolves the local ./node_modules/.bin/tsc first.
+        run: npm run typecheck
