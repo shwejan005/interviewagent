@@ -25,7 +25,7 @@ type FinalResult = {
   status: string;
 } | null;
 
-function VerdictCard({ title, agent, verdict, roundNumber }: { title: string; agent: string; verdict: any; roundNumber: number }) {
+function VerdictCard({ title, agent, verdict, roundNumber }: Readonly<{ title: string; agent: string; verdict: any; roundNumber: number }>) {
   const [expanded, setExpanded] = useState(false);
   const isJson = typeof verdict === "object" && verdict !== null;
   const decision = isJson ? verdict.decision : "";
@@ -39,9 +39,11 @@ function VerdictCard({ title, agent, verdict, roundNumber }: { title: string; ag
 
   return (
     <div className="card-surface" style={{ padding: 0, overflow: "hidden" }}>
-      <div
-        style={{ padding: "16px 20px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}
+      <button
+        type="button"
+        style={{ width: "100%", padding: "16px 20px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", background: "none", border: "none", textAlign: "left", font: "inherit", color: "inherit" }}
         onClick={() => setExpanded(!expanded)}
+        aria-expanded={expanded}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-primary)" }}>
@@ -61,7 +63,7 @@ function VerdictCard({ title, agent, verdict, roundNumber }: { title: string; ag
             {expanded ? "[ - ]" : "[ + ]"}
           </span>
         </div>
-      </div>
+      </button>
 
       {expanded && (
         <div style={{ padding: 20, borderTop: "1px solid var(--color-border)", display: "flex", flexDirection: "column", gap: 16 }}>
@@ -102,7 +104,7 @@ function VerdictCard({ title, agent, verdict, roundNumber }: { title: string; ag
                 <div>
                   <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-success)", marginBottom: 6 }}>STRENGTHS</div>
                   {strengths.map((s: string, i: number) => (
-                    <div key={i} style={{ fontSize: 12, color: "var(--color-text-muted)", lineHeight: 1.6, marginBottom: 4 }}>
+                    <div key={`${i}-${s.slice(0, 40)}`} style={{ fontSize: 12, color: "var(--color-text-muted)", lineHeight: 1.6, marginBottom: 4 }}>
                       • {s}
                     </div>
                   ))}
@@ -112,7 +114,7 @@ function VerdictCard({ title, agent, verdict, roundNumber }: { title: string; ag
                 <div>
                   <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-error)", marginBottom: 6 }}>WEAKNESSES</div>
                   {weaknesses.map((w: string, i: number) => (
-                    <div key={i} style={{ fontSize: 12, color: "var(--color-text-muted)", lineHeight: 1.6, marginBottom: 4 }}>
+                    <div key={`${i}-${w.slice(0, 40)}`} style={{ fontSize: 12, color: "var(--color-text-muted)", lineHeight: 1.6, marginBottom: 4 }}>
                       • {w}
                     </div>
                   ))}
@@ -174,8 +176,14 @@ export default function ResultPage() {
   const fetchFinalDecision = async () => {
     setLoading(true);
     setError(null);
+    const evaluationId = sessionStorage.getItem("evaluation_id");
+    if (!evaluationId) {
+      setError("No evaluation found. Please start from the beginning.");
+      setLoading(false);
+      return;
+    }
     try {
-      const res = await fetch(`${API_BASE}/final-decision`);
+      const res = await fetch(`${API_BASE}/final-decision?evaluation_id=${encodeURIComponent(evaluationId)}`);
       if (!res.ok) {
         let detail = "Failed to fetch final decision.";
         try { const data = await res.json(); detail = data.detail || detail; } catch {}
@@ -312,7 +320,7 @@ export default function ResultPage() {
               HIRING RISKS
             </div>
             {committeeVerdict.hiring_risks.map((risk: string, i: number) => (
-              <div key={i} style={{ fontSize: 13, color: "var(--color-text-muted)", lineHeight: 1.6, marginBottom: 4 }}>
+              <div key={`${i}-${risk.slice(0, 40)}`} style={{ fontSize: 13, color: "var(--color-text-muted)", lineHeight: 1.6, marginBottom: 4 }}>
                 • {risk}
               </div>
             ))}

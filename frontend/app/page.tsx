@@ -50,14 +50,14 @@ const PIPELINE_STEPS = [
 const STATS = [
   { value: "5", label: "Autonomous Agents" },
   { value: "4", label: "Evaluation Rounds" },
-  { value: "<2m", label: "Processing Time" },
-  { value: "100%", label: "Auditable Rationale" },
+  { value: "7", label: "Validated Agent Executions" },
+  { value: "JSON", label: "Schema-Validated Verdicts" },
 ];
 
 const TRANSPARENCY_ITEMS = [
   { title: "Explicit Reasoning", text: "Every agent details the exact evidence and rationale behind its evaluation." },
   { title: "Evidence Tracking", text: "Scores are backed by candidate statements and resume claims." },
-  { title: "Confidence Scoring", text: "All evaluations include a calibrated confidence score (0 to 1)." },
+  { title: "Confidence Scoring", text: "Every evaluation includes a self-reported confidence score (0 to 1); this is not yet a calibrated probability of correctness." },
   { title: "Multi-Dimension Rubric", text: "Evaluated on technical, behavioral, and architectural competency." },
 ];
 
@@ -68,7 +68,7 @@ const FAQ_ITEMS = [
   },
   {
     q: "What architecture powers the system?",
-    a: "Evalia runs 5 specialized CrewAI agents powered by Gemini 2.5. Each agent enforces a validated Pydantic JSON schema with SQLite persistence for all verdicts.",
+    a: "Evalia runs 5 specialized CrewAI agents behind a configurable LLM provider (Gemini by default). Each agent enforces a validated Pydantic JSON schema, persisted to PostgreSQL or a local SQLite fallback.",
   },
   {
     q: "What roles can be evaluated?",
@@ -88,28 +88,28 @@ const CONTEXT_MATRIX = [
   { agent: "Committee Evaluator", resume: false, r1: true, r2: true, r3: true, r4: true },
 ];
 
-function FAQAccordion({ q, a }: { q: string; a: string }) {
+function FAQAccordion({ q, a }: Readonly<{ q: string; a: string }>) {
   const [open, setOpen] = useState(false);
   return (
-    <div
-      className="card-surface"
-      style={{
-        padding: "16px 20px",
-        cursor: "pointer",
-      }}
-      onClick={() => setOpen(!open)}
-    >
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <span style={{ fontSize: 14, fontWeight: 500, color: "var(--color-text-heading)" }}>{q}</span>
-        <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--color-text-subtle)", marginLeft: 16 }}>
-          {open ? "[ - ]" : "[ + ]"}
-        </span>
-      </div>
-      {open && (
-        <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--color-border)", fontSize: 13, color: "var(--color-text-muted)", lineHeight: 1.7 }}>
-          {a}
+    <div className="card-surface" style={{ padding: 0 }}>
+      <button
+        type="button"
+        style={{ width: "100%", padding: "16px 20px", cursor: "pointer", background: "none", border: "none", textAlign: "left", font: "inherit", color: "inherit" }}
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span style={{ fontSize: 14, fontWeight: 500, color: "var(--color-text-heading)" }}>{q}</span>
+          <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--color-text-subtle)", marginLeft: 16 }}>
+            {open ? "[ - ]" : "[ + ]"}
+          </span>
         </div>
-      )}
+        {open && (
+          <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--color-border)", fontSize: 13, color: "var(--color-text-muted)", lineHeight: 1.7, textAlign: "left" }}>
+            {a}
+          </div>
+        )}
+      </button>
     </div>
   );
 }

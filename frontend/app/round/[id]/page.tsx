@@ -26,11 +26,17 @@ const PIPELINE_STAGES = [
   "5. Committee",
 ];
 
+function stageColor(stageIndex: number, currentRound: number): string {
+  if (stageIndex === currentRound) return "var(--color-primary)";
+  if (stageIndex < currentRound) return "var(--color-text-heading)";
+  return "var(--color-text-subtle)";
+}
+
 export default function RoundPage() {
   const router = useRouter();
   const params = useParams();
   const roundId = params.id as string;
-  const roundNum = parseInt(roundId, 10);
+  const roundNum = Number.parseInt(roundId, 10);
 
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState("");
@@ -56,15 +62,24 @@ export default function RoundPage() {
     e.preventDefault();
     if (!answer.trim()) return;
 
+    const evaluationId = sessionStorage.getItem("evaluation_id");
+    if (!evaluationId) {
+      setError("No evaluation found. Please start from the beginning.");
+      return;
+    }
+
     setLoading(true);
     setError(null);
 
     try {
-      const res = await fetch(`${API_BASE}/round/${roundId}/answer`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ answer: answer.trim() }),
-      });
+      const res = await fetch(
+        `${API_BASE}/round/${roundId}/answer?evaluation_id=${encodeURIComponent(evaluationId)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ answer: answer.trim() }),
+        }
+      );
 
       if (!res.ok) {
         let detail = "Failed to submit answer.";
@@ -109,7 +124,7 @@ export default function RoundPage() {
             <span
               key={s}
               style={{
-                color: idx + 1 === roundNum ? "var(--color-primary)" : idx + 1 < roundNum ? "var(--color-text-heading)" : "var(--color-text-subtle)",
+                color: stageColor(idx + 1, roundNum),
                 fontWeight: idx + 1 === roundNum ? 600 : 400,
               }}
             >
@@ -151,10 +166,11 @@ export default function RoundPage() {
         {/* Answer form */}
         <form onSubmit={handleSubmit}>
           <div style={{ marginBottom: 20 }}>
-            <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--color-text-muted)", marginBottom: 6, fontFamily: "var(--font-mono)" }}>
+            <label htmlFor="candidate-answer" style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--color-text-muted)", marginBottom: 6, fontFamily: "var(--font-mono)" }}>
               CANDIDATE ANSWER
             </label>
             <textarea
+              id="candidate-answer"
               rows={12}
               value={answer}
               onChange={(e) => setAnswer(e.target.value)}

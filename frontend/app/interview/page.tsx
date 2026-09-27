@@ -53,8 +53,6 @@ export default function InterviewPage() {
     sessionStorage.clear();
 
     try {
-      await fetch(`${API_BASE}/reset`, { method: "POST" });
-
       const res = await fetch(`${API_BASE}/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -133,10 +131,11 @@ export default function InterviewPage() {
         <form onSubmit={handleSubmit}>
           {/* Candidate Name */}
           <div style={{ marginBottom: 20 }}>
-            <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--color-text-muted)", marginBottom: 6, fontFamily: "var(--font-mono)" }}>
+            <label htmlFor="candidate-name" style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--color-text-muted)", marginBottom: 6, fontFamily: "var(--font-mono)" }}>
               CANDIDATE NAME (OPTIONAL)
             </label>
             <input
+              id="candidate-name"
               type="text"
               value={candidateName}
               onChange={(e) => setCandidateName(e.target.value)}
@@ -157,10 +156,10 @@ export default function InterviewPage() {
           </div>
 
           {/* Role selector */}
-          <div style={{ marginBottom: 20 }}>
-            <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--color-text-muted)", marginBottom: 6, fontFamily: "var(--font-mono)" }}>
+          <fieldset style={{ border: "none", padding: 0, margin: 0, marginBottom: 20 }}>
+            <legend style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--color-text-muted)", marginBottom: 6, fontFamily: "var(--font-mono)", padding: 0 }}>
               TARGET ROLE
-            </label>
+            </legend>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 8 }}>
               {roles.map((r) => (
                 <button
@@ -188,14 +187,15 @@ export default function InterviewPage() {
                 </button>
               ))}
             </div>
-          </div>
+          </fieldset>
 
           {/* Resume text */}
           <div style={{ marginBottom: 20 }}>
-            <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--color-text-muted)", marginBottom: 6, fontFamily: "var(--font-mono)" }}>
+            <label htmlFor="resume-text" style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--color-text-muted)", marginBottom: 6, fontFamily: "var(--font-mono)" }}>
               RESUME / CV CONTENT
             </label>
             <textarea
+              id="resume-text"
               rows={10}
               value={resume}
               onChange={(e) => setResume(e.target.value)}
