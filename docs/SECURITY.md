@@ -7,13 +7,31 @@ assumption that anything not listed as "fixed" below has been addressed.
 
 ## Summary judgment
 
-**This system has no authentication, no authorization, and no
-multi-tenancy.** Anyone who can reach the API can read every candidate's
-evaluation data (except raw resume text, which is now excluded from
-responses — see B04 below) and can trigger paid LLM calls. It is suitable
-for a local demo, a single trusted operator, or a controlled pilot behind a
-separate access-control layer (e.g. a VPN, a reverse proxy with basic auth,
-or run entirely on `localhost`) — **not** for public internet exposure.
+Authentication, role-based authorization, tenant isolation, and an audited
+trail of security-relevant actions now exist (added in the platform
+foundation phase). The interview-pipeline endpoints (`/start`, `/round/*`,
+`/final-decision`, `/evaluations*`) remain **deliberately unauthenticated**
+for backwards compatibility — they attribute ownership when credentials are
+present and work anonymously when they are not.
+
+So: the identity foundation is in place and tested, but **the product is not
+yet fully locked down**, because the original pipeline endpoints are still
+open by design during the transition. Suitable for a controlled pilot behind
+a separate access-control layer; not yet for unrestricted public exposure.
+
+What exists now:
+
+| Control | Status |
+|---|---|
+| Password authentication | bcrypt over SHA-256 pre-hash, cost factor 12 |
+| Session tokens | Signed JWTs; no capabilities in the token, so revocation is immediate |
+| Capability-based authorization | `rbac.Capability`, enforced via `authz.requires(...)` |
+| Tenant isolation | `authz.assert_tenant`, returns 404 (not 403) to prevent ID enumeration |
+| Audit trail | Tiered, hash-chained, with integrity verification endpoint |
+| Account enumeration resistance | Login returns identical errors and comparable timing for unknown email vs. wrong password |
+| Rate limiting | Basic in-memory per-IP (single-process only) |
+
+What is still missing is listed under "Explicitly open gaps" below.
 
 ## `CODEBASE_REVIEW.md` findings — status
 
@@ -22,7 +40,7 @@ or run entirely on `localhost`) — **not** for public internet exposure.
 | B01 | Reset creates two different state objects — a reset/start could lose the evaluation linkage used by later persistence | **Fixed** | `state.py` no longer holds any mutable session dictionary; the database is the sole source of truth per `evaluation_id`. Structurally impossible to reintroduce this specific bug without reintroducing a global mutable object. |
 | B02 | Shared state and verdict files mix unrelated interviews | **Fixed** | Every evaluation's verdict files live under `backend/verdicts/{evaluation_id}/`, keyed by the DB-assigned ID (`state.eval_verdicts_dir`). |
 | B03 | Model failures become candidate judgments (invalid JSON → fabricated FAIL; missing fields → fabricated defaults) | **Fixed** | `crew_runner._parse_json_output`/`_validate_verdict` raise `AgentOutputError` for any parse/schema failure; callers persist `decision="INVALID_OUTPUT"` and return HTTP 502 — never a business decision. Regression-tested in `backend/tests/test_crew_runner_parsing.py` and `test_routes.py::TestInvalidAgentOutputNeverBecomesADecision`. |
-| B04 | Public access to sensitive records (raw resume text returned by list/detail endpoints); no request authentication at all | **Partially fixed.** Resume-text exposure is fixed. Authentication/authorization is **not** implemented. | `database._EVALUATION_SUMMARY_COLUMNS` excludes `resume_text`; every public-facing query uses it. Verified in `backend/tests/test_database.py::TestPiiProjection` and `test_routes.py::TestPiiSafety`. **No auth of any kind exists** — every endpoint is reachable by anyone who can reach the port. |
+| B04 | Public access to sensitive records (raw resume text returned by list/detail endpoints); no request authentication at all | **Substantially fixed.** Resume-text exposure fixed. Authentication, RBAC, and tenant isolation now exist — but the legacy pipeline endpoints remain intentionally open. | `database._EVALUATION_SUMMARY_COLUMNS` excludes `resume_text`. Identity layer: `security.py`, `rbac.py`, `authz.py`, `auth_routes.py`. Tenant isolation verified by `tests/test_identity.py::TestTenantIsolation` (a CI gate). Remaining gap: `/start`, `/round/*`, `/final-decision`, `/evaluations*` still accept unauthenticated calls for backwards compatibility. |
 | B05 | Workflow transitions and commits are not protected (no idempotency key, no expected-round check, duplicate/out-of-order requests can corrupt history) | **Fixed** (for the single-writer-per-round case). | `routes.py` checks expected `current_round` (409 if wrong) and canonical-verdict existence (409 if already evaluated) before running any agent; `database.uq_verdicts_canonical` (a partial unique index) makes a second canonical verdict for the same evaluation/round a rejected `DuplicateVerdictError`, not a silent overwrite. `/final-decision` is idempotent by design (replays the persisted result). Verified in `test_routes.py::TestGuardsAndErrorHandling` and `test_database.py::TestCanonicalVerdictUniqueness`. |
 | B06 | Long-running work is tied to HTTP lifetime; synchronous DB calls block the event loop; no durable queue/recovery | **Partially fixed.** Event-loop blocking is fixed. Durable queue/recovery is **not** implemented. | Every `database.py` call from `routes.py` is wrapped in `asyncio.to_thread` via the `_db()` helper, so synchronous `sqlite3`/`psycopg2` calls no longer block the event loop. There is still no durable job queue: a crashed backend process during an in-flight agent call loses that request (the DB row survives at its last committed state, but the client must retry). |
 | Q01 | Committee is not truly independent verification (same model config, sees prior judgments, no evidence re-derivation) | **Unchanged / open.** | Bias isolation via explicit context passing (no resume/raw answers reach rounds 4–5) is real and unchanged — see [ARCHITECTURE.md](ARCHITECTURE.md). No evidence-grounded re-verification or baseline-vs-committee benchmark exists. |
@@ -68,23 +86,30 @@ of 2026-09-27:
 In priority order for anyone planning to expose this beyond a local/trusted
 environment:
 
-1. **Authentication and per-tenant authorization.** Nothing currently
-   verifies who is calling any endpoint. `PRODUCTION_ROADMAP.md` P1/T007
-   proposes a managed OIDC/session provider; this requires an external
-   identity provider decision and credentials this engagement does not
-   have — it was not implemented here.
-2. **Spend/abuse budgets beyond the basic rate limiter above.** No
+1. **Authentication on the legacy pipeline endpoints.** `/start`,
+   `/round/*`, `/final-decision`, and `/evaluations*` still accept
+   unauthenticated requests. This is a deliberate backwards-compatibility
+   choice during the platform transition, not an oversight — but it means
+   the API must not be publicly exposed until those endpoints require
+   credentials and scope their queries by tenant.
+2. **Invitation flow.** The `invitations` table exists and tokens are
+   hashed, but the accept-an-invite flow is not implemented; only
+   already-registered users can be added to an organization.
+3. **Spend/abuse budgets beyond the basic rate limiter.** No
    per-tenant or global LLM spend cap exists; the rate limiter only bounds
-   *request count*, not cost.
-3. **A real evaluation/grading harness for the agents themselves** (Q05
-   above) — the single biggest differentiator described in
-   `PRODUCTION_ROADMAP.md` section 5, entirely unimplemented.
-4. **Prompt-injection defenses** (Q06) — no sanitization, delimiter
+   *request count*, not cost. The in-memory limiter is also single-process
+   only — multiple workers each enforce an independent limit.
+4. **A real evaluation/grading harness for the agents themselves** (Q05
+   above) — unimplemented.
+5. **Prompt-injection defenses** (Q06) — no sanitization, delimiter
    strategy, or adversarial test suite exists for resume/answer content
    passed into agent prompts.
-5. **Tamper-evident audit logging** (Q07, remaining half) — verdict rows
-   can be modified or deleted with a normal `UPDATE`/`DELETE` and nothing
-   would detect it.
-6. **Schema migrations** — see [DATA_MODEL.md](DATA_MODEL.md); `CREATE TABLE
-   IF NOT EXISTS` on every boot is not a substitute for versioned,
-   reviewable migrations, especially once real data exists in production.
+6. **Audit anchoring** — the hash chain detects edits and deletions, but a
+   sufficiently privileged attacker who rewrites every subsequent row could
+   reforge it. Resisting that needs periodic signed digests written to
+   separately-credentialed, object-locked storage.
+7. **Schema migrations** — see [DATA_MODEL.md](DATA_MODEL.md). Startup DDL
+   plus a narrow additive-column helper is not a substitute for versioned,
+   reviewable migrations once real data exists.
+8. **Password reset, email verification, MFA** — none implemented. The
+   `email_verified_at` column exists but nothing sets it.

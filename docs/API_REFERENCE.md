@@ -26,13 +26,119 @@ except where marked "captured from a live test run."
 - Exceeding the in-memory rate limit surfaces as **HTTP 429** with a
   `Retry-After` header (see [ARCHITECTURE.md](ARCHITECTURE.md#rate-limiting)).
 
+### Authentication
+
+Authenticated endpoints expect a bearer token:
+
+```
+Authorization: Bearer <access_token>
+X-Org-Id: 7          # optional; selects the active organization
+```
+
+The active organization is chosen **per request** via `X-Org-Id` rather than
+being baked into the token. This lets a user who belongs to several
+organizations switch context without re-authenticating, and means a revoked
+membership takes effect on the very next request rather than when the token
+expires.
+
+**Cross-tenant requests return 404, not 403.** A 403 would confirm that a
+resource exists, letting a competitor enumerate another company's IDs.
+
 ---
+
+## Identity
+
+### `POST /auth/register`
+
+Creates an account. New accounts have no organization membership — they begin
+as candidates.
+
+```json
+{ "email": "jane@example.com", "password": "at-least-12-chars", "full_name": "Jane Doe" }
+```
+
+| Status | When |
+|---|---|
+| 201 | Created; returns `{access_token, token_type, expires_in}` |
+| 409 | Email already registered |
+| 422 | Invalid email, or password shorter than 12 characters |
+
+> Password minimum is length-based (12) rather than composition-based.
+> Composition rules push users toward predictable substitutions; length is
+> what actually resists offline cracking (NIST SP 800-63B).
+
+### `POST /auth/login`
+
+| Status | When |
+|---|---|
+| 200 | `{access_token, token_type, expires_in}` |
+| 401 | Unknown email **or** wrong password — deliberately indistinguishable, and with comparable response time, so the endpoint cannot be used to enumerate accounts |
+
+### `GET /auth/me`
+
+Returns the caller's identity, active org context, capabilities, and all
+memberships.
+
+```json
+{
+  "user_id": 42, "email": "jane@example.com", "full_name": "Jane Doe",
+  "is_platform_admin": false,
+  "active_org_id": 7, "active_role": "recruiter",
+  "capabilities": ["application:read", "campaign:create", "..."],
+  "memberships": [{"org_id": 7, "org_name": "Acme", "org_slug": "acme", "role_name": "recruiter"}]
+}
+```
+
+`capabilities` is intended for the frontend to decide which controls to
+render. That is a UX affordance only — every capability is re-checked
+server-side on each request.
+
+---
+
+## Organizations
+
+| Endpoint | Capability required | Notes |
+|---|---|---|
+| `POST /orgs` | *(any authenticated user)* | Creator becomes `org_owner` in the same request — an org without an owner would be unadministrable |
+| `GET /orgs/{org_id}` | `org:settings:read` | 404 across tenants |
+| `GET /orgs/{org_id}/members` | `org:settings:read` | |
+| `POST /orgs/{org_id}/members` | `org:member:invite` | Only already-registered users; invitations are Phase 1 |
+| `PATCH /orgs/{org_id}/members/{user_id}` | `org:member:role:set` | 409 if it would demote the last owner |
+| `DELETE /orgs/{org_id}/members/{user_id}` | `org:member:remove` | 409 if it would remove the last owner |
+
+Assignable org roles: `org_owner`, `org_admin`, `recruiter`,
+`hiring_manager`, `interviewer`. `candidate` is **not** assignable to an
+organization and is rejected with 400 — it is a platform-level persona, not
+an org role.
+
+---
+
+## Administration
+
+All require platform-admin capabilities and are audited at Tier 1.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /admin/audit` | Search the audit log. Non-platform-admins are forcibly scoped to their own org regardless of the `org_id` they request |
+| `GET /admin/audit/verify` | Walk the hash chain; `{"valid": false, "broken_at_id": N}` means the log was altered and should be treated as an incident |
+| `POST /admin/impersonate` | Issue a 30-minute token acting as another user. Requires a written `reason` (min 10 chars) stored permanently in the audit log. Refuses self-impersonation and admin-on-admin impersonation |
+| `GET /admin/organizations` | Cross-tenant organization listing |
+
+---
+
+
 
 ## `POST /start`
 
 Creates a new evaluation and runs round 1 (screening), and — if the
 candidate passes — generates round 2's technical questions in the same
 call.
+
+**Authentication is optional.** With credentials, the evaluation is
+attributed to that user (and organization, if `X-Org-Id` is sent) and an
+`evaluation.created` audit event is written. Without them it is created
+unowned, exactly as before the identity layer existed. An invalid or expired
+token degrades to anonymous rather than failing the request.
 
 **Request body** (`StartRequest`):
 

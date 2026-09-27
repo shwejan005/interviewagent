@@ -10,6 +10,102 @@ Entries are in **reverse chronological order** (most recent session first).
 
 ---
 
+## Session 6 — Platform foundation: identity, RBAC, tenancy, audit
+
+**Trigger:** instruction to begin implementing the product blueprint, one
+piece at a time, keeping existing functionality intact.
+
+This is **Phase 0** from [PRODUCT_BLUEPRINT.md](PRODUCT_BLUEPRINT.md) — the
+layer everything else depends on, and the only part that genuinely cannot be
+retrofitted later without rewriting every query in the codebase.
+
+### New modules
+
+- **`backend/security.py`** — password hashing and token issuance.
+  Passwords are SHA-256 pre-hashed before bcrypt because **bcrypt silently
+  truncates at 72 bytes**, meaning two distinct long passwords can otherwise
+  collide; there is a regression test for exactly that. Tokens are stateless
+  JWTs carrying only a user ID — deliberately *not* capabilities, so that a
+  role change or revoked membership takes effect on the next request instead
+  of lingering until expiry. Refuses to start with `APP_ENV=production` unless
+  `JWT_SECRET` is set.
+- **`backend/rbac.py`** — 34 capabilities and 7 system roles. Business logic
+  branches on capabilities, never on role names, because role names change
+  and will eventually become customer-defined.
+- **`backend/authz.py`** — the `Actor` abstraction plus FastAPI dependencies
+  (`current_actor`, `optional_actor`, `requires(...)`, `assert_tenant`).
+  Cross-tenant access returns **404, not 403**: a 403 confirms a resource
+  exists, which would let a competitor enumerate another company's IDs.
+- **`backend/audit.py`** — tiered, hash-chained audit events. Never raises;
+  an audit backend failure must not take down the product, but it logs at
+  ERROR so the gap is detectable rather than silent.
+- **`backend/auth_routes.py`** — register, login, `/auth/me`, organization
+  and membership management.
+- **`backend/admin_routes.py`** — audit search, chain verification, and
+  impersonation.
+
+### Schema
+
+Seven new tables (`organizations`, `users`, `roles`, `role_capabilities`,
+`org_memberships`, `invitations`, `audit_events`), with roles and their
+capabilities re-seeded idempotently on every startup so a code change takes
+effect without a manual migration step.
+
+`evaluations` gained **nullable** `org_id` and `owner_user_id`, applied by an
+additive-column helper for databases that predate them. Nullable is
+deliberate: rows created before ownership existed cannot be retroactively
+attributed, and inventing an owner would corrupt the audit story.
+
+### Deliberate design decisions
+
+- **Dual-persona identity.** A user is not typed as candidate *or* recruiter.
+  Identity is a `users` row; being a recruiter is an `org_memberships` row.
+  A `user.type` column would permanently block the case where someone is a
+  candidate at one company and a recruiter at their own employer.
+- **Login cannot enumerate accounts.** Unknown email and wrong password
+  return an identical error, and the unknown-email path still performs a
+  bcrypt verification against a dummy hash so response *timing* does not leak
+  the answer either. Tested.
+- **Last-owner guard.** An organization cannot be left without an owner;
+  removing or demoting the only owner returns 409. An ownerless org requires
+  manual database intervention to recover.
+- **Impersonation controls enforced in code, not policy** — mandatory written
+  reason stored in the audit log, 30-minute token, self-impersonation and
+  admin-on-admin impersonation both refused (the latter would let one admin
+  launder actions through another's identity).
+
+### Backwards compatibility — explicitly preserved
+
+The existing pipeline endpoints (`/start`, `/round/*`, `/final-decision`,
+`/evaluations*`) still work **without credentials**. `/start` uses an
+*optional* actor dependency: with a token it records ownership and writes an
+audit event, without one it behaves exactly as before, and an invalid token
+degrades to anonymous rather than erroring. All 38 pre-existing tests passed
+unmodified at every step.
+
+### Tests
+
+38 → **89 passing**. The new `tests/test_identity.py` adds 51, including a
+`TestTenantIsolation` class intended as a CI gate — those tests are the
+executable form of "two companies cannot see each other's data," and a
+failure there is a data breach rather than a bug. It includes a positive
+control (own-org access still works) so the suite cannot pass merely because
+everything is denied. Audit tests verify the hash chain detects both edits
+and deletions.
+
+`BCRYPT_ROUNDS=4` is set in `conftest.py` — bcrypt at the production cost
+factor of 12 dominated the suite runtime. Safe only because those hashes
+never leave the test process.
+
+### Known gaps left open deliberately
+
+Invitation accept-flow, password reset, email verification, and MFA are not
+implemented. The legacy pipeline endpoints remain unauthenticated by design
+during the transition — documented in [SECURITY.md](SECURITY.md) rather than
+quietly left as an apparent oversight.
+
+---
+
 ## Session 5 — Product blueprint (planning only, no code changes)
 
 **Trigger:** request to reshape Evalia from a demo-style single pipeline into a

@@ -144,9 +144,51 @@ All four support the query patterns actually used by `routes.py`/`database.py`
 `(evaluation_id, round_number)` beyond the partial unique index above,
 which also serves lookup queries like `get_verdict_by_round`.
 
-## Decision-memory files on disk
+## Identity, tenancy & audit tables
 
-Independent of the SQL tables, `crew_runner.py` also writes:
+Added in the platform foundation phase (see
+[PRODUCT_BLUEPRINT.md](PRODUCT_BLUEPRINT.md)). DDL lives in
+`_PG_IDENTITY_SCHEMA` / `_SQLITE_IDENTITY_SCHEMA`, kept separate from the
+original interview-pipeline schema so the two can be reasoned about
+independently.
+
+| Table | Purpose | Notes |
+|---|---|---|
+| `organizations` | Tenant root | `slug` unique; `plan` exists now so billing can be added later without a schema change |
+| `users` | Identity | `email_normalized` is the uniqueness key (casefolded). `password_hash` is bcrypt over a SHA-256 pre-hash |
+| `roles` | Named capability bundles | Seeded from `rbac.SYSTEM_ROLES` on every startup |
+| `role_capabilities` | Role → capability mapping | Re-synced on startup, so a code change takes effect without a manual migration |
+| `org_memberships` | (user, org, role) | Partial unique index on `(org_id, user_id) WHERE deleted_at IS NULL` prevents duplicate active memberships |
+| `invitations` | Tokenised org invites | Table exists; the accept flow is Phase 1. Tokens stored hashed |
+| `audit_events` | Append-only audit log | Hash-chained via `prev_hash`/`hash` |
+
+### Dual-persona identity
+
+A user is **not** typed as either a candidate or a recruiter. Identity is one
+row in `users`; being a recruiter is a row in `org_memberships`. A person can
+hold both simultaneously — a candidate at one company and a recruiter at
+their own employer. Modelling this as a `user.type` column would block that
+case permanently, which is why it is deliberately absent.
+
+### Audit hash chain
+
+Each row stores the hash of the previous row. `database.verify_audit_chain()`
+walks the chain and reports the first break, detecting both silent edits and
+deletions. This is *tamper evidence*, not tamper proofing — see
+[SECURITY.md](SECURITY.md).
+
+### Evaluation tenancy retrofit
+
+`evaluations` gained two **nullable** columns, `org_id` and `owner_user_id`,
+applied by `_apply_additive_columns()` at startup for databases that predate
+them. Nullable is deliberate: rows created before ownership existed cannot be
+retroactively attributed, and inventing an owner would corrupt the audit
+story. Unowned rows are treated as legacy.
+
+This also preserves the pre-identity API contract — `POST /start` still works
+without credentials and simply produces an unowned evaluation.
+
+## Decision-memory files on disk
 
 ```
 backend/verdicts/{evaluation_id}/round1.txt   # raw screening output
