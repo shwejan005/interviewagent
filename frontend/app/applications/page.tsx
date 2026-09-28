@@ -2,24 +2,39 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
+import { AnimatePresence, motion } from "framer-motion";
 import Navbar from "../components/Navbar";
+import {
+  Alert,
+  Button,
+  ButtonLink,
+  EmptyState,
+  PageHeader,
+  PageShell,
+  SkeletonList,
+  StatusPill,
+} from "../components/ui";
+import type { PillTone } from "../components/ui";
 import { useAuth } from "../../lib/auth-context";
 import { api, ApiError } from "../../lib/api";
 import type { ApplicationDetail, ApplicationEvent, ApplicationSummary } from "../../lib/types";
+import { DUR, EASE_OUT, staggerContainer, staggerItem } from "../../lib/motion";
 
-const STAGE_CLASS: Record<string, string> = {
-  APPLIED: "status-tag-primary",
-  SCREENING: "status-tag-primary",
-  PENDING_REVIEW: "status-tag-warning",
-  TECHNICAL: "status-tag-primary",
-  BEHAVIORAL: "status-tag-primary",
-  INTERVIEW: "status-tag-primary",
-  OFFER: "status-tag-success",
-  HIRED: "status-tag-success",
-  REJECTED: "status-tag-error",
-  WITHDRAWN: "status-tag-muted",
+const STAGE_TONE: Record<string, PillTone> = {
+  APPLIED: "primary",
+  SCREENING: "primary",
+  PENDING_REVIEW: "warning",
+  TECHNICAL: "primary",
+  BEHAVIORAL: "primary",
+  INTERVIEW: "primary",
+  OFFER: "success",
+  HIRED: "success",
+  REJECTED: "error",
+  WITHDRAWN: "muted",
 };
+
+/** Stages where the application is finished and withdrawal is meaningless. */
+const TERMINAL_STAGES = new Set(["WITHDRAWN", "REJECTED", "HIRED"]);
 
 function formatDate(d: string): string {
   try {
@@ -88,80 +103,113 @@ export default function ApplicationsPage() {
 
   if (authLoading || loading) {
     return (
-      <div style={{ minHeight: "100vh", background: "var(--color-bg)" }}>
+      <div className="min-h-screen">
         <Navbar />
-        <main style={{ maxWidth: 720, margin: "0 auto", padding: "120px 24px" }}>
-          <p style={{ color: "var(--color-text-muted)" }}>Loading...</p>
-        </main>
+        <PageShell className="!max-w-[760px] pt-[112px]">
+          <SkeletonList count={4} />
+        </PageShell>
       </div>
     );
   }
 
   return (
-    <div style={{ minHeight: "100vh", background: "var(--color-bg)" }}>
+    <div className="min-h-screen">
       <Navbar />
-      <main style={{ maxWidth: 720, margin: "0 auto", padding: "100px 24px 60px" }}>
-        <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-primary)", letterSpacing: "0.1em", marginBottom: 8 }}>
-          APPLICATION TRACKER
-        </div>
-        <h1 style={{ fontSize: 26, fontWeight: 700, color: "var(--color-text-heading)", marginBottom: 24 }}>
-          Your applications
-        </h1>
+      <PageShell className="!max-w-[760px] pt-[112px]">
+        <PageHeader eyebrow="APPLICATION TRACKER" title="Your applications" />
 
         {error && (
-          <div style={{ padding: "10px 14px", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: 6, fontSize: 13, color: "var(--color-error)", marginBottom: 20 }}>
+          <Alert tone="error" className="mt-6">
             {error}
-          </div>
+          </Alert>
         )}
 
-        {applications.length === 0 ? (
-          <p style={{ color: "var(--color-text-muted)", fontSize: 14 }}>
-            You haven&apos;t applied anywhere yet. <Link href="/jobs" style={{ color: "var(--color-primary)" }}>Browse jobs</Link>.
-          </p>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {applications.map((app) => (
-              <div key={app.id} className="card-surface" style={{ padding: 0, overflow: "hidden" }}>
-                <button
-                  type="button"
-                  onClick={() => toggleExpand(app.id)}
-                  style={{ width: "100%", padding: "16px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", background: "none", border: "none", textAlign: "left", cursor: "pointer", color: "inherit", font: "inherit" }}
-                >
-                  <div>
-                    <div style={{ fontSize: 14, fontWeight: 600, color: "var(--color-text-heading)" }}>{app.posting_title}</div>
-                    <div style={{ fontSize: 12, color: "var(--color-text-subtle)" }}>{app.org_name} · Applied {formatDate(app.created_at)}</div>
-                  </div>
-                  <span className={`status-tag ${STAGE_CLASS[app.current_stage] || "status-tag-muted"}`}>{app.current_stage}</span>
-                </button>
+        <div className="mt-8">
+          {applications.length === 0 ? (
+            <EmptyState
+              title="No applications yet"
+              description="Once you apply to a role it shows up here, with its live pipeline stage."
+              action={<ButtonLink href="/jobs">Browse jobs</ButtonLink>}
+            />
+          ) : (
+            <motion.div
+              initial="hidden"
+              animate="visible"
+              variants={staggerContainer(0.05)}
+              className="flex flex-col gap-3"
+            >
+              {applications.map((app) => {
+                const open = expanded === app.id;
+                return (
+                  <motion.div key={app.id} variants={staggerItem} className="glass overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => toggleExpand(app.id)}
+                      aria-expanded={open}
+                      className="flex w-full items-center justify-between gap-4 px-5 py-4 text-left transition-colors duration-fast ease-out-expo hover:bg-glass-low"
+                    >
+                      <span className="min-w-0">
+                        <span className="block text-[14px] font-semibold text-ink-heading">
+                          {app.posting_title}
+                        </span>
+                        <span className="mt-0.5 block text-[12px] text-ink-subtle">
+                          {app.org_name} · Applied {formatDate(app.created_at)}
+                        </span>
+                      </span>
+                      <StatusPill tone={STAGE_TONE[app.current_stage] ?? "muted"}>
+                        {app.current_stage}
+                      </StatusPill>
+                    </button>
 
-                {expanded === app.id && (
-                  <div style={{ padding: "0 20px 20px", borderTop: "1px solid var(--color-border)" }}>
-                    {detail && (
-                      <div style={{ marginTop: 16 }}>
-                        <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-subtle)", marginBottom: 8 }}>TIMELINE</div>
-                        {detail.timeline.map((event, i) => (
-                          <div key={`${event.event_type}-${i}`} style={{ fontSize: 12, color: "var(--color-text-muted)", marginBottom: 4 }}>
-                            {formatDate(event.created_at)} — {event.to_stage || event.event_type}
+                    <AnimatePresence initial={false}>
+                      {open && (
+                        <motion.div
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: "auto", opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          transition={{ duration: DUR.base, ease: EASE_OUT }}
+                          className="overflow-hidden"
+                        >
+                          <div className="border-t border-subtle px-5 pb-5 pt-4">
+                            {detail && (
+                              <>
+                                <p className="mono text-[10px] tracking-[0.08em] text-ink-subtle">TIMELINE</p>
+                                <ol className="mt-3 flex flex-col gap-2">
+                                  {detail.timeline.map((event, i) => (
+                                    <li
+                                      key={`${event.event_type}-${i}`}
+                                      className="flex gap-3 text-[12px] text-ink-muted"
+                                    >
+                                      <span className="mono shrink-0 text-ink-subtle">
+                                        {formatDate(event.created_at)}
+                                      </span>
+                                      <span>{event.to_stage || event.event_type}</span>
+                                    </li>
+                                  ))}
+                                </ol>
+                              </>
+                            )}
+                            {!TERMINAL_STAGES.has(app.current_stage) && (
+                              <Button
+                                className="mt-5"
+                                size="sm"
+                                variant="secondary"
+                                onClick={() => handleWithdraw(app.id)}
+                              >
+                                Withdraw application
+                              </Button>
+                            )}
                           </div>
-                        ))}
-                      </div>
-                    )}
-                    {app.current_stage !== "WITHDRAWN" && app.current_stage !== "REJECTED" && app.current_stage !== "HIRED" && (
-                      <button
-                        onClick={() => handleWithdraw(app.id)}
-                        className="btn-secondary"
-                        style={{ marginTop: 16, padding: "6px 14px", fontSize: 12 }}
-                      >
-                        Withdraw application
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </main>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </motion.div>
+                );
+              })}
+            </motion.div>
+          )}
+        </div>
+      </PageShell>
     </div>
   );
 }

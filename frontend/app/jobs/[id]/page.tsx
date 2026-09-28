@@ -4,6 +4,15 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import Navbar from "../../components/Navbar";
+import {
+  Alert,
+  Button,
+  GlassCard,
+  PageShell,
+  Skeleton,
+  StatusPill,
+  Textarea,
+} from "../../components/ui";
 import { useAuth } from "../../../lib/auth-context";
 import { api, ApiError } from "../../../lib/api";
 import type { JobPosting } from "../../../lib/types";
@@ -23,6 +32,19 @@ type ApplicationForm = {
   profile_complete: boolean;
   unanswered_count: number;
 };
+
+/** Kept out of JSX so the pluralisation does not turn into nested ternaries. */
+function prefillSummary(unanswered: number): string {
+  if (unanswered === 0) return "All questions are pre-filled from your profile vault.";
+  if (unanswered === 1) return "1 question needs an answer.";
+  return `${unanswered} questions need an answer.`;
+}
+
+function applyLabel(applying: boolean, signedIn: boolean): string {
+  if (applying) return "Submitting...";
+  if (signedIn) return "Submit application";
+  return "Log in to apply";
+}
 
 export default function JobDetailPage() {
   const params = useParams();
@@ -95,111 +117,126 @@ export default function JobDetailPage() {
 
   if (loading || authLoading) {
     return (
-      <div style={{ minHeight: "100vh", background: "var(--color-bg)" }}>
+      <div className="min-h-screen">
         <Navbar />
-        <main style={{ maxWidth: 680, margin: "0 auto", padding: "120px 24px" }}>
-          <p style={{ color: "var(--color-text-muted)" }}>Loading...</p>
-        </main>
+        <PageShell className="!max-w-[720px] pt-[112px]">
+          <Skeleton height={12} width="20%" />
+          <Skeleton className="mt-4" height={32} width="70%" />
+          <Skeleton className="mt-3" height={12} width="45%" />
+          <div className="glass-low mt-7 p-6">
+            <Skeleton height={10} width="100%" />
+            <Skeleton className="mt-3" height={10} width="95%" />
+            <Skeleton className="mt-3" height={10} width="60%" />
+          </div>
+        </PageShell>
       </div>
     );
   }
 
   if (!posting) {
     return (
-      <div style={{ minHeight: "100vh", background: "var(--color-bg)" }}>
+      <div className="min-h-screen">
         <Navbar />
-        <main style={{ maxWidth: 680, margin: "0 auto", padding: "120px 24px" }}>
-          <p style={{ color: "var(--color-error)" }}>{error || "Not found."}</p>
-          <Link href="/jobs" style={{ color: "var(--color-primary)", fontSize: 13 }}>← Back to jobs</Link>
-        </main>
+        <PageShell className="!max-w-[720px] pt-[112px]">
+          <Alert tone="error">{error || "Not found."}</Alert>
+          <Link href="/jobs" className="mt-5 inline-block text-[13px] text-brand hover:underline">
+            ← Back to jobs
+          </Link>
+        </PageShell>
       </div>
     );
   }
 
   return (
-    <div style={{ minHeight: "100vh", background: "var(--color-bg)" }}>
+    <div className="min-h-screen">
       <Navbar />
-      <main style={{ maxWidth: 680, margin: "0 auto", padding: "100px 24px 60px" }}>
-        <Link href="/jobs" style={{ fontSize: 12, color: "var(--color-text-subtle)", textDecoration: "none" }}>← Back to jobs</Link>
+      <PageShell className="!max-w-[720px] pt-[112px]">
+        <Link
+          href="/jobs"
+          className="mono text-[11px] tracking-[0.06em] text-ink-subtle transition-colors duration-fast ease-out-expo hover:text-brand"
+        >
+          ← BACK TO JOBS
+        </Link>
 
-        <h1 style={{ fontSize: 26, fontWeight: 700, color: "var(--color-text-heading)", margin: "12px 0 4px" }}>
+        <h1 className="mb-1.5 mt-4 text-[clamp(24px,3.6vw,32px)] font-bold tracking-[-0.02em] text-ink-heading">
           {posting.title}
         </h1>
-        <div style={{ fontSize: 13, color: "var(--color-text-subtle)", marginBottom: 20 }}>
-          {posting.org_name} · {posting.location} · {posting.remote_policy} · {posting.employment_type.replace("_", " ")}
-        </div>
+        <p className="text-[13px] text-ink-subtle">
+          {posting.org_name} · {posting.location} · {posting.remote_policy} ·{" "}
+          {posting.employment_type.replace("_", " ")}
+        </p>
 
         {posting.required_skills.length > 0 && (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 20 }}>
+          <div className="mt-5 flex flex-wrap gap-2">
             {posting.required_skills.map((skill) => (
-              <span key={skill} className="status-tag status-tag-muted">{skill}</span>
+              <StatusPill key={skill} tone="muted">
+                {skill}
+              </StatusPill>
             ))}
           </div>
         )}
 
-        <div className="card-surface" style={{ padding: 20, marginBottom: 24, whiteSpace: "pre-wrap", fontSize: 14, color: "var(--color-text-muted)", lineHeight: 1.7 }}>
+        <GlassCard className="mt-7 whitespace-pre-wrap text-[14px] leading-[1.75] text-ink-muted">
           {posting.description || "No description provided."}
-        </div>
+        </GlassCard>
 
         {applied ? (
-          <div style={{ padding: "16px 20px", background: "rgba(34,197,94,0.1)", border: "1px solid rgba(34,197,94,0.2)", borderRadius: 8, fontSize: 14, color: "var(--color-success)" }}>
-            Application submitted. Track its progress from <Link href="/applications" style={{ color: "var(--color-success)", fontWeight: 600 }}>My Applications</Link>.
-          </div>
+          <Alert tone="success" className="mt-6" title="Application submitted">
+            Track its progress from{" "}
+            <Link href="/applications" className="font-semibold underline">
+              My Applications
+            </Link>
+            .
+          </Alert>
         ) : (
-          <div className="card-surface" style={{ padding: 24 }}>
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-primary)", letterSpacing: "0.05em", marginBottom: 16 }}>
-              APPLY
-            </div>
+          <GlassCard elevation="high" padding="lg" className="mt-6">
+            <p className="eyebrow">APPLY</p>
 
             {!actor && (
-              <p style={{ fontSize: 13, color: "var(--color-text-muted)", marginBottom: 16 }}>
-                <Link href={`/login?next=/jobs/${postingId}`} style={{ color: "var(--color-primary)" }}>Log in</Link> or{" "}
-                <Link href="/register" style={{ color: "var(--color-primary)" }}>sign up</Link> to apply.
+              <p className="mt-4 text-[13px] text-ink-muted">
+                <Link href={`/login?next=/jobs/${postingId}`} className="text-brand hover:underline">
+                  Log in
+                </Link>{" "}
+                or{" "}
+                <Link href="/register" className="text-brand hover:underline">
+                  sign up
+                </Link>{" "}
+                to apply.
               </p>
             )}
 
             {actor && form && form.questions.length > 0 && (
-              <div style={{ marginBottom: 16 }}>
-                <p style={{ fontSize: 12, color: "var(--color-text-subtle)", marginBottom: 12 }}>
-                  {form.unanswered_count === 0
-                    ? "All questions are pre-filled from your profile vault."
-                    : `${form.unanswered_count} question${form.unanswered_count > 1 ? "s" : ""} need${form.unanswered_count === 1 ? "s" : ""} an answer.`}
-                </p>
-                {form.questions.map((q) => (
-                  <div key={q.key} style={{ marginBottom: 12 }}>
-                    <label htmlFor={`q-${q.key}`} style={{ display: "block", fontSize: 13, color: "var(--color-text-heading)", marginBottom: 4 }}>
-                      {q.text} {q.required && <span style={{ color: "var(--color-error)" }}>*</span>}
-                      {q.is_prefilled && <span style={{ fontSize: 11, color: "var(--color-success)", marginLeft: 8 }}>(from your vault)</span>}
-                    </label>
-                    <textarea
+              <div className="mt-5">
+                <p className="text-[12px] text-ink-subtle">{prefillSummary(form.unanswered_count)}</p>
+                <div className="mt-4 flex flex-col gap-4">
+                  {form.questions.map((q) => (
+                    <Textarea
+                      key={q.key}
                       id={`q-${q.key}`}
                       rows={2}
                       value={answers[q.key] || ""}
                       onChange={(e) => setAnswers((prev) => ({ ...prev, [q.key]: e.target.value }))}
-                      style={{ width: "100%", padding: "8px 12px", fontSize: 13, color: "var(--color-text-heading)", background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: 6, outline: "none", resize: "vertical" }}
+                      label={q.text}
+                      hint={q.is_prefilled ? "Pre-filled from your vault" : undefined}
+                      required={q.required}
                     />
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
             )}
 
             {error && (
-              <div style={{ padding: "10px 14px", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: 6, fontSize: 13, color: "var(--color-error)", marginBottom: 16 }}>
+              <Alert tone="error" className="mt-5">
                 {error}
-              </div>
+              </Alert>
             )}
 
-            <button
-              onClick={handleApply}
-              disabled={applying}
-              className="btn-primary"
-              style={{ padding: "12px 24px", fontSize: 14, opacity: applying ? 0.6 : 1 }}
-            >
-              {applying ? "Submitting..." : actor ? "Submit application" : "Log in to apply"}
-            </button>
-          </div>
+            <Button className="mt-6" size="lg" onClick={handleApply} loading={applying}>
+              {applyLabel(applying, Boolean(actor))}
+            </Button>
+          </GlassCard>
         )}
-      </main>
+      </PageShell>
     </div>
   );
 }

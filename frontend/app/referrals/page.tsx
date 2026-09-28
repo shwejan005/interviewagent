@@ -2,10 +2,29 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { motion } from "framer-motion";
 import Navbar from "../components/Navbar";
+import {
+  Alert,
+  Button,
+  ButtonLink,
+  EmptyState,
+  GlassCard,
+  PageHeader,
+  PageShell,
+  SkeletonList,
+  StatusPill,
+} from "../components/ui";
+import type { PillTone } from "../components/ui";
 import { useAuth } from "../../lib/auth-context";
 import { api, ApiError } from "../../lib/api";
 import type { Referral } from "../../lib/types";
+import { staggerContainer, staggerItem } from "../../lib/motion";
+
+const STATUS_TONE: Record<string, PillTone> = {
+  PENDING: "warning",
+  APPLIED: "success",
+};
 
 export default function ReferralsPage() {
   const router = useRouter();
@@ -65,82 +84,88 @@ export default function ReferralsPage() {
 
   if (authLoading || loading) {
     return (
-      <div style={{ minHeight: "100vh", background: "var(--color-bg)" }}>
+      <div className="min-h-screen">
         <Navbar />
-        <main style={{ maxWidth: 720, margin: "0 auto", padding: "120px 24px" }}>
-          <p style={{ color: "var(--color-text-muted)" }}>Loading...</p>
-        </main>
+        <PageShell className="!max-w-[760px] pt-[112px]">
+          <SkeletonList count={3} />
+        </PageShell>
       </div>
     );
   }
 
   return (
-    <div style={{ minHeight: "100vh", background: "var(--color-bg)" }}>
+    <div className="min-h-screen">
       <Navbar />
-      <main style={{ maxWidth: 720, margin: "0 auto", padding: "100px 24px 60px" }}>
-        <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-primary)", letterSpacing: "0.1em", marginBottom: 8 }}>
-          REFERRALS
-        </div>
-        <h1 style={{ fontSize: 26, fontWeight: 700, color: "var(--color-text-heading)", marginBottom: 8 }}>
-          Sent to you
-        </h1>
-        <p style={{ fontSize: 13, color: "var(--color-text-muted)", marginBottom: 24 }}>
-          A recruiter thought you&apos;d be a good fit for these roles.
-        </p>
+      <PageShell className="!max-w-[760px] pt-[112px]">
+        <PageHeader
+          eyebrow="REFERRALS"
+          title="Sent to you"
+          description="A recruiter thought you'd be a good fit for these roles."
+        />
 
         {error && (
-          <div style={{ padding: "10px 14px", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: 6, fontSize: 13, color: "var(--color-error)", marginBottom: 20 }}>
+          <Alert tone="error" className="mt-6">
             {error}
-          </div>
+          </Alert>
         )}
 
-        {referrals.length === 0 ? (
-          <p style={{ color: "var(--color-text-muted)", fontSize: 14 }}>No referrals yet.</p>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {referrals.map((ref) => (
-              <div key={ref.id} className="card-surface" style={{ padding: 20 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                  <div>
-                    <div style={{ fontSize: 14, fontWeight: 600, color: "var(--color-text-heading)" }}>{ref.posting_title}</div>
-                    <div style={{ fontSize: 12, color: "var(--color-text-subtle)" }}>{ref.org_name}</div>
-                  </div>
-                  <span
-                    className={`status-tag ${
-                      ref.status === "PENDING" ? "status-tag-warning" : ref.status === "APPLIED" ? "status-tag-success" : "status-tag-muted"
-                    }`}
-                  >
-                    {ref.status}
-                  </span>
-                </div>
-                {ref.note && (
-                  <p style={{ fontSize: 13, color: "var(--color-text-muted)", marginTop: 10, lineHeight: 1.6 }}>&ldquo;{ref.note}&rdquo;</p>
-                )}
-                {ref.status === "PENDING" && (
-                  <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
-                    <button
-                      onClick={() => handleAccept(ref.id)}
-                      disabled={actingOn === ref.id}
-                      className="btn-primary"
-                      style={{ padding: "6px 16px", fontSize: 12, opacity: actingOn === ref.id ? 0.6 : 1 }}
-                    >
-                      Accept & apply
-                    </button>
-                    <button
-                      onClick={() => handleDecline(ref.id)}
-                      disabled={actingOn === ref.id}
-                      className="btn-secondary"
-                      style={{ padding: "6px 16px", fontSize: 12, opacity: actingOn === ref.id ? 0.6 : 1 }}
-                    >
-                      Decline
-                    </button>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </main>
+        <div className="mt-8">
+          {referrals.length === 0 ? (
+            <EmptyState
+              title="No referrals yet"
+              description="Turn on “discoverable” in your profile so recruiters can find and refer you."
+              action={<ButtonLink href="/profile">Go to profile</ButtonLink>}
+            />
+          ) : (
+            <motion.div
+              initial="hidden"
+              animate="visible"
+              variants={staggerContainer(0.05)}
+              className="flex flex-col gap-3"
+            >
+              {referrals.map((ref) => (
+                <motion.div key={ref.id} variants={staggerItem}>
+                  <GlassCard>
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="min-w-0">
+                        <p className="text-[14px] font-semibold text-ink-heading">{ref.posting_title}</p>
+                        <p className="mt-0.5 text-[12px] text-ink-subtle">{ref.org_name}</p>
+                      </div>
+                      <StatusPill tone={STATUS_TONE[ref.status] ?? "muted"}>{ref.status}</StatusPill>
+                    </div>
+
+                    {ref.note && (
+                      <p className="mt-3 border-l-2 border-[var(--color-primary)] pl-3 text-[13px] italic leading-[1.65] text-ink-muted">
+                        &ldquo;{ref.note}&rdquo;
+                      </p>
+                    )}
+
+                    {ref.status === "PENDING" && (
+                      <div className="mt-5 flex flex-wrap gap-2">
+                        <Button
+                          size="sm"
+                          onClick={() => handleAccept(ref.id)}
+                          loading={actingOn === ref.id}
+                        >
+                          Accept &amp; apply
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => handleDecline(ref.id)}
+                          disabled={actingOn === ref.id}
+                        >
+                          Decline
+                        </Button>
+                      </div>
+                    )}
+                  </GlassCard>
+                </motion.div>
+              ))}
+            </motion.div>
+          )}
+        </div>
+      </PageShell>
     </div>
   );
 }

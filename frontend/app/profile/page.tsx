@@ -3,39 +3,51 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { motion } from "framer-motion";
 import Navbar from "../components/Navbar";
+import {
+  Alert,
+  Button,
+  GlassCard,
+  Input,
+  PageHeader,
+  PageShell,
+  SkeletonList,
+  StatusPill,
+  Textarea,
+} from "../components/ui";
 import { useAuth } from "../../lib/auth-context";
 import { api, ApiError } from "../../lib/api";
 import type { CandidateProfile, Education, Skill, WorkExperience } from "../../lib/types";
+import { staggerContainer, staggerItem } from "../../lib/motion";
 
-const inputStyle: React.CSSProperties = {
-  width: "100%",
-  padding: "10px 14px",
-  fontSize: 14,
-  color: "var(--color-text-heading)",
-  background: "var(--color-surface)",
-  border: "1px solid var(--color-border)",
-  borderRadius: 6,
-  outline: "none",
-};
-
-const labelStyle: React.CSSProperties = {
-  display: "block",
-  fontSize: 12,
-  fontWeight: 600,
-  color: "var(--color-text-muted)",
-  marginBottom: 6,
-  fontFamily: "var(--font-mono)",
-};
+/** Native checkbox styled to match the design system. */
+function Checkbox({
+  label,
+  checked,
+  onChange,
+}: Readonly<{ label: string; checked: boolean; onChange: (next: boolean) => void }>) {
+  return (
+    <label className="flex cursor-pointer items-center gap-2.5 text-[13px] text-ink-muted">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="h-4 w-4 cursor-pointer accent-[var(--color-primary)]"
+      />
+      {label}
+    </label>
+  );
+}
 
 function Section({ title, children }: Readonly<{ title: string; children: React.ReactNode }>) {
   return (
-    <div className="card-surface" style={{ padding: 24, marginBottom: 20 }}>
-      <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-primary)", letterSpacing: "0.05em", marginBottom: 16 }}>
-        {title.toUpperCase()}
-      </div>
-      {children}
-    </div>
+    <motion.div variants={staggerItem}>
+      <GlassCard padding="lg">
+        <p className="eyebrow">{title.toUpperCase()}</p>
+        <div className="mt-5">{children}</div>
+      </GlassCard>
+    </motion.div>
   );
 }
 
@@ -202,158 +214,223 @@ export default function ProfilePage() {
 
   if (authLoading || loading) {
     return (
-      <div style={{ minHeight: "100vh", background: "var(--color-bg)" }}>
+      <div className="min-h-screen">
         <Navbar />
-        <main style={{ maxWidth: 720, margin: "0 auto", padding: "120px 24px" }}>
-          <p style={{ color: "var(--color-text-muted)" }}>Loading your profile...</p>
-        </main>
+        <PageShell className="!max-w-[760px] pt-[112px]">
+          <SkeletonList count={3} />
+        </PageShell>
       </div>
     );
   }
 
   return (
-    <div style={{ minHeight: "100vh", background: "var(--color-bg)" }}>
+    <div className="min-h-screen">
       <Navbar />
-      <main style={{ maxWidth: 720, margin: "0 auto", padding: "100px 24px 60px" }}>
-        <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-primary)", letterSpacing: "0.1em", marginBottom: 8 }}>
-          YOUR PROFILE VAULT
-        </div>
-        <h1 style={{ fontSize: 26, fontWeight: 700, color: "var(--color-text-heading)", marginBottom: 8 }}>
-          {profile ? "Manage your profile" : "Welcome — let's build your profile"}
-        </h1>
-        <p style={{ fontSize: 13, color: "var(--color-text-muted)", marginBottom: profile ? 24 : 12, lineHeight: 1.6 }}>
-          Fill this out once. Every job application pre-fills from it, and it
-          gets stronger every time you apply — new questions you answer are
-          saved back here automatically.
-        </p>
+      <PageShell className="!max-w-[760px] pt-[112px]">
+        <PageHeader
+          eyebrow="YOUR PROFILE VAULT"
+          title={profile ? "Manage your profile" : "Welcome — let's build your profile"}
+          description="Fill this out once. Every job application pre-fills from it, and it gets stronger every time you apply — new questions you answer are saved back here automatically."
+        />
+
         {!profile && (
-          <p style={{ fontSize: 13, color: "var(--color-text-subtle)", marginBottom: 24 }}>
-            Just here to look around first? <Link href="/jobs" style={{ color: "var(--color-primary)" }}>Skip for now and browse jobs →</Link>
+          <p className="mt-4 text-[13px] text-ink-subtle">
+            Just here to look around first?{" "}
+            <Link href="/jobs" className="text-brand hover:underline">
+              Skip for now and browse jobs →
+            </Link>
           </p>
         )}
 
         {message && (
-          <div style={{ padding: "10px 14px", background: "rgba(34,197,94,0.1)", border: "1px solid rgba(34,197,94,0.2)", borderRadius: 6, fontSize: 13, color: "var(--color-success)", marginBottom: 20 }}>
+          <Alert tone="success" className="mt-6">
             {message}
-          </div>
+          </Alert>
         )}
         {error && (
-          <div style={{ padding: "10px 14px", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: 6, fontSize: 13, color: "var(--color-error)", marginBottom: 20 }}>
+          <Alert tone="error" className="mt-6">
             {error}
-          </div>
+          </Alert>
         )}
 
-        <form onSubmit={handleSaveProfile}>
-          <Section title="Basics">
-            <div style={{ marginBottom: 16 }}>
-              <label htmlFor="headline" style={labelStyle}>HEADLINE</label>
-              <input id="headline" style={inputStyle} value={headline} onChange={(e) => setHeadline(e.target.value)} placeholder="e.g. Senior Backend Engineer" />
-            </div>
-            <div style={{ marginBottom: 16 }}>
-              <label htmlFor="summary" style={labelStyle}>SUMMARY</label>
-              <textarea id="summary" rows={4} style={{ ...inputStyle, resize: "vertical" }} value={summary} onChange={(e) => setSummary(e.target.value)} />
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
-              <div>
-                <label htmlFor="location" style={labelStyle}>LOCATION</label>
-                <input id="location" style={inputStyle} value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Bangalore, India" />
-              </div>
-              <div>
-                <label htmlFor="years" style={labelStyle}>YEARS OF EXPERIENCE</label>
-                <input id="years" type="number" min={0} max={70} step={0.5} style={inputStyle} value={yearsExperience} onChange={(e) => setYearsExperience(e.target.value)} />
-              </div>
-            </div>
-            <div style={{ display: "flex", gap: 24, marginBottom: 8 }}>
-              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--color-text-muted)" }}>
-                <input type="checkbox" checked={openToWork} onChange={(e) => setOpenToWork(e.target.checked)} />
-                Open to work
-              </label>
-              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--color-text-muted)" }}>
-                <input type="checkbox" checked={isDiscoverable} onChange={(e) => setIsDiscoverable(e.target.checked)} />
-                Discoverable by recruiters
-              </label>
-            </div>
-            <p style={{ fontSize: 11, color: "var(--color-text-subtle)", marginBottom: 16 }}>
-              Discoverable is off by default. Turn it on to let recruiters find your profile in searches, even before you apply anywhere.
-            </p>
-            <button type="submit" disabled={saving} className="btn-primary" style={{ padding: "10px 20px", fontSize: 13, opacity: saving ? 0.6 : 1 }}>
-              {saving ? "Saving..." : "Save basics"}
-            </button>
-          </Section>
-        </form>
-
-        <Section title="Skills">
-          <label htmlFor="skills" style={labelStyle}>COMMA-SEPARATED</label>
-          <input
-            id="skills"
-            style={{ ...inputStyle, marginBottom: 12 }}
-            value={skillsText}
-            onChange={(e) => setSkillsText(e.target.value)}
-            placeholder="Python, PostgreSQL, FastAPI"
-          />
-          <button onClick={handleSaveSkills} disabled={saving} className="btn-secondary" style={{ padding: "8px 16px", fontSize: 13 }}>
-            Save skills
-          </button>
-          {profile && profile.skills.length > 0 && (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 16 }}>
-              {profile.skills.map((s: Skill) => (
-                <span key={s.id} className={`status-tag ${s.verified ? "status-tag-success" : "status-tag-muted"}`}>
-                  {s.skill}{s.verified ? " ✓" : ""}
-                </span>
-              ))}
-            </div>
-          )}
-        </Section>
-
-        <Section title="Work experience">
-          {profile?.experiences.map((exp: WorkExperience) => (
-            <div key={exp.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: "1px solid var(--color-border)" }}>
-              <div>
-                <div style={{ fontSize: 14, color: "var(--color-text-heading)", fontWeight: 600 }}>{exp.title} · {exp.company}</div>
-                <div style={{ fontSize: 12, color: "var(--color-text-subtle)" }}>
-                  {exp.start_date} – {exp.is_current ? "Present" : exp.end_date || "?"}
+        <motion.div
+          initial="hidden"
+          animate="visible"
+          variants={staggerContainer(0.07)}
+          className="mt-8 flex flex-col gap-5"
+        >
+          <form onSubmit={handleSaveProfile}>
+            <Section title="Basics">
+              <div className="flex flex-col gap-5">
+                <Input
+                  id="headline"
+                  label="HEADLINE"
+                  value={headline}
+                  onChange={(e) => setHeadline(e.target.value)}
+                  placeholder="e.g. Senior Backend Engineer"
+                />
+                <Textarea
+                  id="summary"
+                  label="SUMMARY"
+                  rows={4}
+                  value={summary}
+                  onChange={(e) => setSummary(e.target.value)}
+                />
+                <div className="grid gap-5 sm:grid-cols-2">
+                  <Input
+                    id="location"
+                    label="LOCATION"
+                    value={location}
+                    onChange={(e) => setLocation(e.target.value)}
+                    placeholder="Bangalore, India"
+                  />
+                  <Input
+                    id="years"
+                    label="YEARS OF EXPERIENCE"
+                    type="number"
+                    min={0}
+                    max={70}
+                    step={0.5}
+                    value={yearsExperience}
+                    onChange={(e) => setYearsExperience(e.target.value)}
+                  />
                 </div>
+                <div className="flex flex-wrap gap-6">
+                  <Checkbox label="Open to work" checked={openToWork} onChange={setOpenToWork} />
+                  <Checkbox
+                    label="Discoverable by recruiters"
+                    checked={isDiscoverable}
+                    onChange={setIsDiscoverable}
+                  />
+                </div>
+                <p className="text-[11px] leading-relaxed text-ink-subtle">
+                  Discoverable is off by default. Turn it on to let recruiters find your profile in
+                  searches, even before you apply anywhere.
+                </p>
+                <Button type="submit" className="self-start" loading={saving}>
+                  {saving ? "Saving..." : "Save basics"}
+                </Button>
               </div>
-              <button onClick={() => handleDeleteExperience(exp.id)} className="btn-secondary" style={{ padding: "4px 10px", fontSize: 12 }}>
-                Remove
-              </button>
-            </div>
-          ))}
-          <form onSubmit={handleAddExperience} style={{ marginTop: 16, display: "grid", gap: 12 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-              <input style={inputStyle} placeholder="Company" value={expCompany} onChange={(e) => setExpCompany(e.target.value)} />
-              <input style={inputStyle} placeholder="Title" value={expTitle} onChange={(e) => setExpTitle(e.target.value)} />
-            </div>
-            <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-              <input style={{ ...inputStyle, flex: 1 }} placeholder="Start date (YYYY-MM)" value={expStart} onChange={(e) => setExpStart(e.target.value)} />
-              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--color-text-muted)", whiteSpace: "nowrap" }}>
-                <input type="checkbox" checked={expCurrent} onChange={(e) => setExpCurrent(e.target.checked)} />
-                Current role
-              </label>
-            </div>
-            <button type="submit" disabled={saving} className="btn-secondary" style={{ padding: "8px 16px", fontSize: 13, justifySelf: "start" }}>
-              Add experience
-            </button>
+            </Section>
           </form>
-        </Section>
 
-        <Section title="Education">
-          {profile?.education.map((edu: Education) => (
-            <div key={edu.id} style={{ padding: "8px 0", borderBottom: "1px solid var(--color-border)" }}>
-              <div style={{ fontSize: 14, color: "var(--color-text-heading)" }}>{edu.institution}</div>
-              <div style={{ fontSize: 12, color: "var(--color-text-subtle)" }}>{edu.degree} {edu.end_year ? `· ${edu.end_year}` : ""}</div>
-            </div>
-          ))}
-          <form onSubmit={handleAddEducation} style={{ marginTop: 16, display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: 12 }}>
-            <input style={inputStyle} placeholder="Institution" value={eduInstitution} onChange={(e) => setEduInstitution(e.target.value)} />
-            <input style={inputStyle} placeholder="Degree" value={eduDegree} onChange={(e) => setEduDegree(e.target.value)} />
-            <input style={inputStyle} type="number" placeholder="End year" value={eduEndYear} onChange={(e) => setEduEndYear(e.target.value)} />
-            <button type="submit" disabled={saving} className="btn-secondary" style={{ padding: "8px 16px", fontSize: 13, gridColumn: "1 / -1", justifySelf: "start" }}>
-              Add education
-            </button>
-          </form>
-        </Section>
-      </main>
+          <Section title="Skills">
+            <Input
+              id="skills"
+              label="COMMA-SEPARATED"
+              value={skillsText}
+              onChange={(e) => setSkillsText(e.target.value)}
+              placeholder="Python, PostgreSQL, FastAPI"
+            />
+            <Button
+              className="mt-4"
+              size="sm"
+              variant="secondary"
+              onClick={handleSaveSkills}
+              loading={saving}
+            >
+              Save skills
+            </Button>
+            {profile && profile.skills.length > 0 && (
+              <div className="mt-5 flex flex-wrap gap-2">
+                {profile.skills.map((s: Skill) => (
+                  <StatusPill key={s.id} tone={s.verified ? "success" : "muted"}>
+                    {s.skill}
+                    {s.verified ? " ✓" : ""}
+                  </StatusPill>
+                ))}
+              </div>
+            )}
+          </Section>
+
+          <Section title="Work experience">
+            {profile?.experiences.map((exp: WorkExperience) => (
+              <div
+                key={exp.id}
+                className="flex items-center justify-between gap-4 border-b border-subtle py-3 first:pt-0"
+              >
+                <div className="min-w-0">
+                  <p className="text-[14px] font-semibold text-ink-heading">
+                    {exp.title} · {exp.company}
+                  </p>
+                  <p className="mono mt-0.5 text-[12px] text-ink-subtle">
+                    {exp.start_date} – {exp.is_current ? "Present" : exp.end_date || "?"}
+                  </p>
+                </div>
+                <Button size="sm" variant="ghost" onClick={() => handleDeleteExperience(exp.id)}>
+                  Remove
+                </Button>
+              </div>
+            ))}
+            <form onSubmit={handleAddExperience} className="mt-5 flex flex-col gap-4">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Input
+                  placeholder="Company"
+                  aria-label="Company"
+                  value={expCompany}
+                  onChange={(e) => setExpCompany(e.target.value)}
+                />
+                <Input
+                  placeholder="Title"
+                  aria-label="Title"
+                  value={expTitle}
+                  onChange={(e) => setExpTitle(e.target.value)}
+                />
+              </div>
+              <div className="flex flex-wrap items-center gap-4">
+                <Input
+                  wrapperClassName="min-w-[200px] flex-1"
+                  placeholder="Start date (YYYY-MM)"
+                  aria-label="Start date"
+                  value={expStart}
+                  onChange={(e) => setExpStart(e.target.value)}
+                />
+                <Checkbox label="Current role" checked={expCurrent} onChange={setExpCurrent} />
+              </div>
+              <Button type="submit" size="sm" variant="secondary" className="self-start" loading={saving}>
+                Add experience
+              </Button>
+            </form>
+          </Section>
+
+          <Section title="Education">
+            {profile?.education.map((edu: Education) => (
+              <div key={edu.id} className="border-b border-subtle py-3 first:pt-0">
+                <p className="text-[14px] text-ink-heading">{edu.institution}</p>
+                <p className="mt-0.5 text-[12px] text-ink-subtle">
+                  {edu.degree} {edu.end_year ? `· ${edu.end_year}` : ""}
+                </p>
+              </div>
+            ))}
+            <form onSubmit={handleAddEducation} className="mt-5 flex flex-col gap-4">
+              <div className="grid gap-4 sm:grid-cols-[2fr_1fr_1fr]">
+                <Input
+                  placeholder="Institution"
+                  aria-label="Institution"
+                  value={eduInstitution}
+                  onChange={(e) => setEduInstitution(e.target.value)}
+                />
+                <Input
+                  placeholder="Degree"
+                  aria-label="Degree"
+                  value={eduDegree}
+                  onChange={(e) => setEduDegree(e.target.value)}
+                />
+                <Input
+                  type="number"
+                  placeholder="End year"
+                  aria-label="End year"
+                  value={eduEndYear}
+                  onChange={(e) => setEduEndYear(e.target.value)}
+                />
+              </div>
+              <Button type="submit" size="sm" variant="secondary" className="self-start" loading={saving}>
+                Add education
+              </Button>
+            </form>
+          </Section>
+        </motion.div>
+      </PageShell>
     </div>
   );
 }

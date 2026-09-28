@@ -3,9 +3,12 @@
 import { Suspense, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
+import { motion } from "framer-motion";
 import Navbar from "../components/Navbar";
+import { Alert, Button, GlassCard, Input } from "../components/ui";
 import { useAuth } from "../../lib/auth-context";
 import { ApiError } from "../../lib/api";
+import { fadeUp, staggerContainer } from "../../lib/motion";
 
 function LoginForm() {
   const router = useRouter();
@@ -34,63 +37,58 @@ function LoginForm() {
   };
 
   return (
-    <div style={{ minHeight: "100vh", background: "var(--color-bg)" }}>
+    <div className="min-h-screen">
       <Navbar />
-      <main style={{ maxWidth: 420, margin: "0 auto", padding: "120px 24px 60px" }}>
-        <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-primary)", letterSpacing: "0.1em", marginBottom: 8 }}>
-          WELCOME BACK
-        </div>
-        <h1 style={{ fontSize: 26, fontWeight: 700, color: "var(--color-text-heading)", marginBottom: 24 }}>
-          Log in
-        </h1>
-
-        <form onSubmit={handleSubmit}>
-          <div style={{ marginBottom: 16 }}>
-            <label htmlFor="email" style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--color-text-muted)", marginBottom: 6, fontFamily: "var(--font-mono)" }}>
-              EMAIL
-            </label>
-            <input
-              id="email"
-              type="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              style={{ width: "100%", padding: "10px 14px", fontSize: 14, color: "var(--color-text-heading)", background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: 6, outline: "none" }}
-            />
-          </div>
-          <div style={{ marginBottom: 20 }}>
-            <label htmlFor="password" style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--color-text-muted)", marginBottom: 6, fontFamily: "var(--font-mono)" }}>
-              PASSWORD
-            </label>
-            <input
-              id="password"
-              type="password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              style={{ width: "100%", padding: "10px 14px", fontSize: 14, color: "var(--color-text-heading)", background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: 6, outline: "none" }}
-            />
-          </div>
-
-          {error && (
-            <div style={{ padding: "10px 14px", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: 6, fontSize: 13, color: "var(--color-error)", marginBottom: 20 }}>
-              {error}
-            </div>
-          )}
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="btn-primary"
-            style={{ width: "100%", padding: "12px 20px", fontSize: 14, opacity: loading ? 0.6 : 1 }}
+      <main className="mx-auto w-full max-w-[440px] px-6 pb-20 pt-[132px]">
+        <motion.div initial="hidden" animate="visible" variants={staggerContainer(0.07)}>
+          <motion.p variants={fadeUp} className="eyebrow text-center">
+            WELCOME BACK
+          </motion.p>
+          <motion.h1
+            variants={fadeUp}
+            className="mb-7 mt-2 text-center text-[28px] font-bold tracking-[-0.02em] text-ink-heading"
           >
-            {loading ? "Logging in..." : "Log in"}
-          </button>
-        </form>
+            Log in
+          </motion.h1>
 
-        <p style={{ fontSize: 13, color: "var(--color-text-muted)", marginTop: 20, textAlign: "center" }}>
-          Don&apos;t have an account? <Link href={registerHref} style={{ color: "var(--color-primary)" }}>Sign up</Link>
-        </p>
+          <motion.div variants={fadeUp}>
+            <GlassCard elevation="high" padding="lg">
+              <form onSubmit={handleSubmit} className="flex flex-col gap-5">
+                <Input
+                  id="email"
+                  type="email"
+                  label="EMAIL"
+                  autoComplete="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                />
+                <Input
+                  id="password"
+                  type="password"
+                  label="PASSWORD"
+                  autoComplete="current-password"
+                  required
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                />
+
+                {error && <Alert tone="error">{error}</Alert>}
+
+                <Button type="submit" size="lg" fullWidth loading={loading}>
+                  {loading ? "Logging in..." : "Log in"}
+                </Button>
+              </form>
+            </GlassCard>
+          </motion.div>
+
+          <motion.p variants={fadeUp} className="mt-6 text-center text-[13px] text-ink-muted">
+            Don&apos;t have an account?{" "}
+            <Link href={registerHref} className="text-brand hover:underline">
+              Sign up
+            </Link>
+          </motion.p>
+        </motion.div>
       </main>
     </div>
   );
