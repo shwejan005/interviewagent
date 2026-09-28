@@ -3,21 +3,38 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { motion } from "framer-motion";
 import Navbar from "../components/Navbar";
+import {
+  Alert,
+  Button,
+  ButtonLink,
+  EmptyState,
+  GlassCard,
+  Input,
+  PageHeader,
+  PageShell,
+  SkeletonList,
+  StatusPill,
+} from "../components/ui";
+import type { PillTone } from "../components/ui";
 import { useAuth } from "../../lib/auth-context";
 import { api, ApiError } from "../../lib/api";
 import type { Campaign, JobPosting } from "../../lib/types";
+import { staggerContainer, staggerItem } from "../../lib/motion";
 
-const inputStyle: React.CSSProperties = {
-  width: "100%",
-  padding: "10px 14px",
-  fontSize: 14,
-  color: "var(--color-text-heading)",
-  background: "var(--color-surface)",
-  border: "1px solid var(--color-border)",
-  borderRadius: 6,
-  outline: "none",
+const POSTING_TONE: Record<string, PillTone> = {
+  PUBLISHED: "success",
+  CLOSED: "muted",
+  DRAFT: "warning",
 };
+
+function slugify(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "");
+}
 
 function CreateOrgForm({ onCreated }: Readonly<{ onCreated: () => void }>) {
   const [name, setName] = useState("");
@@ -40,36 +57,31 @@ function CreateOrgForm({ onCreated }: Readonly<{ onCreated: () => void }>) {
   };
 
   return (
-    <div className="card-surface" style={{ padding: 24, maxWidth: 480 }}>
-      <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-primary)", letterSpacing: "0.05em", marginBottom: 16 }}>
-        CREATE AN ORGANIZATION
-      </div>
-      <form onSubmit={handleSubmit}>
-        <div style={{ marginBottom: 12 }}>
-          <input
-            style={inputStyle}
-            placeholder="Company name"
-            value={name}
-            onChange={(e) => {
-              setName(e.target.value);
-              if (!slug) setSlug(e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, ""));
-            }}
-          />
-        </div>
-        <div style={{ marginBottom: 12 }}>
-          <input
-            style={inputStyle}
-            placeholder="url-slug"
-            value={slug}
-            onChange={(e) => setSlug(e.target.value)}
-          />
-        </div>
-        {error && <p style={{ fontSize: 12, color: "var(--color-error)", marginBottom: 12 }}>{error}</p>}
-        <button type="submit" disabled={saving || !name || !slug} className="btn-primary" style={{ padding: "10px 20px", fontSize: 13 }}>
+    <GlassCard elevation="high" padding="lg" className="max-w-[480px]">
+      <p className="eyebrow">CREATE AN ORGANIZATION</p>
+      <form onSubmit={handleSubmit} className="mt-5 flex flex-col gap-4">
+        <Input
+          label="COMPANY NAME"
+          placeholder="Acme Robotics"
+          value={name}
+          onChange={(e) => {
+            setName(e.target.value);
+            if (!slug) setSlug(slugify(e.target.value));
+          }}
+        />
+        <Input
+          label="URL SLUG"
+          placeholder="acme-robotics"
+          hint="Used in your public careers URL."
+          value={slug}
+          onChange={(e) => setSlug(e.target.value)}
+        />
+        {error && <Alert tone="error">{error}</Alert>}
+        <Button type="submit" className="self-start" loading={saving} disabled={!name || !slug}>
           {saving ? "Creating..." : "Create organization"}
-        </button>
+        </Button>
       </form>
-    </div>
+    </GlassCard>
   );
 }
 
@@ -153,118 +165,163 @@ export default function OrgHomePage() {
 
   if (actor?.memberships.length === 0) {
     return (
-      <div style={{ minHeight: "100vh", background: "var(--color-bg)" }}>
+      <div className="min-h-screen">
         <Navbar />
-        <main style={{ maxWidth: 720, margin: "0 auto", padding: "100px 24px 60px" }}>
-          <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-primary)", letterSpacing: "0.1em", marginBottom: 8 }}>
-            WELCOME TO EVALIA
+        <PageShell className="!max-w-[760px] pt-[112px]">
+          <PageHeader
+            eyebrow="WELCOME TO EVALIA"
+            title="Recruiter workspace"
+            description="You're not part of an organization yet. Create one to start posting jobs and reviewing applicants. This workspace is separate from candidate job-seeking — the same login can do both, but they don't affect each other."
+          />
+          <div className="mt-8">
+            <CreateOrgForm onCreated={() => refreshActor()} />
           </div>
-          <h1 style={{ fontSize: 26, fontWeight: 700, color: "var(--color-text-heading)", marginBottom: 8 }}>
-            Recruiter workspace
-          </h1>
-          <p style={{ fontSize: 13, color: "var(--color-text-muted)", marginBottom: 24 }}>
-            You&apos;re not part of an organization yet. Create one to start posting jobs and
-            reviewing applicants. This workspace is separate from candidate job-seeking —
-            the same login can do both, but they don&apos;t affect each other.
-          </p>
-          <CreateOrgForm onCreated={() => refreshActor()} />
-        </main>
+        </PageShell>
       </div>
     );
   }
 
   if (!activeOrgId) {
     return (
-      <div style={{ minHeight: "100vh", background: "var(--color-bg)" }}>
+      <div className="min-h-screen">
         <Navbar />
-        <main style={{ maxWidth: 720, margin: "0 auto", padding: "100px 24px 60px" }}>
-          <h1 style={{ fontSize: 26, fontWeight: 700, color: "var(--color-text-heading)", marginBottom: 16 }}>
-            Select an organization
-          </h1>
-          <p style={{ fontSize: 13, color: "var(--color-text-muted)" }}>
-            Use the organization switcher in the top navigation bar to choose a workspace.
-          </p>
-        </main>
+        <PageShell className="!max-w-[760px] pt-[112px]">
+          <PageHeader
+            eyebrow="RECRUITER WORKSPACE"
+            title="Select an organization"
+            description="Use the organization switcher in the top navigation bar to choose a workspace."
+          />
+        </PageShell>
       </div>
     );
   }
 
   return (
-    <div style={{ minHeight: "100vh", background: "var(--color-bg)" }}>
+    <div className="min-h-screen">
       <Navbar />
-      <main style={{ maxWidth: 780, margin: "0 auto", padding: "100px 24px 60px" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
-          <div>
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-primary)", letterSpacing: "0.1em", marginBottom: 8 }}>
-              RECRUITER WORKSPACE
-            </div>
-            <h1 style={{ fontSize: 26, fontWeight: 700, color: "var(--color-text-heading)" }}>Campaigns</h1>
-          </div>
-          <Link href="/org/analytics" className="btn-secondary" style={{ padding: "8px 16px", fontSize: 13 }}>
-            Analytics
-          </Link>
-        </div>
+      <PageShell className="!max-w-[820px] pt-[112px]">
+        <PageHeader
+          eyebrow="RECRUITER WORKSPACE"
+          title="Campaigns"
+          actions={
+            <ButtonLink href="/org/analytics" variant="secondary" size="sm">
+              Analytics
+            </ButtonLink>
+          }
+        />
 
         {error && (
-          <div style={{ padding: "10px 14px", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: 6, fontSize: 13, color: "var(--color-error)", marginBottom: 20 }}>
+          <Alert tone="error" className="mt-6">
             {error}
-          </div>
+          </Alert>
         )}
 
-        <form onSubmit={handleCreateCampaign} style={{ display: "flex", gap: 8, marginBottom: 24 }}>
-          <input
-            style={{ ...inputStyle, flex: 1 }}
+        <form onSubmit={handleCreateCampaign} className="mt-8 flex flex-wrap items-center gap-3">
+          <Input
+            wrapperClassName="min-w-[240px] flex-1"
+            aria-label="New campaign name"
             placeholder="New campaign name (e.g. Q4 Backend Expansion)"
             value={newCampaignName}
             onChange={(e) => setNewCampaignName(e.target.value)}
           />
-          <button type="submit" disabled={creatingCampaign} className="btn-primary" style={{ padding: "10px 20px", fontSize: 13 }}>
+          <Button type="submit" loading={creatingCampaign} disabled={!newCampaignName.trim()}>
             Create campaign
-          </button>
+          </Button>
         </form>
 
-        {loading ? (
-          <p style={{ color: "var(--color-text-muted)" }}>Loading...</p>
-        ) : campaigns.length === 0 ? (
-          <p style={{ color: "var(--color-text-muted)", fontSize: 14 }}>No campaigns yet.</p>
-        ) : (
-          campaigns.map((campaign) => (
-            <div key={campaign.id} className="card-surface" style={{ padding: 20, marginBottom: 16 }}>
-              <div style={{ fontSize: 15, fontWeight: 600, color: "var(--color-text-heading)", marginBottom: 12 }}>
-                {campaign.name}
-              </div>
-              {(postingsByCampaign[campaign.id] || []).map((posting) => (
-                <div key={posting.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: "1px solid var(--color-border)" }}>
-                  <Link href={`/org/postings/${posting.id}`} style={{ fontSize: 13, color: "var(--color-text-heading)", textDecoration: "none" }}>
-                    {posting.title}
-                  </Link>
-                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                    <span className={`status-tag ${posting.status === "PUBLISHED" ? "status-tag-success" : posting.status === "CLOSED" ? "status-tag-muted" : "status-tag-warning"}`}>
-                      {posting.status}
-                    </span>
-                    {posting.status === "DRAFT" && (
-                      <button onClick={() => handlePublish(posting.id, "PUBLISHED")} className="btn-secondary" style={{ padding: "4px 10px", fontSize: 11 }}>
-                        Publish
-                      </button>
-                    )}
-                    {posting.status === "PUBLISHED" && (
-                      <button onClick={() => handlePublish(posting.id, "CLOSED")} className="btn-secondary" style={{ padding: "4px 10px", fontSize: 11 }}>
-                        Close
-                      </button>
-                    )}
-                  </div>
-                </div>
-              ))}
-              <NewPostingRow campaignId={campaign.id} onCreate={handleCreatePosting} />
-            </div>
-          ))
-        )}
-      </main>
+        <div className="mt-8">
+          <CampaignList
+            loading={loading}
+            campaigns={campaigns}
+            postingsByCampaign={postingsByCampaign}
+            onPublish={handlePublish}
+            onCreatePosting={handleCreatePosting}
+          />
+        </div>
+      </PageShell>
     </div>
   );
 }
 
-function NewPostingRow({ campaignId, onCreate }: Readonly<{ campaignId: number; onCreate: (campaignId: number, title: string) => Promise<void> }>) {
+type CampaignListProps = {
+  loading: boolean;
+  campaigns: Campaign[];
+  postingsByCampaign: Record<number, JobPosting[]>;
+  onPublish: (postingId: number, status: string) => Promise<void>;
+  onCreatePosting: (campaignId: number, title: string) => Promise<void>;
+};
+
+function CampaignList({
+  loading,
+  campaigns,
+  postingsByCampaign,
+  onPublish,
+  onCreatePosting,
+}: Readonly<CampaignListProps>) {
+  if (loading) return <SkeletonList count={3} />;
+
+  if (campaigns.length === 0) {
+    return (
+      <EmptyState
+        title="No campaigns yet"
+        description="A campaign groups related roles — create one above, then add postings to it."
+      />
+    );
+  }
+
+  return (
+    <motion.div
+      initial="hidden"
+      animate="visible"
+      variants={staggerContainer(0.06)}
+      className="flex flex-col gap-4"
+    >
+      {campaigns.map((campaign) => (
+        <motion.div key={campaign.id} variants={staggerItem}>
+          <GlassCard>
+            <p className="text-[15px] font-semibold text-ink-heading">{campaign.name}</p>
+            <div className="mt-3">
+              {(postingsByCampaign[campaign.id] || []).map((posting) => (
+                <div
+                  key={posting.id}
+                  className="flex flex-wrap items-center justify-between gap-3 border-b border-subtle py-3"
+                >
+                  <Link
+                    href={`/org/postings/${posting.id}`}
+                    className="text-[13px] text-ink-heading no-underline transition-colors duration-fast ease-out-expo hover:text-brand"
+                  >
+                    {posting.title}
+                  </Link>
+                  <div className="flex items-center gap-2">
+                    <StatusPill tone={POSTING_TONE[posting.status] ?? "muted"}>
+                      {posting.status}
+                    </StatusPill>
+                    {posting.status === "DRAFT" && (
+                      <Button size="sm" variant="ghost" onClick={() => onPublish(posting.id, "PUBLISHED")}>
+                        Publish
+                      </Button>
+                    )}
+                    {posting.status === "PUBLISHED" && (
+                      <Button size="sm" variant="ghost" onClick={() => onPublish(posting.id, "CLOSED")}>
+                        Close
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <NewPostingRow campaignId={campaign.id} onCreate={onCreatePosting} />
+          </GlassCard>
+        </motion.div>
+      ))}
+    </motion.div>
+  );
+}
+
+function NewPostingRow({
+  campaignId,
+  onCreate,
+}: Readonly<{ campaignId: number; onCreate: (campaignId: number, title: string) => Promise<void> }>) {
   const [title, setTitle] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -277,16 +334,17 @@ function NewPostingRow({ campaignId, onCreate }: Readonly<{ campaignId: number; 
   };
 
   return (
-    <form onSubmit={handleSubmit} style={{ display: "flex", gap: 8, marginTop: 12 }}>
-      <input
-        style={{ ...inputStyle, flex: 1 }}
+    <form onSubmit={handleSubmit} className="mt-4 flex flex-wrap items-center gap-2">
+      <Input
+        wrapperClassName="min-w-[200px] flex-1"
+        aria-label="New posting title"
         placeholder="New posting title"
         value={title}
         onChange={(e) => setTitle(e.target.value)}
       />
-      <button type="submit" disabled={saving || !title.trim()} className="btn-secondary" style={{ padding: "8px 16px", fontSize: 12 }}>
+      <Button type="submit" size="sm" variant="secondary" loading={saving} disabled={!title.trim()}>
         Add posting
-      </button>
+      </Button>
     </form>
   );
 }

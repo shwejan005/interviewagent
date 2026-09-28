@@ -3,16 +3,133 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
+import { motion } from "framer-motion";
 import Navbar from "../../../components/Navbar";
+import {
+  Alert,
+  Button,
+  EmptyState,
+  GlassCard,
+  Input,
+  PageShell,
+  Select,
+  SkeletonList,
+  StatusPill,
+  Textarea,
+} from "../../../components/ui";
 import { useAuth } from "../../../../lib/auth-context";
 import { api, ApiError } from "../../../../lib/api";
 import type { ApplicationSummary, CandidateRecommendation, JobPosting } from "../../../../lib/types";
+import { staggerContainer, staggerItem } from "../../../../lib/motion";
 
 const NEXT_STAGE_OPTIONS = ["SCREENING", "TECHNICAL", "BEHAVIORAL", "INTERVIEW", "OFFER", "HIRED"];
 
 function formatSalaryRange(min: number | null, max: number | null): string {
   if (!min && !max) return "";
   return `${min ?? "?"} – ${max ?? "?"}`;
+}
+
+function candidateName(app: ApplicationSummary): string {
+  return (app as unknown as { candidate_name?: string }).candidate_name || "Candidate";
+}
+
+function PipelineList({
+  applications,
+  onTransition,
+}: Readonly<{
+  applications: ApplicationSummary[];
+  onTransition: (applicationId: number, toStage: string) => Promise<void>;
+}>) {
+  if (applications.length === 0) {
+    return (
+      <EmptyState
+        title="No applicants yet"
+        description="Publish the posting and share the link — applicants land here the moment they apply."
+      />
+    );
+  }
+
+  return (
+    <motion.div
+      initial="hidden"
+      animate="visible"
+      variants={staggerContainer(0.05)}
+      className="flex flex-col gap-3"
+    >
+      {applications.map((app) => (
+        <motion.div key={app.id} variants={staggerItem}>
+          <GlassCard padding="sm">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div className="min-w-0">
+                <p className="text-[14px] font-semibold text-ink-heading">{candidateName(app)}</p>
+                <div className="mt-1.5">
+                  <StatusPill tone="primary">{app.current_stage}</StatusPill>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Select
+                  aria-label="Move to stage"
+                  wrapperClassName="w-[150px]"
+                  defaultValue=""
+                  onChange={(e) => {
+                    if (e.target.value) onTransition(app.id, e.target.value);
+                    e.target.value = "";
+                  }}
+                >
+                  <option value="">Move to...</option>
+                  {NEXT_STAGE_OPTIONS.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </Select>
+                <Button size="sm" variant="ghost" onClick={() => onTransition(app.id, "REJECTED")}>
+                  Reject
+                </Button>
+              </div>
+            </div>
+          </GlassCard>
+        </motion.div>
+      ))}
+    </motion.div>
+  );
+}
+
+function RecommendedList({ candidates }: Readonly<{ candidates: CandidateRecommendation[] }>) {
+  if (candidates.length === 0) {
+    return (
+      <EmptyState
+        title="No matches yet"
+        description="No discoverable candidates match this posting yet. Matches appear as more candidates opt in."
+      />
+    );
+  }
+
+  return (
+    <motion.div
+      initial="hidden"
+      animate="visible"
+      variants={staggerContainer(0.05)}
+      className="flex flex-col gap-3"
+    >
+      {candidates.map((cand) => (
+        <motion.div key={cand.user_id} variants={staggerItem}>
+          <GlassCard padding="sm">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <p className="text-[14px] font-semibold text-ink-heading">{cand.full_name}</p>
+                <p className="mt-0.5 text-[12px] text-ink-subtle">
+                  {cand.headline} · {cand.location}
+                </p>
+              </div>
+              <span className="mono shrink-0 text-[15px] font-bold text-brand">{cand.score}/10</span>
+            </div>
+            <p className="mt-3 text-[12px] leading-[1.65] text-ink-muted">{cand.explanation}</p>
+          </GlassCard>
+        </motion.div>
+      ))}
+    </motion.div>
+  );
 }
 
 export default function PostingDetailPage() {
@@ -106,161 +223,120 @@ export default function PostingDetailPage() {
 
   if (authLoading || loading) {
     return (
-      <div style={{ minHeight: "100vh", background: "var(--color-bg)" }}>
+      <div className="min-h-screen">
         <Navbar />
-        <main style={{ maxWidth: 780, margin: "0 auto", padding: "120px 24px" }}>
-          <p style={{ color: "var(--color-text-muted)" }}>Loading...</p>
-        </main>
+        <PageShell className="!max-w-[820px] pt-[112px]">
+          <SkeletonList count={4} />
+        </PageShell>
       </div>
     );
   }
 
   if (!posting) {
     return (
-      <div style={{ minHeight: "100vh", background: "var(--color-bg)" }}>
+      <div className="min-h-screen">
         <Navbar />
-        <main style={{ maxWidth: 780, margin: "0 auto", padding: "120px 24px" }}>
-          <p style={{ color: "var(--color-error)" }}>{error || "Not found."}</p>
-        </main>
+        <PageShell className="!max-w-[820px] pt-[112px]">
+          <Alert tone="error" title="Posting unavailable">
+            {error || "We couldn't find that posting."}
+          </Alert>
+        </PageShell>
       </div>
     );
   }
 
   return (
-    <div style={{ minHeight: "100vh", background: "var(--color-bg)" }}>
+    <div className="min-h-screen">
       <Navbar />
-      <main style={{ maxWidth: 780, margin: "0 auto", padding: "100px 24px 60px" }}>
-        <Link href="/org" style={{ fontSize: 12, color: "var(--color-text-subtle)", textDecoration: "none" }}>← Back to campaigns</Link>
+      <PageShell className="!max-w-[820px] pt-[112px]">
+        <Link
+          href="/org"
+          className="mono text-[11px] tracking-[0.08em] text-ink-subtle no-underline transition-colors duration-fast ease-out-expo hover:text-brand"
+        >
+          ← BACK TO CAMPAIGNS
+        </Link>
 
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", margin: "12px 0 24px" }}>
-          <div>
-            <h1 style={{ fontSize: 24, fontWeight: 700, color: "var(--color-text-heading)" }}>{posting.title}</h1>
-            <div style={{ fontSize: 12, color: "var(--color-text-subtle)" }}>
-              {posting.location} · {posting.remote_policy} · {formatSalaryRange(posting.salary_min, posting.salary_max)}
-            </div>
+        <div className="mt-4 flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h1 className="text-[26px] font-bold tracking-[-0.02em] text-ink-heading">{posting.title}</h1>
+            <p className="mt-1 text-[12px] text-ink-subtle">
+              {posting.location} · {posting.remote_policy} ·{" "}
+              {formatSalaryRange(posting.salary_min, posting.salary_max)}
+            </p>
           </div>
-          <span className={`status-tag ${posting.status === "PUBLISHED" ? "status-tag-success" : "status-tag-warning"}`}>
+          <StatusPill tone={posting.status === "PUBLISHED" ? "success" : "warning"}>
             {posting.status}
-          </span>
+          </StatusPill>
         </div>
 
         {error && (
-          <div style={{ padding: "10px 14px", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: 6, fontSize: 13, color: "var(--color-error)", marginBottom: 20 }}>
+          <Alert tone="error" className="mt-6">
             {error}
-          </div>
+          </Alert>
         )}
 
-        {/* Funnel summary */}
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 24 }}>
+        <div className="mt-6 flex flex-wrap gap-2">
           {Object.entries(funnel).map(([stage, count]) => (
-            <span key={stage} className="status-tag status-tag-muted">{stage}: {count}</span>
+            <StatusPill key={stage} tone="muted">
+              {stage}: {count}
+            </StatusPill>
           ))}
         </div>
 
-        <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
-          <button onClick={() => setTab("pipeline")} className={tab === "pipeline" ? "btn-primary" : "btn-secondary"} style={{ padding: "8px 16px", fontSize: 13 }}>
+        <div className="mt-6 flex flex-wrap gap-2">
+          <Button
+            size="sm"
+            variant={tab === "pipeline" ? "primary" : "secondary"}
+            onClick={() => setTab("pipeline")}
+          >
             Applicants
-          </button>
-          <button
+          </Button>
+          <Button
+            size="sm"
+            variant={tab === "recommended" ? "primary" : "secondary"}
             onClick={() => {
               setTab("recommended");
               if (recommended.length === 0) loadRecommended();
             }}
-            className={tab === "recommended" ? "btn-primary" : "btn-secondary"}
-            style={{ padding: "8px 16px", fontSize: 13 }}
           >
             Recommended candidates
-          </button>
+          </Button>
         </div>
 
-        {tab === "pipeline" ? (
-          applications.length === 0 ? (
-            <p style={{ color: "var(--color-text-muted)", fontSize: 14 }}>No applicants yet.</p>
+        <div className="mt-6">
+          {tab === "pipeline" ? (
+            <PipelineList applications={applications} onTransition={handleTransition} />
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 32 }}>
-              {applications.map((app) => (
-                <div key={app.id} className="card-surface" style={{ padding: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div>
-                    <div style={{ fontSize: 14, fontWeight: 600, color: "var(--color-text-heading)" }}>
-                      {(app as unknown as { candidate_name?: string }).candidate_name || "Candidate"}
-                    </div>
-                    <span className="status-tag status-tag-primary" style={{ marginTop: 4, display: "inline-block" }}>{app.current_stage}</span>
-                  </div>
-                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                    <select
-                      aria-label="Move to stage"
-                      defaultValue=""
-                      onChange={(e) => {
-                        if (e.target.value) handleTransition(app.id, e.target.value);
-                        e.target.value = "";
-                      }}
-                      style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: 6, color: "var(--color-text-muted)", fontSize: 12, padding: "6px 8px" }}
-                    >
-                      <option value="">Move to...</option>
-                      {NEXT_STAGE_OPTIONS.map((s) => (
-                        <option key={s} value={s}>{s}</option>
-                      ))}
-                    </select>
-                    <button onClick={() => handleTransition(app.id, "REJECTED")} className="btn-secondary" style={{ padding: "6px 12px", fontSize: 12 }}>
-                      Reject
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )
-        ) : (
-          <div style={{ marginBottom: 32 }}>
-            {recommended.length === 0 ? (
-              <p style={{ color: "var(--color-text-muted)", fontSize: 14 }}>
-                No discoverable candidates match this posting yet.
-              </p>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                {recommended.map((cand) => (
-                  <div key={cand.user_id} className="card-surface" style={{ padding: 16 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between" }}>
-                      <div>
-                        <div style={{ fontSize: 14, fontWeight: 600, color: "var(--color-text-heading)" }}>{cand.full_name}</div>
-                        <div style={{ fontSize: 12, color: "var(--color-text-subtle)" }}>{cand.headline} · {cand.location}</div>
-                      </div>
-                      <span style={{ fontFamily: "var(--font-mono)", fontSize: 15, fontWeight: 700, color: "var(--color-primary)" }}>{cand.score}/10</span>
-                    </div>
-                    <p style={{ fontSize: 12, color: "var(--color-text-muted)", marginTop: 8, lineHeight: 1.6 }}>{cand.explanation}</p>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
+            <RecommendedList candidates={recommended} />
+          )}
+        </div>
 
-        <div className="card-surface" style={{ padding: 24 }}>
-          <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-primary)", letterSpacing: "0.05em", marginBottom: 16 }}>
-            REFER A CANDIDATE
-          </div>
-          <form onSubmit={handleRefer} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <input
+        <GlassCard elevation="high" padding="lg" className="mt-8">
+          <p className="eyebrow">REFER A CANDIDATE</p>
+          <form onSubmit={handleRefer} className="mt-5 flex flex-col gap-4">
+            <Input
               type="email"
               required
+              label="CANDIDATE EMAIL"
               placeholder="candidate@example.com"
               value={referEmail}
               onChange={(e) => setReferEmail(e.target.value)}
-              style={{ padding: "10px 14px", fontSize: 14, color: "var(--color-text-heading)", background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: 6, outline: "none" }}
             />
-            <textarea
+            <Textarea
               rows={2}
-              placeholder="Why are you referring them? (optional)"
+              label="NOTE"
+              hint="Optional — the candidate sees this on their referrals page."
+              placeholder="Why are you referring them?"
               value={referNote}
               onChange={(e) => setReferNote(e.target.value)}
-              style={{ padding: "10px 14px", fontSize: 14, color: "var(--color-text-heading)", background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: 6, outline: "none", resize: "vertical" }}
             />
-            {referMessage && <p style={{ fontSize: 12, color: "var(--color-success)" }}>{referMessage}</p>}
-            <button type="submit" disabled={referring} className="btn-primary" style={{ padding: "10px 20px", fontSize: 13, alignSelf: "flex-start" }}>
+            {referMessage && <Alert tone="success">{referMessage}</Alert>}
+            <Button type="submit" className="self-start" loading={referring}>
               {referring ? "Sending..." : "Send referral"}
-            </button>
+            </Button>
           </form>
-        </div>
-      </main>
+        </GlassCard>
+      </PageShell>
     </div>
   );
 }
