@@ -2,6 +2,16 @@
 
 import { useState, useEffect } from "react";
 import { useRouter, useParams } from "next/navigation";
+import {
+  Alert,
+  Button,
+  GlassCard,
+  PageHeader,
+  PageShell,
+  StageTimeline,
+  Textarea,
+} from "../../components/ui";
+import type { TimelineStage } from "../../components/ui";
 
 const API_BASE = "/api";
 
@@ -18,19 +28,13 @@ const ROUND_META: Record<string, { title: string; subtitle: string; agent: strin
   },
 };
 
-const PIPELINE_STAGES = [
-  "1. Screening",
-  "2. Technical",
-  "3. Behavioral",
-  "4. Recommendation",
-  "5. Committee",
+const PIPELINE_STAGES: TimelineStage[] = [
+  { id: "screening", label: "Screening" },
+  { id: "technical", label: "Technical" },
+  { id: "behavioral", label: "Behavioral" },
+  { id: "recommendation", label: "Recommendation" },
+  { id: "committee", label: "Committee" },
 ];
-
-function stageColor(stageIndex: number, currentRound: number): string {
-  if (stageIndex === currentRound) return "var(--color-primary)";
-  if (stageIndex < currentRound) return "var(--color-text-heading)";
-  return "var(--color-text-subtle)";
-}
 
 export default function RoundPage() {
   const router = useRouter();
@@ -116,105 +120,48 @@ export default function RoundPage() {
   };
 
   return (
-    <div style={{ minHeight: "100vh", background: "var(--color-bg)" }}>
-      <main style={{ maxWidth: 680, margin: "0 auto", padding: "60px 24px" }}>
-        {/* Pipeline stepper */}
-        <div style={{ display: "flex", gap: 12, marginBottom: 32, flexWrap: "wrap", fontFamily: "var(--font-mono)", fontSize: 11 }}>
-          {PIPELINE_STAGES.map((s, idx) => (
-            <span
-              key={s}
-              style={{
-                color: stageColor(idx + 1, roundNum),
-                fontWeight: idx + 1 === roundNum ? 600 : 400,
-              }}
-            >
-              {s}
-            </span>
-          ))}
-        </div>
+    <div className="min-h-screen">
+      <PageShell className="!max-w-[720px]">
+        <StageTimeline
+          stages={PIPELINE_STAGES}
+          currentIndex={Math.max(0, roundNum - 1)}
+          className="mb-10"
+        />
 
-        <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-primary)", letterSpacing: "0.1em", marginBottom: 8 }}>
-          STAGE {roundId} — {meta.agent.toUpperCase()}
-        </div>
+        <PageHeader
+          eyebrow={`STAGE ${roundId} — ${meta.agent.toUpperCase()}`}
+          title={meta.title}
+          description={meta.subtitle}
+        />
 
-        <h1 style={{ fontSize: 26, fontWeight: 700, color: "var(--color-text-heading)", marginBottom: 8 }}>
-          {meta.title}
-        </h1>
-        <p style={{ fontSize: 14, color: "var(--color-text-muted)", marginBottom: 24, lineHeight: 1.6 }}>
-          {meta.subtitle}
-        </p>
-
-        {/* Question display */}
         {question && (
-          <div
-            className="card-surface"
-            style={{
-              padding: 20,
-              marginBottom: 24,
-              borderColor: "var(--color-border-hover)",
-            }}
-          >
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-primary)", marginBottom: 8, letterSpacing: "0.05em" }}>
-              INTERVIEW QUESTION
-            </div>
-            <div style={{ fontSize: 14, color: "var(--color-text-heading)", lineHeight: 1.7, whiteSpace: "pre-wrap" }}>
+          <GlassCard elevation="high" padding="lg" className="mt-8">
+            <p className="eyebrow mb-2">INTERVIEW QUESTION</p>
+            <p className="whitespace-pre-wrap text-[14px] leading-[1.7] text-ink-heading">
               {question}
-            </div>
-          </div>
+            </p>
+          </GlassCard>
         )}
 
-        {/* Answer form */}
-        <form onSubmit={handleSubmit}>
-          <div style={{ marginBottom: 20 }}>
-            <label htmlFor="candidate-answer" style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--color-text-muted)", marginBottom: 6, fontFamily: "var(--font-mono)" }}>
-              CANDIDATE ANSWER
-            </label>
-            <textarea
-              id="candidate-answer"
-              rows={12}
-              value={answer}
-              onChange={(e) => setAnswer(e.target.value)}
-              disabled={loading}
-              placeholder="Type your response..."
-              style={{
-                width: "100%",
-                padding: "14px 16px",
-                fontSize: 13,
-                color: "var(--color-text-heading)",
-                background: "var(--color-surface)",
-                border: "1px solid var(--color-border)",
-                borderRadius: 6,
-                outline: "none",
-                resize: "vertical",
-                fontFamily: "inherit",
-                lineHeight: 1.6,
-                minHeight: 200,
-              }}
-            />
-          </div>
+        <form onSubmit={handleSubmit} className="mt-8 flex flex-col gap-6">
+          <Textarea
+            id="candidate-answer"
+            label="CANDIDATE ANSWER"
+            rows={12}
+            className="min-h-[220px] leading-[1.65]"
+            value={answer}
+            onChange={(e) => setAnswer(e.target.value)}
+            disabled={loading}
+            placeholder="Type your response..."
+          />
 
-          {error && (
-            <div style={{ padding: "10px 14px", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: 6, fontSize: 13, color: "var(--color-error)", marginBottom: 20 }}>
-              {error}
-            </div>
-          )}
+          {error && <Alert tone="error">{error}</Alert>}
 
-          <button
-            type="submit"
-            disabled={loading || !answer.trim()}
-            className="btn-primary"
-            style={{
-              width: "100%",
-              padding: "12px 20px",
-              fontSize: 14,
-              opacity: loading || !answer.trim() ? 0.5 : 1,
-              cursor: loading || !answer.trim() ? "not-allowed" : "pointer",
-            }}
-          >
+          <Button type="submit" size="lg" fullWidth loading={loading} disabled={!answer.trim()}>
             {loading ? "Evaluating response with agent..." : "Submit Answer"}
-          </button>
+          </Button>
         </form>
-      </main>
+      </PageShell>
     </div>
   );
 }

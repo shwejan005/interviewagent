@@ -4,6 +4,17 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import Navbar from "../components/Navbar";
+import {
+  Alert,
+  Button,
+  Input,
+  PageHeader,
+  PageShell,
+  StageTimeline,
+  Textarea,
+} from "../components/ui";
+import type { TimelineStage } from "../components/ui";
+import { cn } from "../../lib/utils";
 
 const API_BASE = "/api";
 
@@ -20,12 +31,12 @@ const ROLE_DESCRIPTIONS: Record<string, string> = {
   "Data Scientist": "Scientist specializing in data modeling and analytical insights.",
 };
 
-const PIPELINE_STAGES = [
-  "1. Screening",
-  "2. Technical",
-  "3. Behavioral",
-  "4. Recommendation",
-  "5. Committee",
+const PIPELINE_STAGES: TimelineStage[] = [
+  { id: "screening", label: "Screening" },
+  { id: "technical", label: "Technical" },
+  { id: "behavioral", label: "Behavioral" },
+  { id: "recommendation", label: "Recommendation" },
+  { id: "committee", label: "Committee" },
 ];
 
 export default function InterviewPage() {
@@ -100,149 +111,94 @@ export default function InterviewPage() {
   };
 
   return (
-    <div style={{ minHeight: "100vh", background: "var(--color-bg)" }}>
+    <div className="min-h-screen">
       <Navbar />
 
-      <main style={{ maxWidth: 680, margin: "0 auto", padding: "100px 24px 60px" }}>
-        {/* Stage stepper */}
-        <div style={{ display: "flex", gap: 12, marginBottom: 32, flexWrap: "wrap", fontFamily: "var(--font-mono)", fontSize: 11 }}>
-          {PIPELINE_STAGES.map((s, idx) => (
-            <span
-              key={s}
-              style={{
-                color: idx === 0 ? "var(--color-primary)" : "var(--color-text-subtle)",
-                fontWeight: idx === 0 ? 600 : 400,
-              }}
-            >
-              {s}
-            </span>
-          ))}
-        </div>
+      <PageShell className="!max-w-[720px] pt-[112px]">
+        <StageTimeline stages={PIPELINE_STAGES} currentIndex={0} className="mb-10" />
 
-        <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-primary)", letterSpacing: "0.1em", marginBottom: 8 }}>
-          PUBLIC SANDBOX — STAGE 1 OF 5
-        </div>
-        <h1 style={{ fontSize: 28, fontWeight: 700, color: "var(--color-text-heading)", marginBottom: 8 }}>
-          Try the AI evaluation engine
-        </h1>
-        <p style={{ fontSize: 14, color: "var(--color-text-muted)", marginBottom: 32 }}>
+        <PageHeader
+          eyebrow="PUBLIC SANDBOX — STAGE 1 OF 5"
+          title="Try the AI evaluation engine"
+        />
+        <p className="mt-3 text-[14px] leading-[1.7] text-ink-muted">
           This is a public, no-signup sandbox for trying the 5-stage agent pipeline on a sample
           resume — it doesn&apos;t create a real job application. To actually apply to a role, use{" "}
-          <Link href="/jobs" style={{ color: "var(--color-primary)" }}>the job board</Link> instead.
+          <Link href="/jobs" className="text-brand hover:underline">
+            the job board
+          </Link>{" "}
+          instead.
         </p>
 
-        <form onSubmit={handleSubmit}>
-          {/* Candidate Name */}
-          <div style={{ marginBottom: 20 }}>
-            <label htmlFor="candidate-name" style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--color-text-muted)", marginBottom: 6, fontFamily: "var(--font-mono)" }}>
-              CANDIDATE NAME (OPTIONAL)
-            </label>
-            <input
-              id="candidate-name"
-              type="text"
-              value={candidateName}
-              onChange={(e) => setCandidateName(e.target.value)}
-              disabled={loading}
-              placeholder="e.g. Jane Doe"
-              style={{
-                width: "100%",
-                padding: "10px 14px",
-                fontSize: 14,
-                color: "var(--color-text-heading)",
-                background: "var(--color-surface)",
-                border: "1px solid var(--color-border)",
-                borderRadius: 6,
-                outline: "none",
-                fontFamily: "inherit",
-              }}
-            />
-          </div>
+        <form onSubmit={handleSubmit} className="mt-8 flex flex-col gap-6">
+          <Input
+            id="candidate-name"
+            label="CANDIDATE NAME (OPTIONAL)"
+            value={candidateName}
+            onChange={(e) => setCandidateName(e.target.value)}
+            disabled={loading}
+            placeholder="e.g. Jane Doe"
+          />
 
-          {/* Role selector */}
-          <fieldset style={{ border: "none", padding: 0, margin: 0, marginBottom: 20 }}>
-            <legend style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--color-text-muted)", marginBottom: 6, fontFamily: "var(--font-mono)", padding: 0 }}>
-              TARGET ROLE
-            </legend>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 8 }}>
+          <fieldset className="m-0 border-none p-0">
+            <legend className="field-label p-0">TARGET ROLE</legend>
+            <div className="mt-2 grid gap-2 [grid-template-columns:repeat(auto-fill,minmax(200px,1fr))]">
               {roles.map((r) => (
                 <button
                   key={r}
                   type="button"
                   onClick={() => setRole(r)}
                   disabled={loading}
-                  className="card-surface"
-                  style={{
-                    padding: "12px 14px",
-                    textAlign: "left",
-                    cursor: loading ? "default" : "pointer",
-                    borderColor: role === r ? "var(--color-primary)" : "var(--color-border)",
-                    background: role === r ? "rgba(249, 115, 22, 0.05)" : "var(--color-surface)",
-                  }}
+                  aria-pressed={role === r}
+                  className={cn(
+                    "glass rounded-[var(--radius)] p-3.5 text-left transition-all duration-base ease-out-expo disabled:cursor-default",
+                    role === r
+                      ? "border-brand bg-[rgba(249,115,22,0.07)] shadow-glow-primary"
+                      : "hover:-translate-y-0.5 hover:border-strong",
+                  )}
                 >
-                  <div style={{ fontSize: 13, fontWeight: 600, color: role === r ? "var(--color-primary)" : "var(--color-text-heading)" }}>
+                  <span
+                    className={cn(
+                      "block text-[13px] font-semibold",
+                      role === r ? "text-brand" : "text-ink-heading",
+                    )}
+                  >
                     {r}
-                  </div>
+                  </span>
                   {ROLE_DESCRIPTIONS[r] && (
-                    <div style={{ fontSize: 11, color: "var(--color-text-subtle)", marginTop: 4, lineHeight: 1.4 }}>
+                    <span className="mt-1 block text-[11px] leading-[1.45] text-ink-subtle">
                       {ROLE_DESCRIPTIONS[r]}
-                    </div>
+                    </span>
                   )}
                 </button>
               ))}
             </div>
           </fieldset>
 
-          {/* Resume text */}
-          <div style={{ marginBottom: 20 }}>
-            <label htmlFor="resume-text" style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--color-text-muted)", marginBottom: 6, fontFamily: "var(--font-mono)" }}>
-              RESUME / CV CONTENT
-            </label>
-            <textarea
-              id="resume-text"
-              rows={10}
-              value={resume}
-              onChange={(e) => setResume(e.target.value)}
-              disabled={loading}
-              placeholder="Paste candidate resume text..."
-              style={{
-                width: "100%",
-                padding: "12px 14px",
-                fontSize: 13,
-                color: "var(--color-text-heading)",
-                background: "var(--color-surface)",
-                border: "1px solid var(--color-border)",
-                borderRadius: 6,
-                outline: "none",
-                resize: "vertical",
-                fontFamily: "inherit",
-                lineHeight: 1.6,
-                minHeight: 180,
-              }}
-            />
-          </div>
+          <Textarea
+            id="resume-text"
+            label="RESUME / CV CONTENT"
+            rows={10}
+            className="min-h-[180px] leading-[1.65]"
+            value={resume}
+            onChange={(e) => setResume(e.target.value)}
+            disabled={loading}
+            placeholder="Paste candidate resume text..."
+          />
 
-          {error && (
-            <div style={{ padding: "10px 14px", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: 6, fontSize: 13, color: "var(--color-error)", marginBottom: 20 }}>
-              {error}
-            </div>
-          )}
+          {error && <Alert tone="error">{error}</Alert>}
 
-          <button
+          <Button
             type="submit"
-            disabled={loading || !resume.trim() || !role}
-            className="btn-primary"
-            style={{
-              width: "100%",
-              padding: "12px 20px",
-              fontSize: 14,
-              opacity: loading || !resume.trim() || !role ? 0.5 : 1,
-              cursor: loading || !resume.trim() || !role ? "not-allowed" : "pointer",
-            }}
+            size="lg"
+            fullWidth
+            loading={loading}
+            disabled={!resume.trim() || !role}
           >
             {loading ? `Running Screening Agent for ${role}...` : "Submit Resume & Begin Evaluation"}
-          </button>
+          </Button>
         </form>
-      </main>
+      </PageShell>
     </div>
   );
 }

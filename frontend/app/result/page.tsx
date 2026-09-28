@@ -2,16 +2,33 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { AnimatePresence, motion } from "framer-motion";
 import Navbar from "../components/Navbar";
+import {
+  Alert,
+  Button,
+  GlassCard,
+  PageHeader,
+  PageShell,
+  ScoreRing,
+  StatusPill,
+} from "../components/ui";
+import type { PillTone } from "../components/ui";
+import { staggerContainer, staggerItem } from "../../lib/motion";
 
 const API_BASE = "/api";
 
-const DECISION_CLASSES: Record<string, string> = {
-  HIRE: "status-tag-success",
-  HOLD: "status-tag-warning",
-  REJECT: "status-tag-error",
-  FAIL: "status-tag-error",
+const DECISION_TONE: Record<string, PillTone> = {
+  HIRE: "success",
+  HOLD: "warning",
+  REJECT: "error",
+  FAIL: "error",
 };
+
+function decisionTone(decision: string | undefined): PillTone {
+  if (!decision) return "primary";
+  return DECISION_TONE[decision.toUpperCase()] ?? "primary";
+}
 
 type FinalResult = {
   decision: string;
@@ -35,104 +52,118 @@ function VerdictCard({ title, agent, verdict, roundNumber }: Readonly<{ title: s
   const reasoning = isJson ? verdict.reasoning || verdict.detailed_recommendation || verdict.overall_assessment || "" : String(verdict);
   const confidence = isJson ? verdict.confidence : null;
 
-  const decisionClass = DECISION_CLASSES[decision?.toUpperCase()] || "status-tag-primary";
+  const tone = decisionTone(decision);
 
   return (
-    <div className="card-surface" style={{ padding: 0, overflow: "hidden" }}>
+    <GlassCard padding="none" className="overflow-hidden">
       <button
         type="button"
-        style={{ width: "100%", padding: "16px 20px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", background: "none", border: "none", textAlign: "left", font: "inherit", color: "inherit" }}
+        className="flex w-full flex-wrap items-center justify-between gap-3 border-none bg-transparent px-5 py-4 text-left text-inherit transition-colors duration-base ease-out-expo hover:bg-[rgba(255,255,255,0.03)]"
         onClick={() => setExpanded(!expanded)}
         aria-expanded={expanded}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-primary)" }}>
-            STAGE {roundNumber}
-          </span>
-          <span style={{ fontSize: 14, fontWeight: 600, color: "var(--color-text-heading)" }}>{title}</span>
-          <span style={{ fontSize: 12, color: "var(--color-text-subtle)" }}>— {agent}</span>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-          {score !== null && (
-            <span style={{ fontFamily: "var(--font-mono)", fontSize: 14, fontWeight: 700, color: "var(--color-text-heading)" }}>
-              {typeof score === 'number' ? score.toFixed(1) : score}/10
+        <span className="flex flex-wrap items-center gap-3">
+          <span className="mono text-[11px] text-brand">STAGE {roundNumber}</span>
+          <span className="text-[14px] font-semibold text-ink-heading">{title}</span>
+          <span className="text-[12px] text-ink-subtle">— {agent}</span>
+        </span>
+        <span className="flex items-center gap-4">
+          {score !== null && score !== undefined && (
+            <span className="mono text-[14px] font-bold text-ink-heading">
+              {typeof score === "number" ? score.toFixed(1) : score}/10
             </span>
           )}
-          {decision && <span className={`status-tag ${decisionClass}`}>{decision.toUpperCase()}</span>}
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-text-subtle)", marginLeft: 8 }}>
-            {expanded ? "[ - ]" : "[ + ]"}
-          </span>
-        </div>
+          {decision && <StatusPill tone={tone}>{decision.toUpperCase()}</StatusPill>}
+          <span className="mono text-[11px] text-ink-subtle">{expanded ? "[ − ]" : "[ + ]"}</span>
+        </span>
       </button>
 
-      {expanded && (
-        <div style={{ padding: 20, borderTop: "1px solid var(--color-border)", display: "flex", flexDirection: "column", gap: 16 }}>
-          {/* Confidence */}
-          {confidence !== null && (
-            <div>
-              <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-subtle)" }}>CONFIDENCE: </span>
-              <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--color-text-heading)" }}>{(confidence * 100).toFixed(0)}%</span>
-            </div>
-          )}
+      <AnimatePresence initial={false}>
+        {expanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+            className="overflow-hidden"
+          >
+            <div className="flex flex-col gap-4 border-t border-subtle px-5 py-5">
+              {confidence !== null && confidence !== undefined && (
+                <p className="mono text-[11px] text-ink-subtle">
+                  CONFIDENCE:{" "}
+                  <span className="text-ink-heading">{(confidence * 100).toFixed(0)}%</span>
+                </p>
+              )}
 
-          {/* Behavioral dimensions */}
-          {isJson && verdict.leadership !== undefined && (
-            <div>
-              <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-subtle)", marginBottom: 8 }}>DIMENSION SCORES</div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: 8 }}>
-                {[
-                  { label: "Leadership", value: verdict.leadership },
-                  { label: "Communication", value: verdict.communication },
-                  { label: "Teamwork", value: verdict.teamwork },
-                  { label: "Ownership", value: verdict.ownership },
-                  { label: "Conflict Handling", value: verdict.conflict_handling },
-                  { label: "Culture Fit", value: verdict.culture_fit },
-                ].filter(d => d.value !== undefined).map((d) => (
-                  <div key={d.label} style={{ padding: "8px 10px", background: "var(--color-surface)", borderRadius: 4, border: "1px solid var(--color-border)" }}>
-                    <div style={{ fontSize: 10, color: "var(--color-text-subtle)" }}>{d.label}</div>
-                    <div style={{ fontFamily: "var(--font-mono)", fontSize: 14, fontWeight: 600, color: "var(--color-text-heading)", marginTop: 2 }}>{d.value}/10</div>
+              {isJson && verdict.leadership !== undefined && (
+                <div>
+                  <p className="mono mb-2 text-[10px] text-ink-subtle">DIMENSION SCORES</p>
+                  <div className="grid gap-2 [grid-template-columns:repeat(auto-fill,minmax(130px,1fr))]">
+                    {[
+                      { label: "Leadership", value: verdict.leadership },
+                      { label: "Communication", value: verdict.communication },
+                      { label: "Teamwork", value: verdict.teamwork },
+                      { label: "Ownership", value: verdict.ownership },
+                      { label: "Conflict Handling", value: verdict.conflict_handling },
+                      { label: "Culture Fit", value: verdict.culture_fit },
+                    ]
+                      .filter((d) => d.value !== undefined)
+                      .map((d) => (
+                        <div key={d.label} className="glass-low rounded-lg px-2.5 py-2">
+                          <p className="text-[10px] text-ink-subtle">{d.label}</p>
+                          <p className="mono mt-0.5 text-[14px] font-semibold text-ink-heading">
+                            {d.value}/10
+                          </p>
+                        </div>
+                      ))}
                   </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Strengths & Weaknesses */}
-          {(strengths.length > 0 || weaknesses.length > 0) && (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-              {strengths.length > 0 && (
-                <div>
-                  <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-success)", marginBottom: 6 }}>STRENGTHS</div>
-                  {strengths.map((s: string, i: number) => (
-                    <div key={`${i}-${s.slice(0, 40)}`} style={{ fontSize: 12, color: "var(--color-text-muted)", lineHeight: 1.6, marginBottom: 4 }}>
-                      • {s}
-                    </div>
-                  ))}
                 </div>
               )}
-              {weaknesses.length > 0 && (
-                <div>
-                  <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-error)", marginBottom: 6 }}>WEAKNESSES</div>
-                  {weaknesses.map((w: string, i: number) => (
-                    <div key={`${i}-${w.slice(0, 40)}`} style={{ fontSize: 12, color: "var(--color-text-muted)", lineHeight: 1.6, marginBottom: 4 }}>
-                      • {w}
+
+              {(strengths.length > 0 || weaknesses.length > 0) && (
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {strengths.length > 0 && (
+                    <div>
+                      <p className="mono mb-1.5 text-[10px] text-[var(--color-success)]">STRENGTHS</p>
+                      {strengths.map((s: string, i: number) => (
+                        <p
+                          key={`${i}-${s.slice(0, 40)}`}
+                          className="mb-1 text-[12px] leading-[1.6] text-ink-muted"
+                        >
+                          • {s}
+                        </p>
+                      ))}
                     </div>
-                  ))}
+                  )}
+                  {weaknesses.length > 0 && (
+                    <div>
+                      <p className="mono mb-1.5 text-[10px] text-[var(--color-error)]">WEAKNESSES</p>
+                      {weaknesses.map((w: string, i: number) => (
+                        <p
+                          key={`${i}-${w.slice(0, 40)}`}
+                          className="mb-1 text-[12px] leading-[1.6] text-ink-muted"
+                        >
+                          • {w}
+                        </p>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {reasoning && (
+                <div>
+                  <p className="mono mb-1.5 text-[10px] text-ink-subtle">EVALUATION RATIONALE</p>
+                  <p className="whitespace-pre-wrap text-[13px] leading-[1.7] text-ink-muted">
+                    {reasoning}
+                  </p>
                 </div>
               )}
             </div>
-          )}
-
-          {/* Reasoning */}
-          {reasoning && (
-            <div>
-              <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-subtle)", marginBottom: 6 }}>EVALUATION RATIONALE</div>
-              <div style={{ fontSize: 13, color: "var(--color-text-muted)", lineHeight: 1.7, whiteSpace: "pre-wrap" }}>{reasoning}</div>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </GlassCard>
   );
 }
 
@@ -206,15 +237,19 @@ export default function ResultPage() {
 
   if (loading) {
     return (
-      <div style={{ minHeight: "100vh", background: "var(--color-bg)" }}>
+      <div className="min-h-screen">
         <Navbar />
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "80vh", gap: 16 }}>
-          <div style={{ fontFamily: "var(--font-mono)", fontSize: 13, color: "var(--color-primary)" }}>
-            RUNNING RECOMMENDATION AGENT & COMMITTEE EVALUATOR...
-          </div>
-          <div style={{ fontSize: 12, color: "var(--color-text-subtle)" }}>
+        <div
+          className="flex min-h-[80vh] flex-col items-center justify-center gap-4 px-6 text-center"
+          aria-busy="true"
+        >
+          <span className="spinner" />
+          <p className="mono text-[13px] text-brand">
+            RUNNING RECOMMENDATION AGENT &amp; COMMITTEE EVALUATOR...
+          </p>
+          <p className="text-[12px] text-ink-subtle">
             Agents are reviewing all peer verdicts to form the final decision.
-          </div>
+          </p>
         </div>
       </div>
     );
@@ -222,23 +257,23 @@ export default function ResultPage() {
 
   if (error) {
     return (
-      <div style={{ minHeight: "100vh", background: "var(--color-bg)" }}>
+      <div className="min-h-screen">
         <Navbar />
-        <div style={{ maxWidth: 500, margin: "0 auto", padding: "120px 24px", textAlign: "center" }}>
-          <div style={{ padding: "12px 16px", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: 6, fontSize: 13, color: "var(--color-error)", marginBottom: 24 }}>
-            {error}
+        <PageShell className="!max-w-[520px] pt-[112px]">
+          <Alert tone="error">{error}</Alert>
+          <div className="mt-6 flex justify-center gap-3">
+            <Button onClick={fetchFinalDecision}>Retry</Button>
+            <Button variant="secondary" onClick={handleRestart}>
+              Start New
+            </Button>
           </div>
-          <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
-            <button className="btn-primary" onClick={fetchFinalDecision}>Retry</button>
-            <button className="btn-secondary" onClick={handleRestart}>Start New</button>
-          </div>
-        </div>
+        </PageShell>
       </div>
     );
   }
 
   const decision = result?.decision?.toUpperCase() || "UNKNOWN";
-  const decisionClass = DECISION_CLASSES[decision] || "status-tag-primary";
+  const tone = decisionTone(decision);
   const overallScore = result?.overall_score;
   const confidence = result?.confidence;
   const committeeVerdict = result?.verdict;
@@ -250,138 +285,124 @@ export default function ResultPage() {
     { key: "round3", title: "Behavioral Assessment", agent: "Behavioral Agent", round: 3 },
   ];
 
+  const hasScore = overallScore !== null && overallScore !== undefined;
+  const hasConfidence = confidence !== null && confidence !== undefined;
+  const storedRole = sessionStorage.getItem("interview_role") || "Engineering Role";
+  const storedName = sessionStorage.getItem("candidate_name");
+  const headline = rejectedAt
+    ? `Evaluation terminated at stage ${rejectedAt}`
+    : "Candidate evaluation summary";
+
   return (
-    <div style={{ minHeight: "100vh", background: "var(--color-bg)" }}>
+    <div className="min-h-screen">
       <Navbar />
 
-      <main style={{ maxWidth: 720, margin: "0 auto", padding: "100px 24px 60px" }}>
-        {/* Header */}
-        <div style={{ marginBottom: 32 }}>
-          <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-primary)", letterSpacing: "0.1em", marginBottom: 6 }}>
-            EVALUATION REPORT
-          </div>
-          <h1 style={{ fontSize: 28, fontWeight: 700, color: "var(--color-text-heading)", marginBottom: 4 }}>
-            {rejectedAt ? `Evaluation Terminated at Stage ${rejectedAt}` : "Candidate Evaluation Summary"}
-          </h1>
-          <p style={{ fontSize: 14, color: "var(--color-text-muted)" }}>
-            {sessionStorage.getItem("interview_role") || "Engineering Role"}
-            {sessionStorage.getItem("candidate_name") ? ` — ${sessionStorage.getItem("candidate_name")}` : ""}
-          </p>
-        </div>
+      <PageShell className="!max-w-[760px] pt-[112px]">
+        <PageHeader
+          eyebrow="EVALUATION REPORT"
+          title={headline}
+          description={storedName ? `${storedRole} — ${storedName}` : storedRole}
+        />
 
-        {/* Final Decision Box */}
-        <div
-          className="card-surface"
-          style={{ padding: 28, textAlign: "center", marginBottom: 24 }}
-        >
-          <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-text-subtle)", letterSpacing: "0.05em", marginBottom: 8 }}>
-            COMMITTEE DECISION
-          </div>
-          <div className={`status-tag ${decisionClass}`} style={{ fontSize: 32, fontWeight: 800, letterSpacing: "0.05em" }}>
-            {decision}
+        <GlassCard elevation="high" padding="lg" className="mt-8 text-center">
+          <p className="mono text-[11px] tracking-[0.05em] text-ink-subtle">COMMITTEE DECISION</p>
+          <div className="mt-3 flex justify-center">
+            <StatusPill tone={tone} className="px-5 py-2 text-[22px] font-extrabold tracking-[0.05em]">
+              {decision}
+            </StatusPill>
           </div>
 
-          <div style={{ display: "flex", justifyContent: "center", gap: 40, marginTop: 20, paddingTop: 16, borderTop: "1px solid var(--color-border)" }}>
-            {overallScore !== null && overallScore !== undefined && (
-              <div>
-                <div style={{ fontSize: 11, color: "var(--color-text-subtle)" }}>OVERALL SCORE</div>
-                <div style={{ fontFamily: "var(--font-mono)", fontSize: 22, fontWeight: 700, color: "var(--color-primary)", marginTop: 2 }}>
-                  {overallScore.toFixed(1)}/10
+          {(hasScore || hasConfidence) && (
+            <div className="mt-6 flex flex-wrap items-center justify-center gap-10 border-t border-subtle pt-6">
+              {hasScore && (
+                <div className="flex flex-col items-center gap-2">
+                  <ScoreRing value={Math.round(overallScore * 10)} label={`${overallScore.toFixed(1)}/10`} />
+                  <p className="mono text-[10px] text-ink-subtle">OVERALL SCORE</p>
                 </div>
-              </div>
-            )}
-            {confidence !== null && confidence !== undefined && (
-              <div>
-                <div style={{ fontSize: 11, color: "var(--color-text-subtle)" }}>CONFIDENCE</div>
-                <div style={{ fontFamily: "var(--font-mono)", fontSize: 22, fontWeight: 700, color: "var(--color-text-heading)", marginTop: 2 }}>
-                  {(confidence * 100).toFixed(0)}%
+              )}
+              {hasConfidence && (
+                <div className="flex flex-col items-center gap-2">
+                  <ScoreRing value={Math.round(confidence * 100)} label={`${(confidence * 100).toFixed(0)}%`} />
+                  <p className="mono text-[10px] text-ink-subtle">CONFIDENCE</p>
                 </div>
-              </div>
-            )}
-          </div>
-        </div>
+              )}
+            </div>
+          )}
+        </GlassCard>
 
-        {/* Executive Summary */}
         {committeeVerdict && typeof committeeVerdict === "object" && committeeVerdict.executive_summary && (
-          <div className="card-surface" style={{ padding: 20, marginBottom: 16 }}>
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-primary)", marginBottom: 8 }}>
-              EXECUTIVE SUMMARY
-            </div>
-            <div style={{ fontSize: 13, color: "var(--color-text-muted)", lineHeight: 1.7 }}>
+          <GlassCard padding="lg" className="mt-4">
+            <p className="eyebrow mb-2">EXECUTIVE SUMMARY</p>
+            <p className="text-[13px] leading-[1.7] text-ink-muted">
               {committeeVerdict.executive_summary}
-            </div>
-          </div>
+            </p>
+          </GlassCard>
         )}
 
-        {/* Hiring Risks */}
         {committeeVerdict && typeof committeeVerdict === "object" && committeeVerdict.hiring_risks && committeeVerdict.hiring_risks.length > 0 && (
-          <div className="card-surface" style={{ padding: 20, marginBottom: 16 }}>
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-warning)", marginBottom: 8 }}>
-              HIRING RISKS
-            </div>
+          <GlassCard padding="lg" className="mt-4">
+            <p className="mono mb-2 text-[10px] text-[var(--color-warning)]">HIRING RISKS</p>
             {committeeVerdict.hiring_risks.map((risk: string, i: number) => (
-              <div key={`${i}-${risk.slice(0, 40)}`} style={{ fontSize: 13, color: "var(--color-text-muted)", lineHeight: 1.6, marginBottom: 4 }}>
+              <p
+                key={`${i}-${risk.slice(0, 40)}`}
+                className="mb-1 text-[13px] leading-[1.6] text-ink-muted"
+              >
                 • {risk}
-              </div>
+              </p>
             ))}
-          </div>
+          </GlassCard>
         )}
 
-        {/* Recommendation */}
         {recommendation && typeof recommendation === "object" && (
-          <VerdictCard
-            title="Hiring Recommendation"
-            agent="Recommendation Agent"
-            verdict={recommendation}
-            roundNumber={4}
-          />
-        )}
-
-        {/* Committee Verdict */}
-        {committeeVerdict && typeof committeeVerdict === "object" && committeeVerdict.recommendation && (
-          <div className="card-surface" style={{ padding: 20, marginTop: 16, marginBottom: 16 }}>
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-primary)", marginBottom: 8 }}>
-              COMMITTEE RATIONALE & CONDITIONS
-            </div>
-            <div style={{ fontSize: 13, color: "var(--color-text-muted)", lineHeight: 1.7 }}>
-              {committeeVerdict.recommendation}
-            </div>
+          <div className="mt-4">
+            <VerdictCard
+              title="Hiring Recommendation"
+              agent="Recommendation Agent"
+              verdict={recommendation}
+              roundNumber={4}
+            />
           </div>
         )}
 
-        {/* Per-round Breakdown */}
+        {committeeVerdict && typeof committeeVerdict === "object" && committeeVerdict.recommendation && (
+          <GlassCard padding="lg" className="mt-4">
+            <p className="eyebrow mb-2">COMMITTEE RATIONALE &amp; CONDITIONS</p>
+            <p className="text-[13px] leading-[1.7] text-ink-muted">
+              {committeeVerdict.recommendation}
+            </p>
+          </GlassCard>
+        )}
+
         {Object.keys(verdicts).length > 0 && (
-          <div style={{ marginTop: 24, marginBottom: 24 }}>
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-subtle)", marginBottom: 12 }}>
-              ROUND-BY-ROUND VERDICTS
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {ROUND_LABELS.map(({ key, title, agent, round }) => {
-                if (!verdicts[key]) return null;
-                return (
+          <motion.section
+            variants={staggerContainer(0.06)}
+            initial="hidden"
+            animate="visible"
+            className="mt-8"
+          >
+            <p className="mono mb-3 text-[10px] text-ink-subtle">ROUND-BY-ROUND VERDICTS</p>
+            <div className="flex flex-col gap-2">
+              {ROUND_LABELS.filter(({ key }) => verdicts[key]).map(({ key, title, agent, round }) => (
+                <motion.div key={key} variants={staggerItem}>
                   <VerdictCard
-                    key={key}
                     title={title}
                     agent={agent}
                     verdict={verdicts[key]}
                     roundNumber={round}
                   />
-                );
-              })}
+                </motion.div>
+              ))}
             </div>
-          </div>
+          </motion.section>
         )}
 
-        {/* Actions */}
-        <div style={{ display: "flex", gap: 12, justifyContent: "center", marginTop: 32 }}>
-          <button className="btn-primary" onClick={handleRestart}>
-            Start New Evaluation
-          </button>
-          <button className="btn-secondary" onClick={() => router.push("/dashboard")}>
+        <div className="mt-10 flex flex-wrap justify-center gap-3">
+          <Button onClick={handleRestart}>Start New Evaluation</Button>
+          <Button variant="secondary" onClick={() => router.push("/dashboard")}>
             View Dashboard
-          </button>
+          </Button>
         </div>
-      </main>
+      </PageShell>
     </div>
   );
 }
