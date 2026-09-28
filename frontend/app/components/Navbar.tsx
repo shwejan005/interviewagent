@@ -33,10 +33,13 @@ function DesktopAuthArea({
   if (!actor) {
     return (
       <>
+        <Link href="/register?intent=recruiter" style={{ fontSize: 13, color: "var(--color-text-muted)", textDecoration: "none" }}>
+          For recruiters
+        </Link>
         <Link href="/login" style={{ fontSize: 13, color: "var(--color-text-muted)", textDecoration: "none" }}>
           Log in
         </Link>
-        <Link href="/register" className="btn-primary" style={{ padding: "6px 14px", fontSize: 12 }}>
+        <Link href="/register?intent=candidate" className="btn-primary" style={{ padding: "6px 14px", fontSize: 12 }}>
           Sign up
         </Link>
       </>
@@ -258,10 +261,13 @@ export default function Navbar() {
             </button>
           ) : (
             <>
+              <Link href="/register?intent=recruiter" onClick={() => setMobileOpen(false)} style={{ fontSize: 14, color: "var(--color-text)", textDecoration: "none" }}>
+                For recruiters
+              </Link>
               <Link href="/login" onClick={() => setMobileOpen(false)} style={{ fontSize: 14, color: "var(--color-text)", textDecoration: "none" }}>
                 Log in
               </Link>
-              <Link href="/register" onClick={() => setMobileOpen(false)} style={{ fontSize: 14, color: "var(--color-primary)", textDecoration: "none" }}>
+              <Link href="/register?intent=candidate" onClick={() => setMobileOpen(false)} style={{ fontSize: 14, color: "var(--color-primary)", textDecoration: "none" }}>
                 Sign up
               </Link>
             </>

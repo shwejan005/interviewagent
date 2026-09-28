@@ -16,13 +16,16 @@ function LoginForm() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const next = searchParams.get("next");
+  const registerHref = next ? `/register?next=${encodeURIComponent(next)}` : "/register";
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError(null);
     try {
       await login(email, password);
-      router.push(searchParams.get("next") || "/jobs");
+      router.push(next || "/jobs");
     } catch (err) {
       setError(err instanceof ApiError ? err.detail : "Something went wrong.");
     } finally {
@@ -86,7 +89,7 @@ function LoginForm() {
         </form>
 
         <p style={{ fontSize: 13, color: "var(--color-text-muted)", marginTop: 20, textAlign: "center" }}>
-          Don&apos;t have an account? <Link href="/register" style={{ color: "var(--color-primary)" }}>Sign up</Link>
+          Don&apos;t have an account? <Link href={registerHref} style={{ color: "var(--color-primary)" }}>Sign up</Link>
         </p>
       </main>
     </div>

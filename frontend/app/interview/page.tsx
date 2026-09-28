@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import Navbar from "../components/Navbar";
 
 const API_BASE = "/api";
@@ -119,13 +120,15 @@ export default function InterviewPage() {
         </div>
 
         <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-primary)", letterSpacing: "0.1em", marginBottom: 8 }}>
-          STAGE 1 — RESUME SCREENING
+          PUBLIC SANDBOX — STAGE 1 OF 5
         </div>
         <h1 style={{ fontSize: 28, fontWeight: 700, color: "var(--color-text-heading)", marginBottom: 8 }}>
-          Start Candidate Evaluation
+          Try the AI evaluation engine
         </h1>
         <p style={{ fontSize: 14, color: "var(--color-text-muted)", marginBottom: 32 }}>
-          Select the target engineering role and paste the candidate&apos;s resume to initiate the 5-stage agent pipeline.
+          This is a public, no-signup sandbox for trying the 5-stage agent pipeline on a sample
+          resume — it doesn&apos;t create a real job application. To actually apply to a role, use{" "}
+          <Link href="/jobs" style={{ color: "var(--color-primary)" }}>the job board</Link> instead.
         </p>
 
         <form onSubmit={handleSubmit}>

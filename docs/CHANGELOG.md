@@ -10,6 +10,100 @@ Entries are in **reverse chronological order** (most recent session first).
 
 ---
 
+## Session 9 — Fix: no persona distinction at onboarding (frontend only)
+
+**Trigger:** the landing page's primary call-to-action was still "Start
+Evaluation" / "Open Dashboard" — the pre-platform demo flow — with no path
+that asked whether a visitor was job-hunting or hiring, and no visible link
+into the real, tenant-isolated recruiter workspace built in Phases 0–2. A
+visitor could reach an unauthenticated, global list of every sandbox
+evaluation ever run by clicking the hero's second button, one click from the
+homepage, styled identically to a real feature.
+
+**No backend files were touched.** This was a frontend-only fix; the
+platform's auth/RBAC/tenancy already existed and worked correctly — it was
+simply unreachable from the page a new visitor actually lands on.
+
+### Root cause
+
+The landing page (`app/page.tsx`) predates Phase 0–2 and was never updated
+after authentication, job postings, and the recruiter workspace were built.
+It still promoted the anonymous single-pipeline demo (`/interview`,
+`/dashboard`) as the primary product, with no mention of `/register`,
+`/jobs`, or `/org` anywhere on the page.
+
+### Fixes
+
+- **`app/page.tsx`** — hero CTA replaced with a `PersonaCta` component
+  (early-return per branch, matching the pattern already used for
+  `Navbar`'s auth-area, rather than a nested ternary): guests see
+  "I'm looking for a job" / "I'm hiring talent" leading to
+  `/register?intent=...`; an authenticated candidate sees "Browse jobs" /
+  "Complete your profile"; an authenticated recruiter sees "Go to recruiter
+  workspace" / "Browse jobs". Added a dedicated "Built for job seekers and
+  hiring teams" section with two audience cards, each listing concrete
+  capabilities and its own signup CTA — this is the section that directly
+  answers "is this for me or for recruiters?" Reframed the five-agent
+  architecture section as *the engine that runs inside applications*, not
+  the product itself, with an explicit link to the sandbox for anyone who
+  wants to see it without signing up. Updated the FAQ to lead with "Is
+  Evalia for job seekers or hiring teams?".
+- **`app/register/page.tsx`** — added a persona selector (segmented control,
+  "I'm looking for a job" / "I'm hiring talent"), read from `?intent=` so
+  landing-page links pre-select it. Post-registration redirect now depends
+  on intent (`/profile` for candidates, `/org` for recruiters) — a `?next=`
+  deep link (e.g. "log in to apply to this job") always wins over the
+  persona default, since that candidate already told the app what they came
+  for. Wrapped in `Suspense` for `useSearchParams`, matching the existing
+  `login` page pattern.
+- **`app/login/page.tsx`** — the "Sign up instead" link now forwards `?next=`
+  so a candidate redirected to login from a specific job doesn't lose that
+  destination if they realize they need to register first.
+- **`app/profile/page.tsx`** — fixed a redirect-to-login call that was
+  missing `?next=/profile` (every other protected page already had this;
+  this one was a genuine oversight, not a deliberate omission). Strengthened
+  the empty-profile state into an explicit welcome message with a "skip for
+  now, browse jobs" escape hatch, so a candidate isn't forced through
+  profile completion before they've seen there's anything worth applying to.
+- **`app/org/page.tsx`** — the zero-membership state now explicitly says
+  this workspace is separate from candidate job-seeking on the same login,
+  addressing the dual-persona model directly at the point someone would be
+  confused by it.
+- **`app/components/Navbar.tsx`** — guests now see a "For recruiters" link
+  distinct from "Log in"/"Sign up", in both desktop and mobile nav, so the
+  persona split is visible in navigation, not only on the landing page.
+- **`app/dashboard/page.tsx`, `app/interview/page.tsx`** (the legacy,
+  unauthenticated demo flow) — **kept working, not removed** (backwards
+  compatibility, consistent with every prior session), but relabeled from
+  "Recruiter Dashboard" / "Start Candidate Evaluation" to explicit
+  "Public demo — AI evaluation sandbox" framing, each with an inline note
+  and a cross-link to the real, authenticated equivalent (`/org`, `/jobs`).
+  A visitor can no longer mistake the public sandbox for the tenant-isolated
+  product, but the sandbox itself — genuinely useful for trying the agent
+  pipeline without an account — still works exactly as before.
+
+### What did not change
+
+No backend route, model, or capability changed. The `/dashboard` and
+`/interview` endpoints they call (`GET /evaluations`, `GET /dashboard/stats`,
+`POST /start` without credentials) are unchanged and still intentionally
+unauthenticated per [SECURITY.md](SECURITY.md) — this session made that
+scope visible in the UI rather than changing it, which is a product-honesty
+fix, not a security fix. The underlying "legacy endpoints are still open"
+gap remains recorded in SECURITY.md exactly as before.
+
+### Verification
+
+Full backend suite (176 tests) re-run and unaffected, since no backend files
+were touched. `npm run typecheck` clean. One incidental lint fix
+(`actor?.memberships.length` optional-chain) made in `org/page.tsx` while
+already editing that block; two pre-existing, unrelated findings in the same
+file (nested ternaries in campaign/posting status rendering, untouched by
+this session) were left as-is, consistent with this project's established
+practice of not fixing unrelated pre-existing style debt in the same pass.
+
+---
+
 ## Session 8 — Phase 2: matching engine, sourcing, referrals, analytics, and the first frontend
 
 **Trigger:** instruction to proceed with Phase 2, building backend and

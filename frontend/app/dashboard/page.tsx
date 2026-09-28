@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import Navbar from "../components/Navbar";
 
 const API_BASE = "/api";
@@ -97,19 +98,25 @@ export default function DashboardPage() {
 
       <main style={{ maxWidth: "var(--max-width)", margin: "0 auto", padding: "90px 24px 60px" }}>
         {/* Header */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 32, flexWrap: "wrap", gap: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, flexWrap: "wrap", gap: 16 }}>
           <div>
             <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-primary)", letterSpacing: "0.1em", marginBottom: 4 }}>
-              RECRUITER DASHBOARD
+              PUBLIC DEMO — AI EVALUATION SANDBOX
             </div>
             <h1 style={{ fontSize: 28, fontWeight: 700, color: "var(--color-text-heading)" }}>
-              Evaluations
+              Sandbox evaluations
             </h1>
           </div>
           <button className="btn-primary" onClick={() => router.push("/interview")}>
             New Evaluation
           </button>
         </div>
+        <p style={{ fontSize: 13, color: "var(--color-text-muted)", marginBottom: 32, lineHeight: 1.6 }}>
+          This is an unauthenticated, public sandbox for trying the AI evaluation engine — anyone
+          can see the evaluations run here. It is not connected to real job postings or applicants.
+          If you&apos;re hiring for real, use the <Link href="/org" style={{ color: "var(--color-primary)" }}>recruiter workspace</Link> instead,
+          which is private to your organization.
+        </p>
 
         {/* Stats bar */}
         {stats && (

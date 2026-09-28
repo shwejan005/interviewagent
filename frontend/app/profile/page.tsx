@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import Navbar from "../components/Navbar";
 import { useAuth } from "../../lib/auth-context";
 import { api, ApiError } from "../../lib/api";
@@ -68,7 +69,7 @@ export default function ProfilePage() {
   useEffect(() => {
     if (authLoading) return;
     if (!actor) {
-      router.push("/login");
+      router.push("/login?next=/profile");
       return;
     }
     loadProfile();
@@ -218,13 +219,18 @@ export default function ProfilePage() {
           YOUR PROFILE VAULT
         </div>
         <h1 style={{ fontSize: 26, fontWeight: 700, color: "var(--color-text-heading)", marginBottom: 8 }}>
-          {profile ? "Manage your profile" : "Build your profile"}
+          {profile ? "Manage your profile" : "Welcome — let's build your profile"}
         </h1>
-        <p style={{ fontSize: 13, color: "var(--color-text-muted)", marginBottom: 24, lineHeight: 1.6 }}>
+        <p style={{ fontSize: 13, color: "var(--color-text-muted)", marginBottom: profile ? 24 : 12, lineHeight: 1.6 }}>
           Fill this out once. Every job application pre-fills from it, and it
           gets stronger every time you apply — new questions you answer are
           saved back here automatically.
         </p>
+        {!profile && (
+          <p style={{ fontSize: 13, color: "var(--color-text-subtle)", marginBottom: 24 }}>
+            Just here to look around first? <Link href="/jobs" style={{ color: "var(--color-primary)" }}>Skip for now and browse jobs →</Link>
+          </p>
+        )}
 
         {message && (
           <div style={{ padding: "10px 14px", background: "rgba(34,197,94,0.1)", border: "1px solid rgba(34,197,94,0.2)", borderRadius: 6, fontSize: 13, color: "var(--color-success)", marginBottom: 20 }}>

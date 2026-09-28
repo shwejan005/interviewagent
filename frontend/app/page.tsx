@@ -2,7 +2,10 @@
 
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import Navbar from "./components/Navbar";
+import { useAuth } from "../lib/auth-context";
+import type { Actor } from "../lib/types";
 
 const AGENTS = [
   {
@@ -63,6 +66,10 @@ const TRANSPARENCY_ITEMS = [
 
 const FAQ_ITEMS = [
   {
+    q: "Is Evalia for job seekers or for hiring teams?",
+    a: "Both, from one account. Job seekers build a profile once, get matched to roles, and apply in one click. Hiring teams post roles, run a real applicant pipeline, and get AI-assisted screening with a bias-isolated committee decision. The same login can do either — or both — without the two sides interfering with each other.",
+  },
+  {
     q: "How does the committee evaluator eliminate bias?",
     a: "The Committee Evaluator does not receive the candidate's resume or raw personal details. It reviews only the structured evaluation outputs from peer agents, ensuring the decision evaluates the interview evidence alone.",
   },
@@ -76,7 +83,7 @@ const FAQ_ITEMS = [
   },
   {
     q: "Can evaluations be exported or reviewed?",
-    a: "Yes. Every evaluation generates a structured report with executive summaries, risk breakdowns, per-agent verdicts, and score details accessible via the dashboard.",
+    a: "Yes. Every evaluation generates a structured report with executive summaries, risk breakdowns, per-agent verdicts, and score details — visible to candidates from their application tracker, and to recruiters from their organization's applicant pipeline.",
   },
 ];
 
@@ -114,8 +121,86 @@ function FAQAccordion({ q, a }: Readonly<{ q: string; a: string }>) {
   );
 }
 
+const AUDIENCES = [
+  {
+    eyebrow: "FOR JOB SEEKERS",
+    title: "Find roles that actually fit",
+    points: [
+      "Build your profile once — every application reuses it",
+      "Get matched to roles, ranked by fit, with a plain-English explanation",
+      "Track each application's real pipeline stage, not a black hole",
+      "Get referred by recruiters who find your profile",
+    ],
+    cta: "Get started as a candidate",
+    intent: "candidate" as const,
+  },
+  {
+    eyebrow: "FOR HIRING TEAMS",
+    title: "Screen faster without losing rigor",
+    points: [
+      "Post roles and run a real applicant pipeline, not a spreadsheet",
+      "AI-assisted screening with a bias-isolated committee decision",
+      "Source and rank candidates against your requirements",
+      "Funnel and selection-rate analytics, built in",
+    ],
+    cta: "Get started as a recruiter",
+    intent: "recruiter" as const,
+  },
+];
+
+/** Early-return per branch rather than a nested ternary, to keep this readable
+ * and to match the pattern already used for Navbar's auth-area rendering. */
+function PersonaCta({
+  authLoading, actor, router, showLoginHint,
+}: Readonly<{
+  authLoading: boolean;
+  actor: Actor | null;
+  router: ReturnType<typeof useRouter>;
+  showLoginHint?: boolean;
+}>) {
+  if (authLoading) return null;
+
+  if (!actor) {
+    return (
+      <>
+        <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
+          <button className="btn-primary" onClick={() => router.push("/register?intent=candidate")}>
+            I&apos;m looking for a job
+          </button>
+          <button className="btn-secondary" onClick={() => router.push("/register?intent=recruiter")}>
+            I&apos;m hiring talent
+          </button>
+        </div>
+        {showLoginHint && (
+          <p style={{ fontSize: 12, color: "var(--color-text-subtle)", marginTop: 16 }}>
+            Already have an account? <Link href="/login" style={{ color: "var(--color-primary)" }}>Log in</Link>
+          </p>
+        )}
+      </>
+    );
+  }
+
+  const isRecruiter = actor.memberships.length > 0;
+  return (
+    <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
+      {isRecruiter ? (
+        <>
+          <button className="btn-primary" onClick={() => router.push("/org")}>Go to recruiter workspace</button>
+          <button className="btn-secondary" onClick={() => router.push("/jobs")}>Browse jobs</button>
+        </>
+      ) : (
+        <>
+          <button className="btn-primary" onClick={() => router.push("/jobs")}>Browse jobs</button>
+          <button className="btn-secondary" onClick={() => router.push("/profile")}>Complete your profile</button>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function LandingPage() {
   const router = useRouter();
+  const { actor, loading: authLoading } = useAuth();
 
   return (
     <div style={{ minHeight: "100vh", background: "var(--color-bg)" }}>
@@ -124,7 +209,7 @@ export default function LandingPage() {
       {/* Hero Section */}
       <section style={{ padding: "120px 24px 70px", maxWidth: "var(--max-width)", margin: "0 auto", textAlign: "center" }}>
         <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-primary)", letterSpacing: "0.1em", marginBottom: 16 }}>
-          MULTI-AGENT INTERVIEW EVALUATION SYSTEM
+          THE HIRING PLATFORM WITH AN AI EVALUATION ENGINE BUILT IN
         </div>
 
         <h1
@@ -140,7 +225,7 @@ export default function LandingPage() {
             marginRight: "auto",
           }}
         >
-          Multi-agent candidate evaluation with auditability and bias isolation
+          Whether you&apos;re hiring or job-hunting, Evalia is built for your side of the table
         </h1>
 
         <p
@@ -152,17 +237,12 @@ export default function LandingPage() {
             lineHeight: 1.7,
           }}
         >
-          Five specialized AI agents conduct resume screening, technical testing, behavioral assessment, and independent committee deliberation.
+          Candidates build one profile, get matched to roles, and track every application.
+          Recruiters post roles, run a real pipeline, and screen with 5 bias-isolated AI agents
+          and a final human-confirmed decision.
         </p>
 
-        <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
-          <button className="btn-primary" onClick={() => router.push("/interview")}>
-            Start Evaluation
-          </button>
-          <button className="btn-secondary" onClick={() => router.push("/dashboard")}>
-            Open Dashboard
-          </button>
-        </div>
+        <PersonaCta authLoading={authLoading} actor={actor} router={router} showLoginHint />
 
         {/* Hero Card Preview */}
         <div
@@ -208,6 +288,51 @@ export default function LandingPage() {
 
       <div className="section-divider" />
 
+      {/* Two Audiences */}
+      <section className="section-container">
+        <div style={{ marginBottom: 32, textAlign: "center" }}>
+          <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-primary)", letterSpacing: "0.1em", marginBottom: 8 }}>
+            TWO SIDES, ONE PLATFORM
+          </div>
+          <h2 style={{ fontSize: 24, fontWeight: 700, color: "var(--color-text-heading)" }}>
+            Built for job seekers and hiring teams
+          </h2>
+          <p style={{ fontSize: 14, color: "var(--color-text-muted)", marginTop: 6 }}>
+            Pick a side to get started — the same account can hold both.
+          </p>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 20 }}>
+          {AUDIENCES.map((audience) => (
+            <div key={audience.intent} className="card-surface" style={{ padding: 24, display: "flex", flexDirection: "column" }}>
+              <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-primary)", letterSpacing: "0.05em", marginBottom: 8 }}>
+                {audience.eyebrow}
+              </div>
+              <h3 style={{ fontSize: 18, fontWeight: 700, color: "var(--color-text-heading)", marginBottom: 16 }}>
+                {audience.title}
+              </h3>
+              <ul style={{ listStyle: "none", margin: 0, padding: 0, marginBottom: 20, flex: 1 }}>
+                {audience.points.map((point) => (
+                  <li key={point} style={{ display: "flex", gap: 8, fontSize: 13, color: "var(--color-text-muted)", lineHeight: 1.6, marginBottom: 10 }}>
+                    <span style={{ color: "var(--color-primary)" }}>·</span>
+                    <span>{point}</span>
+                  </li>
+                ))}
+              </ul>
+              <button
+                className="btn-primary"
+                style={{ alignSelf: "flex-start" }}
+                onClick={() => router.push(`/register?intent=${audience.intent}`)}
+              >
+                {audience.cta}
+              </button>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <div className="section-divider" />
+
       {/* Stats Bar */}
       <section style={{ padding: "40px 24px", maxWidth: "var(--max-width)", margin: "0 auto", display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 24, textAlign: "center" }}>
         {STATS.map((s) => (
@@ -228,13 +353,16 @@ export default function LandingPage() {
       <section className="section-container">
         <div style={{ marginBottom: 40, textAlign: "center" }}>
           <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-primary)", letterSpacing: "0.1em", marginBottom: 8 }}>
-            ARCHITECTURE
+            HOW APPLICATIONS GET SCREENED
           </div>
           <h2 style={{ fontSize: 28, fontWeight: 700, color: "var(--color-text-heading)" }}>
             Five Autonomous Agents
           </h2>
           <p style={{ fontSize: 14, color: "var(--color-text-muted)", marginTop: 6 }}>
-            Each agent handles a distinct evaluation domain with isolated context boundaries.
+            This is the AI screening engine that runs inside every application on the platform — each
+            agent handles a distinct evaluation domain with isolated context boundaries. Recruiters
+            configure whether it runs per posting; a human always confirms the final decision.{" "}
+            <Link href="/interview" style={{ color: "var(--color-primary)" }}>Try it in the public sandbox →</Link>
           </p>
         </div>
 
@@ -391,19 +519,17 @@ export default function LandingPage() {
       {/* CTA */}
       <section style={{ padding: "80px 24px", textAlign: "center", maxWidth: 600, margin: "0 auto" }}>
         <h2 style={{ fontSize: 28, fontWeight: 700, color: "var(--color-text-heading)", marginBottom: 12 }}>
-          Ready to run an evaluation?
+          Ready to get started?
         </h2>
         <p style={{ fontSize: 14, color: "var(--color-text-muted)", marginBottom: 24 }}>
-          Upload a candidate resume and evaluate across all 5 autonomous agent rounds.
+          Free to try for both candidates and hiring teams.
         </p>
-        <button className="btn-primary" onClick={() => router.push("/interview")}>
-          Start Evaluation
-        </button>
+        <PersonaCta authLoading={authLoading} actor={actor} router={router} />
       </section>
 
       {/* Footer */}
       <footer style={{ borderTop: "1px solid var(--color-border)", padding: "32px 24px", textAlign: "center", fontSize: 12, color: "var(--color-text-subtle)", fontFamily: "var(--font-mono)" }}>
-        EVALIA SYSTEM — MULTI-AGENT INTERVIEW PIPELINE
+        EVALIA — HIRING PLATFORM WITH AN AI EVALUATION ENGINE
       </footer>
     </div>
   );

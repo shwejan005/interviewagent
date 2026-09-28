@@ -151,16 +151,21 @@ export default function OrgHomePage() {
 
   if (authLoading) return null;
 
-  if (actor && actor.memberships.length === 0) {
+  if (actor?.memberships.length === 0) {
     return (
       <div style={{ minHeight: "100vh", background: "var(--color-bg)" }}>
         <Navbar />
         <main style={{ maxWidth: 720, margin: "0 auto", padding: "100px 24px 60px" }}>
+          <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-primary)", letterSpacing: "0.1em", marginBottom: 8 }}>
+            WELCOME TO EVALIA
+          </div>
           <h1 style={{ fontSize: 26, fontWeight: 700, color: "var(--color-text-heading)", marginBottom: 8 }}>
             Recruiter workspace
           </h1>
           <p style={{ fontSize: 13, color: "var(--color-text-muted)", marginBottom: 24 }}>
-            You&apos;re not part of an organization yet. Create one to start posting jobs.
+            You&apos;re not part of an organization yet. Create one to start posting jobs and
+            reviewing applicants. This workspace is separate from candidate job-seeking —
+            the same login can do both, but they don&apos;t affect each other.
           </p>
           <CreateOrgForm onCreated={() => refreshActor()} />
         </main>
