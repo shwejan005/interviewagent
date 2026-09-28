@@ -8,7 +8,9 @@ an LLM must emit, these by what a client sends.
 
 from typing import Optional
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
+
+from input_validation import NormalizedEmail
 
 
 # ── Candidate profile ────────────────────────────────────────────────
@@ -78,6 +80,13 @@ class VaultAnswerRequest(BaseModel):
 class CampaignRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=5_000)
+    department: str = Field(default="", max_length=200)
+    hiring_manager: str = Field(default="", max_length=200)
+    priority: str = Field(default="MEDIUM", pattern="^(LOW|MEDIUM|HIGH|URGENT)$")
+    target_hires: Optional[int] = Field(default=None, ge=1, le=500)
+    # Free-form ISO date string (e.g. "2026-12-31"), consistent with the
+    # candidate profile date fields elsewhere in this module.
+    target_close_date: Optional[str] = Field(default=None, max_length=10)
 
 
 class ScreeningQuestion(BaseModel):
@@ -160,5 +169,5 @@ class TransitionRequest(BaseModel):
 
 
 class ReferralRequest(BaseModel):
-    candidate_email: EmailStr
+    candidate_email: NormalizedEmail
     note: str = Field(default="", max_length=2_000)

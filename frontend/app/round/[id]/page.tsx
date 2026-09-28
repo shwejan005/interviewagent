@@ -3,7 +3,6 @@
 import { useState, useEffect } from "react";
 import { useRouter, useParams } from "next/navigation";
 import {
-  Alert,
   Button,
   GlassCard,
   PageHeader,
@@ -12,6 +11,7 @@ import {
   Textarea,
 } from "../../components/ui";
 import type { TimelineStage } from "../../components/ui";
+import { notify } from "../../../lib/toast";
 
 const API_BASE = "/api";
 
@@ -45,7 +45,6 @@ export default function RoundPage() {
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState("");
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const meta = ROUND_META[roundId] || {
     title: `Round ${roundId}`,
@@ -58,7 +57,7 @@ export default function RoundPage() {
     if (storedQuestion) {
       setQuestion(storedQuestion);
     } else {
-      setError("No question found. Please start from the beginning.");
+      notify.error("No question found. Please start from the beginning.");
     }
   }, [roundId]);
 
@@ -68,12 +67,11 @@ export default function RoundPage() {
 
     const evaluationId = sessionStorage.getItem("evaluation_id");
     if (!evaluationId) {
-      setError("No evaluation found. Please start from the beginning.");
+      notify.error("No evaluation found. Please start from the beginning.");
       return;
     }
 
     setLoading(true);
-    setError(null);
 
     try {
       const res = await fetch(
@@ -113,7 +111,7 @@ export default function RoundPage() {
         router.push(`/round/${data.next_round}`);
       }
     } catch (err: any) {
-      setError(err.message || "Something went wrong.");
+      notify.error(err.message || "Something went wrong.");
     } finally {
       setLoading(false);
     }
@@ -154,8 +152,6 @@ export default function RoundPage() {
             disabled={loading}
             placeholder="Type your response..."
           />
-
-          {error && <Alert tone="error">{error}</Alert>}
 
           <Button type="submit" size="lg" fullWidth loading={loading} disabled={!answer.trim()}>
             {loading ? "Evaluating response with agent..." : "Submit Answer"}

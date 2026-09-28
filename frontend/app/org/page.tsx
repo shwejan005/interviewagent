@@ -1,32 +1,36 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
 import { motion } from "framer-motion";
+import { Briefcase, Building2, Plus, Users } from "lucide-react";
+
 import Navbar from "../components/Navbar";
 import {
-  Alert,
   Button,
-  ButtonLink,
   EmptyState,
   GlassCard,
   Input,
+  Modal,
   PageHeader,
   PageShell,
+  Select,
   SkeletonList,
   StatusPill,
+  Textarea,
 } from "../components/ui";
 import type { PillTone } from "../components/ui";
 import { useAuth } from "../../lib/auth-context";
 import { api, ApiError } from "../../lib/api";
-import type { Campaign, JobPosting } from "../../lib/types";
+import { notify } from "../../lib/toast";
+import type { Campaign, CampaignPriority } from "../../lib/types";
 import { staggerContainer, staggerItem } from "../../lib/motion";
 
-const POSTING_TONE: Record<string, PillTone> = {
-  PUBLISHED: "success",
-  CLOSED: "muted",
-  DRAFT: "warning",
+const PRIORITY_TONE: Record<CampaignPriority, PillTone> = {
+  LOW: "muted",
+  MEDIUM: "primary",
+  HIGH: "warning",
+  URGENT: "error",
 };
 
 function slugify(value: string): string {
@@ -40,17 +44,15 @@ function CreateOrgForm({ onCreated }: Readonly<{ onCreated: () => void }>) {
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
-    setError(null);
     try {
       await api.post("/orgs", { name, slug });
       onCreated();
     } catch (err) {
-      setError(err instanceof ApiError ? err.detail : "Failed to create organization.");
+      notify.error(err instanceof ApiError ? err.detail : "Failed to create organization.");
     } finally {
       setSaving(false);
     }
@@ -76,7 +78,6 @@ function CreateOrgForm({ onCreated }: Readonly<{ onCreated: () => void }>) {
           value={slug}
           onChange={(e) => setSlug(e.target.value)}
         />
-        {error && <Alert tone="error">{error}</Alert>}
         <Button type="submit" className="self-start" loading={saving} disabled={!name || !slug}>
           {saving ? "Creating..." : "Create organization"}
         </Button>
@@ -85,15 +86,211 @@ function CreateOrgForm({ onCreated }: Readonly<{ onCreated: () => void }>) {
   );
 }
 
+type CampaignFormState = {
+  name: string;
+  description: string;
+  department: string;
+  hiring_manager: string;
+  priority: CampaignPriority;
+  target_hires: string;
+  target_close_date: string;
+};
+
+const EMPTY_CAMPAIGN_FORM: CampaignFormState = {
+  name: "",
+  description: "",
+  department: "",
+  hiring_manager: "",
+  priority: "MEDIUM",
+  target_hires: "",
+  target_close_date: "",
+};
+
+function CreateCampaignModal({
+  open,
+  onClose,
+  orgId,
+  onCreated,
+}: Readonly<{ open: boolean; onClose: () => void; orgId: number; onCreated: () => Promise<void> }>) {
+  const [form, setForm] = useState<CampaignFormState>(EMPTY_CAMPAIGN_FORM);
+  const [saving, setSaving] = useState(false);
+
+  const set = <K extends keyof CampaignFormState>(key: K, value: CampaignFormState[K]) =>
+    setForm((prev) => ({ ...prev, [key]: value }));
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      await api.post(`/orgs/${orgId}/campaigns`, {
+        name: form.name,
+        description: form.description,
+        department: form.department,
+        hiring_manager: form.hiring_manager,
+        priority: form.priority,
+        target_hires: form.target_hires ? Number(form.target_hires) : null,
+        target_close_date: form.target_close_date || null,
+      });
+      setForm(EMPTY_CAMPAIGN_FORM);
+      await onCreated();
+      onClose();
+      notify.success("Campaign created.");
+    } catch (err) {
+      notify.error(err instanceof ApiError ? err.detail : "Failed to create campaign.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal open={open} onClose={onClose} titleId="create-campaign-title" maxWidthClassName="max-w-[620px]">
+      <GlassCard elevation="high" padding="lg">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <p className="eyebrow">NEW HIRING CAMPAIGN</p>
+            <p id="create-campaign-title" className="mt-1 text-[17px] font-semibold text-ink-heading">
+              Set up a campaign
+            </p>
+          </div>
+          <Button size="sm" variant="ghost" onClick={onClose}>Close</Button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="mt-6 flex flex-col gap-4">
+          <Input
+            label="CAMPAIGN NAME"
+            placeholder="Q4 Platform Expansion"
+            required
+            value={form.name}
+            onChange={(e) => set("name", e.target.value)}
+          />
+          <Textarea
+            rows={3}
+            label="DESCRIPTION"
+            placeholder="What is this hiring push for? Context recruiters and hiring managers should share."
+            value={form.description}
+            onChange={(e) => set("description", e.target.value)}
+          />
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Input
+              label="DEPARTMENT"
+              placeholder="Platform Engineering"
+              value={form.department}
+              onChange={(e) => set("department", e.target.value)}
+            />
+            <Input
+              label="HIRING MANAGER"
+              placeholder="Priya Sharma"
+              value={form.hiring_manager}
+              onChange={(e) => set("hiring_manager", e.target.value)}
+            />
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            <Select
+              label="PRIORITY"
+              value={form.priority}
+              onChange={(e) => set("priority", e.target.value as CampaignPriority)}
+            >
+              <option value="LOW">Low</option>
+              <option value="MEDIUM">Medium</option>
+              <option value="HIGH">High</option>
+              <option value="URGENT">Urgent</option>
+            </Select>
+            <Input
+              type="number"
+              min={1}
+              max={500}
+              label="TARGET HIRES"
+              placeholder="5"
+              value={form.target_hires}
+              onChange={(e) => set("target_hires", e.target.value)}
+            />
+            <Input
+              type="date"
+              label="TARGET CLOSE DATE"
+              value={form.target_close_date}
+              onChange={(e) => set("target_close_date", e.target.value)}
+            />
+          </div>
+
+          <Button type="submit" className="self-start" loading={saving} disabled={!form.name.trim()}>
+            {saving ? "Creating..." : "Create campaign"}
+          </Button>
+        </form>
+      </GlassCard>
+    </Modal>
+  );
+}
+
+function StatCard({
+  icon,
+  label,
+  value,
+}: Readonly<{ icon: React.ReactNode; label: string; value: string }>) {
+  return (
+    <motion.div variants={staggerItem}>
+      <GlassCard padding="lg" className="flex items-center gap-4">
+        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[12px] bg-[rgba(249,115,22,0.12)] text-brand">
+          {icon}
+        </div>
+        <div className="min-w-0">
+          <p className="mono text-[10px] tracking-[0.08em] text-ink-subtle">{label}</p>
+          <p className="mt-1 text-[22px] font-bold leading-none text-ink-heading">{value}</p>
+        </div>
+      </GlassCard>
+    </motion.div>
+  );
+}
+
+function CampaignCard({ campaign, onOpen }: Readonly<{ campaign: Campaign; onOpen: () => void }>) {
+  return (
+    <motion.button
+      variants={staggerItem}
+      whileHover={{ y: -4 }}
+      whileTap={{ y: 0 }}
+      onClick={onOpen}
+      className="glass glass-interactive block w-full p-5 text-left no-underline"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate text-[15px] font-semibold text-ink-heading">{campaign.name}</p>
+          <p className="mt-1 text-[12px] text-ink-subtle">
+            {campaign.department || "No department set"}
+            {campaign.hiring_manager && ` · ${campaign.hiring_manager}`}
+          </p>
+        </div>
+        <StatusPill tone={PRIORITY_TONE[campaign.priority] ?? "muted"}>{campaign.priority}</StatusPill>
+      </div>
+
+      <div className="mt-5 grid grid-cols-2 gap-3">
+        <div>
+          <p className="mono text-[10px] tracking-[0.08em] text-ink-subtle">ROLES</p>
+          <p className="mt-0.5 text-[18px] font-bold text-ink-heading">{campaign.posting_count ?? 0}</p>
+        </div>
+        <div>
+          <p className="mono text-[10px] tracking-[0.08em] text-ink-subtle">APPLICANTS</p>
+          <p className="mt-0.5 text-[18px] font-bold text-brand">{campaign.applicant_count ?? 0}</p>
+        </div>
+      </div>
+
+      <div className="mt-4 flex items-center justify-between border-t border-subtle pt-3">
+        <StatusPill tone={campaign.status === "ACTIVE" ? "success" : "muted"}>{campaign.status}</StatusPill>
+        {campaign.target_close_date && (
+          <span className="mono text-[11px] text-ink-subtle">
+            Target: {new Date(campaign.target_close_date).toLocaleDateString()}
+          </span>
+        )}
+      </div>
+    </motion.button>
+  );
+}
+
 export default function OrgHomePage() {
   const router = useRouter();
   const { actor, loading: authLoading, activeOrgId, refreshActor } = useAuth();
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-  const [postingsByCampaign, setPostingsByCampaign] = useState<Record<number, JobPosting[]>>({});
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [newCampaignName, setNewCampaignName] = useState("");
-  const [creatingCampaign, setCreatingCampaign] = useState(false);
+  const [tab, setTab] = useState<"ACTIVE" | "CLOSED">("ACTIVE");
+  const [createOpen, setCreateOpen] = useState(false);
 
   useEffect(() => {
     if (authLoading) return;
@@ -108,58 +305,28 @@ export default function OrgHomePage() {
 
   const loadCampaigns = async () => {
     setLoading(true);
-    setError(null);
     try {
       const data = await api.get<{ campaigns: Campaign[] }>(`/orgs/${activeOrgId}/campaigns`);
       setCampaigns(data.campaigns);
-      const postings: Record<number, JobPosting[]> = {};
-      await Promise.all(
-        data.campaigns.map(async (c) => {
-          const res = await api.get<{ postings: JobPosting[] }>(`/orgs/${activeOrgId}/postings?campaign_id=${c.id}`);
-          postings[c.id] = res.postings;
-        }),
-      );
-      setPostingsByCampaign(postings);
     } catch (err) {
-      setError(err instanceof ApiError ? err.detail : "Failed to load campaigns.");
+      notify.error(err instanceof ApiError ? err.detail : "Failed to load campaigns.");
     } finally {
       setLoading(false);
     }
   };
 
-  const handleCreateCampaign = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newCampaignName.trim()) return;
-    setCreatingCampaign(true);
-    try {
-      await api.post(`/orgs/${activeOrgId}/campaigns`, { name: newCampaignName.trim() });
-      setNewCampaignName("");
-      await loadCampaigns();
-    } catch (err) {
-      setError(err instanceof ApiError ? err.detail : "Failed to create campaign.");
-    } finally {
-      setCreatingCampaign(false);
-    }
-  };
+  const filtered = useMemo(
+    () => campaigns.filter((c) => (tab === "ACTIVE" ? c.status !== "CLOSED" : c.status === "CLOSED")),
+    [campaigns, tab],
+  );
 
-  const handleCreatePosting = async (campaignId: number, title: string) => {
-    if (!title.trim()) return;
-    try {
-      await api.post(`/orgs/${activeOrgId}/postings`, { campaign_id: campaignId, title: title.trim() });
-      await loadCampaigns();
-    } catch (err) {
-      setError(err instanceof ApiError ? err.detail : "Failed to create posting.");
-    }
-  };
-
-  const handlePublish = async (postingId: number, status: string) => {
-    try {
-      await api.post(`/orgs/${activeOrgId}/postings/${postingId}/status`, { status });
-      await loadCampaigns();
-    } catch (err) {
-      setError(err instanceof ApiError ? err.detail : "Failed to update posting status.");
-    }
-  };
+  const totals = useMemo(
+    () => ({
+      roles: campaigns.reduce((sum, c) => sum + (c.posting_count ?? 0), 0),
+      applicants: campaigns.reduce((sum, c) => sum + (c.applicant_count ?? 0), 0),
+    }),
+    [campaigns],
+  );
 
   if (authLoading) return null;
 
@@ -199,152 +366,76 @@ export default function OrgHomePage() {
   return (
     <div className="min-h-screen">
       <Navbar />
-      <PageShell className="!max-w-[820px] pt-[112px]">
+      <PageShell className="!max-w-[1180px] pt-[112px]">
         <PageHeader
           eyebrow="RECRUITER WORKSPACE"
-          title="Campaigns"
+          title="Hiring operations"
+          description="Every campaign, role, and applicant across your organization, in one place."
           actions={
-            <ButtonLink href="/org/analytics" variant="secondary" size="sm">
-              Analytics
-            </ButtonLink>
+            <Button size="sm" onClick={() => setCreateOpen(true)}>
+              <Plus size={15} /> Create a campaign
+            </Button>
           }
         />
 
-        {error && (
-          <Alert tone="error" className="mt-6">
-            {error}
-          </Alert>
-        )}
+        <motion.div
+          initial="hidden"
+          animate="visible"
+          variants={staggerContainer(0.06)}
+          className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-3"
+        >
+          <StatCard icon={<Building2 size={20} />} label="CAMPAIGNS" value={String(campaigns.length)} />
+          <StatCard icon={<Briefcase size={20} />} label="OPEN ROLES" value={String(totals.roles)} />
+          <StatCard icon={<Users size={20} />} label="TOTAL APPLICANTS" value={String(totals.applicants)} />
+        </motion.div>
 
-        <form onSubmit={handleCreateCampaign} className="mt-8 flex flex-wrap items-center gap-3">
-          <Input
-            wrapperClassName="min-w-[240px] flex-1"
-            aria-label="New campaign name"
-            placeholder="New campaign name (e.g. Q4 Backend Expansion)"
-            value={newCampaignName}
-            onChange={(e) => setNewCampaignName(e.target.value)}
-          />
-          <Button type="submit" loading={creatingCampaign} disabled={!newCampaignName.trim()}>
-            Create campaign
-          </Button>
-        </form>
-
-        <div className="mt-8">
-          <CampaignList
-            loading={loading}
-            campaigns={campaigns}
-            postingsByCampaign={postingsByCampaign}
-            onPublish={handlePublish}
-            onCreatePosting={handleCreatePosting}
-          />
+        <div className="mt-10 flex items-center justify-between">
+          <div className="flex gap-2">
+            <Button size="sm" variant={tab === "ACTIVE" ? "primary" : "secondary"} onClick={() => setTab("ACTIVE")}>
+              Active ({campaigns.filter((c) => c.status !== "CLOSED").length})
+            </Button>
+            <Button size="sm" variant={tab === "CLOSED" ? "primary" : "secondary"} onClick={() => setTab("CLOSED")}>
+              Closed ({campaigns.filter((c) => c.status === "CLOSED").length})
+            </Button>
+          </div>
         </div>
+
+        <div className="mt-6">
+          {loading ? (
+            <SkeletonList count={3} />
+          ) : filtered.length === 0 ? (
+            <EmptyState
+              title="No campaigns yet"
+              description="A campaign groups related roles under one hiring push — create one to get started."
+              action={<Button onClick={() => setCreateOpen(true)}>Create a campaign</Button>}
+            />
+          ) : (
+            <motion.div
+              initial="hidden"
+              animate="visible"
+              variants={staggerContainer(0.06)}
+              className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3"
+            >
+              {filtered.map((campaign) => (
+                <CampaignCard
+                  key={campaign.id}
+                  campaign={campaign}
+                  onOpen={() => router.push(`/org/campaigns/${campaign.id}`)}
+                />
+              ))}
+            </motion.div>
+          )}
+        </div>
+
+        {activeOrgId && (
+          <CreateCampaignModal
+            open={createOpen}
+            onClose={() => setCreateOpen(false)}
+            orgId={activeOrgId}
+            onCreated={loadCampaigns}
+          />
+        )}
       </PageShell>
     </div>
-  );
-}
-
-type CampaignListProps = {
-  loading: boolean;
-  campaigns: Campaign[];
-  postingsByCampaign: Record<number, JobPosting[]>;
-  onPublish: (postingId: number, status: string) => Promise<void>;
-  onCreatePosting: (campaignId: number, title: string) => Promise<void>;
-};
-
-function CampaignList({
-  loading,
-  campaigns,
-  postingsByCampaign,
-  onPublish,
-  onCreatePosting,
-}: Readonly<CampaignListProps>) {
-  if (loading) return <SkeletonList count={3} />;
-
-  if (campaigns.length === 0) {
-    return (
-      <EmptyState
-        title="No campaigns yet"
-        description="A campaign groups related roles — create one above, then add postings to it."
-      />
-    );
-  }
-
-  return (
-    <motion.div
-      initial="hidden"
-      animate="visible"
-      variants={staggerContainer(0.06)}
-      className="flex flex-col gap-4"
-    >
-      {campaigns.map((campaign) => (
-        <motion.div key={campaign.id} variants={staggerItem}>
-          <GlassCard>
-            <p className="text-[15px] font-semibold text-ink-heading">{campaign.name}</p>
-            <div className="mt-3">
-              {(postingsByCampaign[campaign.id] || []).map((posting) => (
-                <div
-                  key={posting.id}
-                  className="flex flex-wrap items-center justify-between gap-3 border-b border-subtle py-3"
-                >
-                  <Link
-                    href={`/org/postings/${posting.id}`}
-                    className="text-[13px] text-ink-heading no-underline transition-colors duration-fast ease-out-expo hover:text-brand"
-                  >
-                    {posting.title}
-                  </Link>
-                  <div className="flex items-center gap-2">
-                    <StatusPill tone={POSTING_TONE[posting.status] ?? "muted"}>
-                      {posting.status}
-                    </StatusPill>
-                    {posting.status === "DRAFT" && (
-                      <Button size="sm" variant="ghost" onClick={() => onPublish(posting.id, "PUBLISHED")}>
-                        Publish
-                      </Button>
-                    )}
-                    {posting.status === "PUBLISHED" && (
-                      <Button size="sm" variant="ghost" onClick={() => onPublish(posting.id, "CLOSED")}>
-                        Close
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-            <NewPostingRow campaignId={campaign.id} onCreate={onCreatePosting} />
-          </GlassCard>
-        </motion.div>
-      ))}
-    </motion.div>
-  );
-}
-
-function NewPostingRow({
-  campaignId,
-  onCreate,
-}: Readonly<{ campaignId: number; onCreate: (campaignId: number, title: string) => Promise<void> }>) {
-  const [title, setTitle] = useState("");
-  const [saving, setSaving] = useState(false);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSaving(true);
-    await onCreate(campaignId, title);
-    setTitle("");
-    setSaving(false);
-  };
-
-  return (
-    <form onSubmit={handleSubmit} className="mt-4 flex flex-wrap items-center gap-2">
-      <Input
-        wrapperClassName="min-w-[200px] flex-1"
-        aria-label="New posting title"
-        placeholder="New posting title"
-        value={title}
-        onChange={(e) => setTitle(e.target.value)}
-      />
-      <Button type="submit" size="sm" variant="secondary" loading={saving} disabled={!title.trim()}>
-        Add posting
-      </Button>
-    </form>
   );
 }

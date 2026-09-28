@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import Navbar from "../components/Navbar";
 import {
-  Alert,
   Button,
   Input,
   PageHeader,
@@ -15,6 +14,7 @@ import {
 } from "../components/ui";
 import type { TimelineStage } from "../components/ui";
 import { cn } from "../../lib/utils";
+import { notify } from "../../lib/toast";
 
 const API_BASE = "/api";
 
@@ -46,7 +46,6 @@ export default function InterviewPage() {
   const [roles, setRoles] = useState<string[]>([]);
   const [candidateName, setCandidateName] = useState("");
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     sessionStorage.clear();
@@ -61,7 +60,6 @@ export default function InterviewPage() {
     if (!resume.trim() || !role) return;
 
     setLoading(true);
-    setError(null);
     sessionStorage.clear();
 
     try {
@@ -104,7 +102,7 @@ export default function InterviewPage() {
         router.push("/round/2");
       }
     } catch (err: any) {
-      setError(err.message || "Something went wrong.");
+      notify.error(err.message || "Something went wrong.");
     } finally {
       setLoading(false);
     }
@@ -185,8 +183,6 @@ export default function InterviewPage() {
             disabled={loading}
             placeholder="Paste candidate resume text..."
           />
-
-          {error && <Alert tone="error">{error}</Alert>}
 
           <Button
             type="submit"

@@ -1,6 +1,7 @@
 import React from "react"
 import type { Metadata, Viewport } from 'next'
 import { Inter, JetBrains_Mono } from 'next/font/google'
+import { Toaster } from "sonner"
 
 import './globals.css'
 import { AuthProvider } from '../lib/auth-context'
@@ -46,6 +47,20 @@ export default function RootLayout({
       <body>
         <AmbientBackground />
         <AuthProvider>{children}</AuthProvider>
+        <Toaster
+          position="bottom-right"
+          richColors
+          closeButton
+          theme="dark"
+          toastOptions={{
+            style: {
+              background: "rgba(17,18,30,0.92)",
+              border: "1px solid rgba(255,255,255,0.08)",
+              color: "#f9fafb",
+              backdropFilter: "blur(16px)",
+            },
+          }}
+        />
       </body>
     </html>
   )

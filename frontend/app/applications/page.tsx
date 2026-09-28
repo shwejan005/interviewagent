@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import Navbar from "../components/Navbar";
 import {
-  Alert,
   Button,
   ButtonLink,
   EmptyState,
@@ -17,6 +16,7 @@ import {
 import type { PillTone } from "../components/ui";
 import { useAuth } from "../../lib/auth-context";
 import { api, ApiError } from "../../lib/api";
+import { notify } from "../../lib/toast";
 import type { ApplicationDetail, ApplicationEvent, ApplicationSummary } from "../../lib/types";
 import { EASE_OUT, staggerContainer, staggerItem } from "../../lib/motion";
 
@@ -51,7 +51,6 @@ export default function ApplicationsPage() {
   const [expanded, setExpanded] = useState<number | null>(null);
   const [detail, setDetail] = useState<{ application: ApplicationDetail; timeline: ApplicationEvent[] } | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (authLoading) return;
@@ -69,7 +68,7 @@ export default function ApplicationsPage() {
       const data = await api.get<{ applications: ApplicationSummary[] }>("/me/applications");
       setApplications(data.applications);
     } catch (err) {
-      setError(err instanceof ApiError ? err.detail : "Failed to load applications.");
+      notify.error(err instanceof ApiError ? err.detail : "Failed to load applications.");
     } finally {
       setLoading(false);
     }
@@ -96,8 +95,9 @@ export default function ApplicationsPage() {
     try {
       await api.post(`/me/applications/${id}/withdraw`);
       await load();
+      notify.success("Application withdrawn.");
     } catch (err) {
-      setError(err instanceof ApiError ? err.detail : "Failed to withdraw.");
+      notify.error(err instanceof ApiError ? err.detail : "Failed to withdraw.");
     }
   };
 
@@ -117,12 +117,6 @@ export default function ApplicationsPage() {
       <Navbar />
       <PageShell className="!max-w-[760px] pt-[112px]">
         <PageHeader eyebrow="APPLICATION TRACKER" title="Your applications" />
-
-        {error && (
-          <Alert tone="error" className="mt-6">
-            {error}
-          </Alert>
-        )}
 
         <div className="mt-8">
           {applications.length === 0 ? (

@@ -5,8 +5,8 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import Navbar from "../../components/Navbar";
 import {
-  Alert,
   Button,
+  EmptyState,
   GlassCard,
   PageShell,
   Skeleton,
@@ -15,6 +15,7 @@ import {
 } from "../../components/ui";
 import { useAuth } from "../../../lib/auth-context";
 import { api, ApiError } from "../../../lib/api";
+import { notify } from "../../../lib/toast";
 import type { JobPosting } from "../../../lib/types";
 
 type ApplicationFormQuestion = {
@@ -108,6 +109,7 @@ export default function JobDetailPage() {
       };
       await api.post(`/jobs/${postingId}/apply`, payload);
       setApplied(true);
+      notify.success("Application submitted.");
     } catch (err) {
       setError(err instanceof ApiError ? err.detail : "Failed to submit application.");
     } finally {
@@ -138,10 +140,15 @@ export default function JobDetailPage() {
       <div className="min-h-screen">
         <Navbar />
         <PageShell className="!max-w-[720px] pt-[112px]">
-          <Alert tone="error">{error || "Not found."}</Alert>
-          <Link href="/jobs" className="mt-5 inline-block text-[13px] text-brand hover:underline">
-            ← Back to jobs
-          </Link>
+          <EmptyState
+            title="Job posting not found"
+            description={error || "This job posting could not be found."}
+            action={
+              <Link href="/jobs" className="btn-secondary no-underline">
+                ← Back to jobs
+              </Link>
+            }
+          />
         </PageShell>
       </div>
     );
@@ -181,13 +188,16 @@ export default function JobDetailPage() {
         </GlassCard>
 
         {applied ? (
-          <Alert tone="success" className="mt-6" title="Application submitted">
-            Track its progress from{" "}
-            <Link href="/applications" className="font-semibold underline">
-              My Applications
-            </Link>
-            .
-          </Alert>
+          <GlassCard elevation="high" padding="lg" className="mt-6 border-[color-mix(in_srgb,var(--color-success)_35%,transparent)]">
+            <p className="eyebrow text-[var(--color-success)]">APPLICATION SUBMITTED</p>
+            <p className="mt-2 text-[13px] leading-[1.6] text-ink-muted">
+              Track its progress from{" "}
+              <Link href="/applications" className="font-semibold text-brand underline">
+                My Applications
+              </Link>
+              .
+            </p>
+          </GlassCard>
         ) : (
           <GlassCard elevation="high" padding="lg" className="mt-6">
             <p className="eyebrow">APPLY</p>
@@ -226,9 +236,7 @@ export default function JobDetailPage() {
             )}
 
             {error && (
-              <Alert tone="error" className="mt-5">
-                {error}
-              </Alert>
+              <p className="mt-5 text-[13px] text-[var(--color-error)]">{error}</p>
             )}
 
             <Button className="mt-6" size="lg" onClick={handleApply} loading={applying}>

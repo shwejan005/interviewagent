@@ -55,7 +55,7 @@ export function AuthProvider({ children }: Readonly<{ children: ReactNode }>) {
   }, [refreshActor]);
 
   const login = useCallback(async (email: string, password: string) => {
-    const res = await api.post<{ access_token: string }>("/auth/login", { email, password }, { skipAuth: true });
+    const res = await api.post<{ access_token: string }>("/auth/login", { email: email.trim(), password }, { skipAuth: true });
     setToken(res.access_token);
     await refreshActor();
   }, [refreshActor]);
@@ -63,7 +63,7 @@ export function AuthProvider({ children }: Readonly<{ children: ReactNode }>) {
   const register = useCallback(async (email: string, password: string, fullName: string) => {
     const res = await api.post<{ access_token: string }>(
       "/auth/register",
-      { email, password, full_name: fullName },
+      { email: email.trim(), password, full_name: fullName.trim() },
       { skipAuth: true },
     );
     setToken(res.access_token);

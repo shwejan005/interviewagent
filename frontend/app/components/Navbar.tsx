@@ -21,6 +21,12 @@ const CANDIDATE_LINKS = [
   { href: "/profile", label: "Profile" },
 ];
 
+const RECRUITER_LINKS = [
+  { href: "/org", label: "Overview" },
+  { href: "/org/referrals", label: "Referrals" },
+  { href: "/org/analytics", label: "Analytics" },
+];
+
 const INDICATOR_CLASS =
   "absolute -bottom-px left-0 right-0 h-[2px] rounded-full bg-[var(--color-primary)] shadow-glow-primary";
 const INDICATOR_SPRING = { type: "spring", stiffness: 420, damping: 34 } as const;
@@ -129,8 +135,10 @@ export default function Navbar() {
   // Don't show navbar during active interview rounds
   if (pathname.startsWith("/round/")) return null;
 
-  const links = actor ? CANDIDATE_LINKS : GUEST_LINKS;
   const activeMembership = actor?.memberships.find((m) => m.org_id === activeOrgId);
+  const recruiterMode = Boolean(actor && activeMembership);
+  let links = GUEST_LINKS;
+  if (actor) links = recruiterMode ? RECRUITER_LINKS : CANDIDATE_LINKS;
   const orgActive = pathname.startsWith("/org");
 
   const handleLogout = () => {
@@ -161,14 +169,14 @@ export default function Navbar() {
           {links.map((link) => (
             <NavLink key={link.href} href={link.href} label={link.label} active={pathname === link.href} />
           ))}
-          {actor && actor.memberships.length > 0 && (
+          {actor && actor.memberships.length > 0 && !recruiterMode && (
             <Link
               href="/org"
               className={`relative py-2 text-[13px] transition-colors duration-fast ease-out-expo ${
                 orgActive ? "font-semibold text-brand" : "text-ink-muted hover:text-ink-heading"
               }`}
             >
-              Recruiter
+              Recruiter workspace
               {orgActive && (
                 <motion.span layoutId="nav-active-indicator" className={INDICATOR_CLASS} transition={INDICATOR_SPRING} />
               )}
@@ -220,9 +228,9 @@ export default function Navbar() {
                 {link.label}
               </Link>
             ))}
-            {actor && actor.memberships.length > 0 && (
+            {actor && actor.memberships.length > 0 && !recruiterMode && (
               <Link href="/org" className="text-[14px] text-ink">
-                Recruiter
+                Recruiter workspace
               </Link>
             )}
             {actor ? (

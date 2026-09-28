@@ -5,9 +5,10 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import Navbar from "../components/Navbar";
-import { Alert, Button, GlassCard, Input } from "../components/ui";
+import { Button, GlassCard, Input } from "../components/ui";
 import { useAuth } from "../../lib/auth-context";
 import { ApiError } from "../../lib/api";
+import { notify } from "../../lib/toast";
 import { fadeUp, staggerContainer } from "../../lib/motion";
 
 type Intent = "candidate" | "recruiter";
@@ -84,7 +85,6 @@ function RegisterForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const copy = COPY[intent];
   const loginHref = next ? `/login?next=${encodeURIComponent(next)}` : "/login";
@@ -92,7 +92,6 @@ function RegisterForm() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    setError(null);
     try {
       await register(email, password, fullName);
       // A deep-link (e.g. "log in to apply to this job") always wins over the
@@ -105,7 +104,7 @@ function RegisterForm() {
         router.push("/profile");
       }
     } catch (err) {
-      setError(err instanceof ApiError ? err.detail : "Something went wrong.");
+      notify.error(err instanceof ApiError ? err.detail : "Something went wrong.");
     } finally {
       setLoading(false);
     }
@@ -172,8 +171,6 @@ function RegisterForm() {
                   onChange={(e) => setPassword(e.target.value)}
                   hint="At least 12 characters. Length matters more than symbols."
                 />
-
-                {error && <Alert tone="error">{error}</Alert>}
 
                 <Button
                   type="submit"

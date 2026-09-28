@@ -476,6 +476,49 @@ class TestAnalytics:
         )
         assert resp.status_code == 422  # rejected by the query pattern before reaching the handler
 
+    def test_overview_aggregates_trend_stage_source_and_leaderboards(self, client, recruiter, candidate):
+        posting = _make_posting(client, recruiter)
+        org_id = recruiter["org_id"]
+        application_id = client.post(
+            f"/jobs/{posting['id']}/apply", json={}, headers=_auth(candidate["token"])
+        ).json()["application_id"]
+        for stage in ("SCREENING", "TECHNICAL", "BEHAVIORAL", "INTERVIEW", "OFFER", "HIRED"):
+            client.post(
+                f"/orgs/{org_id}/applications/{application_id}/transition",
+                json={"to_stage": stage},
+                headers=_auth(recruiter["token"], org_id),
+            )
+
+        overview = client.get(
+            f"/orgs/{org_id}/analytics/overview", headers=_auth(recruiter["token"], org_id)
+        ).json()
+
+        assert overview["totals"]["applications"] == 1
+        assert overview["totals"]["hired"] == 1
+        assert overview["totals"]["avg_time_to_hire_days"] is not None
+        assert len(overview["trend"]) == 30
+        assert any(day["hires"] == 1 for day in overview["trend"])
+        stage_names = {row["stage"] for row in overview["stage_distribution"]}
+        assert "HIRED" in stage_names
+        assert overview["source_breakdown"][0]["source"] == "DIRECT"
+        assert overview["campaign_performance"][0]["applications"] == 1
+        assert overview["top_postings"][0]["posting_id"] == posting["id"]
+
+    def test_overview_is_gated_same_as_funnel(self, client, recruiter):
+        from rbac import SystemRole
+
+        token = _register(client, "recruiter3@acme.com")
+        client.post(
+            f"/orgs/{recruiter['org_id']}/members",
+            json={"email": "recruiter3@acme.com", "role": str(SystemRole.RECRUITER)},
+            headers=_auth(recruiter["token"], recruiter["org_id"]),
+        )
+        resp = client.get(
+            f"/orgs/{recruiter['org_id']}/analytics/overview",
+            headers=_auth(token, recruiter["org_id"]),
+        )
+        assert resp.status_code == 403
+
 
 class TestPhase2TenantIsolation:
     def test_cannot_search_another_orgs_candidates_search_endpoint(self, client, recruiter, candidate):

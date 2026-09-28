@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import Navbar from "../components/Navbar";
 import {
-  Alert,
   Button,
   ButtonLink,
   EmptyState,
@@ -18,6 +17,7 @@ import {
 import type { PillTone } from "../components/ui";
 import { useAuth } from "../../lib/auth-context";
 import { api, ApiError } from "../../lib/api";
+import { notify } from "../../lib/toast";
 import type { Referral } from "../../lib/types";
 import { staggerContainer, staggerItem } from "../../lib/motion";
 
@@ -31,7 +31,6 @@ export default function ReferralsPage() {
   const { actor, loading: authLoading } = useAuth();
   const [referrals, setReferrals] = useState<Referral[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [actingOn, setActingOn] = useState<number | null>(null);
 
   useEffect(() => {
@@ -50,7 +49,7 @@ export default function ReferralsPage() {
       const data = await api.get<{ referrals: Referral[] }>("/me/referrals");
       setReferrals(data.referrals);
     } catch (err) {
-      setError(err instanceof ApiError ? err.detail : "Failed to load referrals.");
+      notify.error(err instanceof ApiError ? err.detail : "Failed to load referrals.");
     } finally {
       setLoading(false);
     }
@@ -58,12 +57,12 @@ export default function ReferralsPage() {
 
   const handleAccept = async (id: number) => {
     setActingOn(id);
-    setError(null);
     try {
       await api.post(`/me/referrals/${id}/apply`, {});
       await load();
+      notify.success("Application submitted from referral.");
     } catch (err) {
-      setError(err instanceof ApiError ? err.detail : "Failed to accept referral.");
+      notify.error(err instanceof ApiError ? err.detail : "Failed to accept referral.");
     } finally {
       setActingOn(null);
     }
@@ -71,12 +70,12 @@ export default function ReferralsPage() {
 
   const handleDecline = async (id: number) => {
     setActingOn(id);
-    setError(null);
     try {
       await api.post(`/me/referrals/${id}/decline`);
       await load();
+      notify.success("Referral declined.");
     } catch (err) {
-      setError(err instanceof ApiError ? err.detail : "Failed to decline referral.");
+      notify.error(err instanceof ApiError ? err.detail : "Failed to decline referral.");
     } finally {
       setActingOn(null);
     }
@@ -102,12 +101,6 @@ export default function ReferralsPage() {
           title="Sent to you"
           description="A recruiter thought you'd be a good fit for these roles."
         />
-
-        {error && (
-          <Alert tone="error" className="mt-6">
-            {error}
-          </Alert>
-        )}
 
         <div className="mt-8">
           {referrals.length === 0 ? (

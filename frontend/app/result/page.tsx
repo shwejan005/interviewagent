@@ -5,8 +5,8 @@ import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import Navbar from "../components/Navbar";
 import {
-  Alert,
   Button,
+  EmptyState,
   GlassCard,
   PageHeader,
   PageShell,
@@ -259,13 +259,18 @@ export default function ResultPage() {
       <div className="min-h-screen">
         <Navbar />
         <PageShell className="!max-w-[520px] pt-[112px]">
-          <Alert tone="error">{error}</Alert>
-          <div className="mt-6 flex justify-center gap-3">
-            <Button onClick={fetchFinalDecision}>Retry</Button>
-            <Button variant="secondary" onClick={handleRestart}>
-              Start New
-            </Button>
-          </div>
+          <EmptyState
+            title="Something went wrong"
+            description={error}
+            action={
+              <>
+                <Button onClick={fetchFinalDecision}>Retry</Button>
+                <Button variant="secondary" onClick={handleRestart}>
+                  Start New
+                </Button>
+              </>
+            }
+          />
         </PageShell>
       </div>
     );

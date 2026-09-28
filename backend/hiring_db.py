@@ -14,7 +14,7 @@ cross-tenant read is structurally safer.
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from typing import Optional
 
@@ -122,20 +122,34 @@ def can_transition(from_stage: str, to_stage: str) -> bool:
 
 
 def create_campaign(org_id: int, name: str, description: str = "",
-                    created_by: Optional[int] = None) -> int:
+                    created_by: Optional[int] = None, department: str = "",
+                    hiring_manager: str = "", priority: str = "MEDIUM",
+                    target_hires: Optional[int] = None,
+                    target_close_date: Optional[str] = None) -> int:
+    payload = {
+        "org_id": org_id,
+        "name": name,
+        "description": description,
+        "created_by": created_by,
+        "department": department,
+        "hiring_manager": hiring_manager,
+        "priority": priority,
+        "target_hires": target_hires,
+        "target_close_date": target_close_date,
+    }
     p = _ph()
+    placeholders = ", ".join([p] * len(payload))
     with _get_conn() as (conn, cur):
         if USE_POSTGRES:
             cur.execute(
-                f"INSERT INTO campaigns (org_id, name, description, created_by) "
-                f"VALUES ({p}, {p}, {p}, {p}) RETURNING id",
-                (org_id, name, description, created_by),
+                f"INSERT INTO campaigns ({', '.join(payload)}) "
+                f"VALUES ({placeholders}) RETURNING id",
+                tuple(payload.values()),
             )
             return cur.fetchone()["id"]
         cur.execute(
-            f"INSERT INTO campaigns (org_id, name, description, created_by) "
-            f"VALUES ({p}, {p}, {p}, {p})",
-            (org_id, name, description, created_by),
+            f"INSERT INTO campaigns ({', '.join(payload)}) VALUES ({placeholders})",
+            tuple(payload.values()),
         )
         return cur.lastrowid
 
@@ -152,18 +166,28 @@ def get_campaign(campaign_id: int, org_id: int) -> Optional[dict]:
 
 
 def list_campaigns(org_id: int, limit: int = 50, offset: int = 0) -> list[dict]:
+    """Campaign overview, with per-campaign role/applicant counts so the
+    recruiter dashboard can render its stats without an N+1 fetch per card."""
     p = _ph()
     with _get_conn() as (conn, cur):
         cur.execute(
-            f"SELECT * FROM campaigns WHERE org_id = {p} AND deleted_at IS NULL "
-            f"ORDER BY created_at DESC LIMIT {p} OFFSET {p}",
+            f"SELECT c.*, "
+            f"(SELECT COUNT(*) FROM job_postings jp WHERE jp.campaign_id = c.id "
+            f"AND jp.deleted_at IS NULL) AS posting_count, "
+            f"(SELECT COUNT(*) FROM applications a JOIN job_postings jp2 "
+            f"ON jp2.id = a.posting_id WHERE jp2.campaign_id = c.id) AS applicant_count "
+            f"FROM campaigns c WHERE c.org_id = {p} AND c.deleted_at IS NULL "
+            f"ORDER BY c.created_at DESC LIMIT {p} OFFSET {p}",
             (org_id, limit, offset),
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
 
 def update_campaign(campaign_id: int, org_id: int, **fields) -> bool:
-    allowed = {"name", "description", "status"}
+    allowed = {
+        "name", "description", "status", "department", "hiring_manager",
+        "priority", "target_hires", "target_close_date",
+    }
     data = {k: v for k, v in fields.items() if k in allowed and v is not None}
     if not data:
         return False
@@ -264,21 +288,24 @@ def get_published_posting(posting_id: int) -> Optional[dict]:
 
 def list_postings(org_id: int, campaign_id: Optional[int] = None,
                   status: Optional[str] = None, limit: int = 50, offset: int = 0) -> list[dict]:
-    """Recruiter-facing listing, always org-scoped."""
+    """Recruiter-facing listing, always org-scoped, with an applicant count
+    per posting so a campaign drill-down can render role cards at a glance."""
     p = _ph()
-    clauses = [f"org_id = {p}", "deleted_at IS NULL"]
+    clauses = [f"jp.org_id = {p}", "jp.deleted_at IS NULL"]
     params: list = [org_id]
     if campaign_id is not None:
-        clauses.append(f"campaign_id = {p}")
+        clauses.append(f"jp.campaign_id = {p}")
         params.append(campaign_id)
     if status is not None:
-        clauses.append(f"status = {p}")
+        clauses.append(f"jp.status = {p}")
         params.append(status)
     params.extend([limit, offset])
     with _get_conn() as (conn, cur):
         cur.execute(
-            f"SELECT * FROM job_postings WHERE {' AND '.join(clauses)} "
-            f"ORDER BY created_at DESC LIMIT {p} OFFSET {p}",
+            f"SELECT jp.*, "
+            f"(SELECT COUNT(*) FROM applications a WHERE a.posting_id = jp.id) AS applicant_count "
+            f"FROM job_postings jp WHERE {' AND '.join(clauses)} "
+            f"ORDER BY jp.created_at DESC LIMIT {p} OFFSET {p}",
             tuple(params),
         )
         return [_decode_posting(_row_to_dict(r)) for r in cur.fetchall()]
@@ -431,13 +458,24 @@ def create_application(org_id: int, posting_id: int, candidate_user_id: int,
 
 
 def get_application(application_id: int, org_id: Optional[int] = None) -> Optional[dict]:
+    """Full application detail, joined to the candidate's name/email.
+
+    The recruiter detail drawer needs both — without this join the caller
+    silently gets an application row with no way to identify who it belongs
+    to, which reads as a stuck loading state rather than the missing data it
+    actually is.
+    """
     p = _ph()
     with _get_conn() as (conn, cur):
+        select = (
+            "SELECT a.*, u.full_name AS candidate_name, u.email AS candidate_email "
+            "FROM applications a JOIN users u ON u.id = a.candidate_user_id "
+        )
         if org_id is None:
-            cur.execute(f"SELECT * FROM applications WHERE id = {p}", (application_id,))
+            cur.execute(f"{select}WHERE a.id = {p}", (application_id,))
         else:
             cur.execute(
-                f"SELECT * FROM applications WHERE id = {p} AND org_id = {p}",
+                f"{select}WHERE a.id = {p} AND a.org_id = {p}",
                 (application_id, org_id),
             )
         row = _row_to_dict(cur.fetchone())
@@ -847,5 +885,175 @@ def get_selection_rates(org_id: int, segment_by: str) -> dict:
             "fields. Not a substitute for a compliant EEO bias audit — see "
             "DECISIONS.md D-05."
         ),
+    }
+
+
+def _parse_ts(value) -> Optional[datetime]:
+    """Application/event timestamps round-trip as either datetimes (Postgres
+    driver) or ISO strings (SQLite) — normalize once so callers never branch."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def get_analytics_overview(org_id: int, days: int = 30) -> dict:
+    """One dashboard-shaped read: volume trend, stage mix, source mix,
+    campaign/posting leaderboards, and time-to-hire — all derived from
+    applications + application_events already on file, no new tables.
+
+    Aggregation happens in Python rather than SQL date-trunc so the same
+    code path works unchanged against both SQLite and Postgres.
+    """
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"SELECT a.id, a.posting_id, a.source, a.status, a.current_stage, "
+            f"a.created_at, jp.title AS posting_title, jp.campaign_id, "
+            f"jp.status AS posting_status, c.name AS campaign_name "
+            f"FROM applications a "
+            f"JOIN job_postings jp ON jp.id = a.posting_id "
+            f"JOIN campaigns c ON c.id = jp.campaign_id "
+            f"WHERE a.org_id = {p}",
+            (org_id,),
+        )
+        applications = [_row_to_dict(r) for r in cur.fetchall()]
+
+        cur.execute(
+            f"SELECT ae.application_id, ae.created_at "
+            f"FROM application_events ae "
+            f"JOIN applications a ON a.id = ae.application_id "
+            f"WHERE a.org_id = {p} AND ae.to_stage = 'HIRED' "
+            f"ORDER BY ae.created_at ASC",
+            (org_id,),
+        )
+        hired_at_by_application: dict[int, datetime] = {}
+        for row in cur.fetchall():
+            row = _row_to_dict(row)
+            app_id = row["application_id"]
+            if app_id not in hired_at_by_application:
+                ts = _parse_ts(row["created_at"])
+                if ts is not None:
+                    hired_at_by_application[app_id] = ts
+
+        cur.execute(
+            f"SELECT COUNT(*) AS c FROM job_postings "
+            f"WHERE org_id = {p} AND status = 'PUBLISHED' AND deleted_at IS NULL",
+            (org_id,),
+        )
+        open_postings = _row_to_dict(cur.fetchone())["c"]
+
+    today = datetime.now(timezone.utc).date()
+    window_start = today - timedelta(days=days - 1)
+
+    apps_by_day: dict = {}
+    hires_by_day: dict = {}
+    stage_counts: dict[str, int] = {}
+    source_counts: dict[str, dict] = {}
+    campaign_counts: dict[int, dict] = {}
+    posting_counts: dict[int, dict] = {}
+    time_to_hire_days: list[float] = []
+
+    for app in applications:
+        stage = app["current_stage"]
+        stage_counts[stage] = stage_counts.get(stage, 0) + 1
+
+        source = app["source"] or "DIRECT"
+        bucket = source_counts.setdefault(source, {"source": source, "applications": 0, "hired": 0})
+        bucket["applications"] += 1
+
+        campaign_id = app["campaign_id"]
+        cbucket = campaign_counts.setdefault(
+            campaign_id,
+            {"campaign_id": campaign_id, "name": app["campaign_name"], "applications": 0, "hired": 0, "postings": set()},
+        )
+        cbucket["applications"] += 1
+        cbucket["postings"].add(app["posting_id"])
+
+        posting_id = app["posting_id"]
+        pbucket = posting_counts.setdefault(
+            posting_id,
+            {"posting_id": posting_id, "title": app["posting_title"], "applications": 0, "hired": 0},
+        )
+        pbucket["applications"] += 1
+
+        applied_ts = _parse_ts(app["created_at"])
+        if applied_ts is not None and applied_ts.date() >= window_start:
+            day_key = applied_ts.date().isoformat()
+            apps_by_day[day_key] = apps_by_day.get(day_key, 0) + 1
+
+        if stage == "HIRED":
+            bucket["hired"] += 1
+            cbucket["hired"] += 1
+            pbucket["hired"] += 1
+            hired_ts = hired_at_by_application.get(app["id"])
+            if hired_ts is not None:
+                if hired_ts.date() >= window_start:
+                    day_key = hired_ts.date().isoformat()
+                    hires_by_day[day_key] = hires_by_day.get(day_key, 0) + 1
+                if applied_ts is not None:
+                    time_to_hire_days.append((hired_ts - applied_ts).total_seconds() / 86400)
+
+    trend = []
+    for offset in range(days):
+        day = window_start + timedelta(days=offset)
+        key = day.isoformat()
+        trend.append({
+            "date": key,
+            "applications": apps_by_day.get(key, 0),
+            "hires": hires_by_day.get(key, 0),
+        })
+
+    campaign_performance = sorted(
+        (
+            {**v, "postings": len(v["postings"])}
+            for v in campaign_counts.values()
+        ),
+        key=lambda row: row["applications"],
+        reverse=True,
+    )
+    top_postings = sorted(
+        posting_counts.values(), key=lambda row: row["applications"], reverse=True,
+    )[:8]
+
+    total = len(applications)
+    hired_total = stage_counts.get("HIRED", 0)
+    rejected_total = stage_counts.get("REJECTED", 0)
+    withdrawn_total = stage_counts.get("WITHDRAWN", 0)
+    active_total = total - hired_total - rejected_total - withdrawn_total
+
+    return {
+        "totals": {
+            "applications": total,
+            "active": active_total,
+            "hired": hired_total,
+            "rejected": rejected_total,
+            "withdrawn": withdrawn_total,
+            "open_postings": open_postings,
+            "avg_time_to_hire_days": (
+                round(sum(time_to_hire_days) / len(time_to_hire_days), 1)
+                if time_to_hire_days else None
+            ),
+            "conversion_rate": round(hired_total / total, 3) if total else None,
+        },
+        "trend": trend,
+        "stage_distribution": [
+            {"stage": stage, "count": stage_counts.get(stage, 0)}
+            for stage in (
+                "APPLIED", "SCREENING", "PENDING_REVIEW", "TECHNICAL", "BEHAVIORAL",
+                "INTERVIEW", "OFFER", "HIRED", "REJECTED", "WITHDRAWN",
+            )
+            if stage_counts.get(stage, 0) > 0
+        ],
+        "source_breakdown": sorted(
+            source_counts.values(), key=lambda row: row["applications"], reverse=True,
+        ),
+        "campaign_performance": campaign_performance,
+        "top_postings": top_postings,
     }
 

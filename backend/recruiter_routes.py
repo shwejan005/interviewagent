@@ -18,6 +18,7 @@ import audit
 import candidate_db as cdb
 import hiring_db as hdb
 import matching
+import notifications
 from authz import Actor, assert_tenant, requires
 from hiring_models import (
     CampaignRequest,
@@ -65,7 +66,10 @@ async def create_campaign(
 ):
     _require_org(actor, org_id)
     campaign_id = await _db(
-        hdb.create_campaign, org_id, req.name, req.description, actor.user_id
+        hdb.create_campaign, org_id, req.name, req.description, actor.user_id,
+        department=req.department, hiring_manager=req.hiring_manager,
+        priority=req.priority, target_hires=req.target_hires,
+        target_close_date=req.target_close_date,
     )
     audit.record_from_actor(
         actor, "campaign.created",
@@ -426,7 +430,17 @@ async def refer_candidate(
         resource_type="referral", resource_id=referral_id, resource_org_id=org_id,
         detail={"posting_id": posting_id},
     )
-    return await _db(hdb.get_referral, referral_id, org_id)
+    referral = await _db(hdb.get_referral, referral_id, org_id)
+    posting = await _db(hdb.get_posting, posting_id, org_id)
+    delivery = await asyncio.to_thread(
+        notifications.send_referral_email,
+        str(req.candidate_email),
+        actor.email,
+        posting["title"],
+        posting.get("org_name", "your organization"),
+        req.note,
+    )
+    return {**referral, "email_delivery": delivery}
 
 
 @router.get("/referrals")
@@ -455,6 +469,18 @@ async def analytics_funnel(
     not the narrower campaign:read:assigned a plain recruiter holds."""
     _require_org(actor, org_id)
     return await _db(hdb.get_funnel, org_id, campaign_id, posting_id)
+
+
+@router.get("/analytics/overview")
+async def analytics_overview(
+    org_id: int,
+    actor: Actor = Depends(requires(Capability.CAMPAIGN_READ_ORG)),
+    days: int = Query(default=30, ge=7, le=180),
+):
+    """Dashboard-shaped aggregate: volume trend, stage mix, source mix,
+    campaign/posting leaderboards, and time-to-hire."""
+    _require_org(actor, org_id)
+    return await _db(hdb.get_analytics_overview, org_id, days)
 
 
 @router.get("/analytics/selection-rates")

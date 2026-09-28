@@ -30,3 +30,9 @@ export type { PageHeaderProps } from "./PageHeader"
 
 export { PageShell } from "./PageShell"
 export type { PageShellProps } from "./PageShell"
+
+export { Modal } from "./Modal"
+export type { ModalProps } from "./Modal"
+
+export { SidePanel } from "./SidePanel"
+export type { SidePanelProps } from "./SidePanel"

@@ -470,6 +470,22 @@ _EVALUATION_TENANCY_COLUMNS = (
     ("owner_user_id", "INTEGER"),
 )
 
+# Additive columns introduced after the initial hiring schema. These are
+# nullable or have safe defaults so existing local databases can be upgraded
+# in place without rewriting candidate data.
+_HIRING_ADDITIVE_COLUMNS = (
+    (
+        "candidate_profiles",
+        "is_discoverable",
+        "BOOLEAN NOT NULL DEFAULT FALSE" if USE_POSTGRES else "INTEGER NOT NULL DEFAULT 0",
+    ),
+    ("campaigns", "department", "TEXT NOT NULL DEFAULT ''"),
+    ("campaigns", "hiring_manager", "TEXT NOT NULL DEFAULT ''"),
+    ("campaigns", "priority", "TEXT NOT NULL DEFAULT 'MEDIUM'"),
+    ("campaigns", "target_hires", "INTEGER"),
+    ("campaigns", "target_close_date", "TIMESTAMPTZ" if USE_POSTGRES else "TEXT"),
+)
+
 
 # ── Initialization ──────────────────────────────────────────────────
 
@@ -497,6 +513,15 @@ def _apply_additive_columns(cur) -> None:
         if column not in present:
             cur.execute(f"ALTER TABLE evaluations ADD COLUMN {column} {coltype}")
             logger.info("Added column evaluations.%s", column)
+
+
+def _apply_hiring_additive_columns(cur) -> None:
+    """Add safe, additive columns introduced by later hiring features."""
+    for table, column, coltype in _HIRING_ADDITIVE_COLUMNS:
+        present = _existing_columns(cur, table)
+        if column not in present:
+            cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+            logger.info("Added column %s.%s", table, column)
 
 
 def _seed_roles(cur) -> None:
@@ -545,6 +570,7 @@ def init_db() -> None:
             cur.execute(_PG_IDENTITY_SCHEMA)
             cur.execute(hiring_schema.SCHEMA_PG)
             _apply_additive_columns(cur)
+            _apply_hiring_additive_columns(cur)
             _seed_roles(cur)
         logger.info("PostgreSQL database initialized (DATABASE_URL detected).")
     else:
@@ -555,6 +581,7 @@ def init_db() -> None:
             conn.executescript(hiring_schema.SCHEMA_SQLITE)
             cur = conn.cursor()
             _apply_additive_columns(cur)
+            _apply_hiring_additive_columns(cur)
             _seed_roles(cur)
             conn.commit()
             logger.info(

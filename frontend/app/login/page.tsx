@@ -5,9 +5,10 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import Navbar from "../components/Navbar";
-import { Alert, Button, GlassCard, Input } from "../components/ui";
+import { Button, GlassCard, Input } from "../components/ui";
 import { useAuth } from "../../lib/auth-context";
 import { ApiError } from "../../lib/api";
+import { notify } from "../../lib/toast";
 import { fadeUp, staggerContainer } from "../../lib/motion";
 
 function LoginForm() {
@@ -17,7 +18,6 @@ function LoginForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const next = searchParams.get("next");
   const registerHref = next ? `/register?next=${encodeURIComponent(next)}` : "/register";
@@ -25,12 +25,11 @@ function LoginForm() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    setError(null);
     try {
       await login(email, password);
       router.push(next || "/jobs");
     } catch (err) {
-      setError(err instanceof ApiError ? err.detail : "Something went wrong.");
+      notify.error(err instanceof ApiError ? err.detail : "Something went wrong.");
     } finally {
       setLoading(false);
     }
@@ -72,8 +71,6 @@ function LoginForm() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                 />
-
-                {error && <Alert tone="error">{error}</Alert>}
 
                 <Button type="submit" size="lg" fullWidth loading={loading}>
                   {loading ? "Logging in..." : "Log in"}

@@ -111,7 +111,10 @@ export type JobPosting = {
   org_name?: string;
   org_slug?: string;
   created_at: string;
+  applicant_count?: number;
 };
+
+export type CampaignPriority = "LOW" | "MEDIUM" | "HIGH" | "URGENT";
 
 export type Campaign = {
   id: number;
@@ -119,7 +122,14 @@ export type Campaign = {
   name: string;
   description: string;
   status: string;
+  department: string;
+  hiring_manager: string;
+  priority: CampaignPriority;
+  target_hires: number | null;
+  target_close_date: string | null;
   created_at: string;
+  posting_count?: number;
+  applicant_count?: number;
 };
 
 export type ApplicationSummary = {
@@ -214,4 +224,56 @@ export type SelectionRatesResult = {
   adverse_impact_ratio: number | null;
   flag_adverse_impact: boolean;
   note: string;
+};
+
+export type AnalyticsTotals = {
+  applications: number;
+  active: number;
+  hired: number;
+  rejected: number;
+  withdrawn: number;
+  open_postings: number;
+  avg_time_to_hire_days: number | null;
+  conversion_rate: number | null;
+};
+
+export type AnalyticsTrendPoint = {
+  date: string;
+  applications: number;
+  hires: number;
+};
+
+export type StageDistributionPoint = {
+  stage: string;
+  count: number;
+};
+
+export type SourceBreakdownPoint = {
+  source: string;
+  applications: number;
+  hired: number;
+};
+
+export type CampaignPerformancePoint = {
+  campaign_id: number;
+  name: string;
+  applications: number;
+  hired: number;
+  postings: number;
+};
+
+export type TopPostingPoint = {
+  posting_id: number;
+  title: string;
+  applications: number;
+  hired: number;
+};
+
+export type AnalyticsOverview = {
+  totals: AnalyticsTotals;
+  trend: AnalyticsTrendPoint[];
+  stage_distribution: StageDistributionPoint[];
+  source_breakdown: SourceBreakdownPoint[];
+  campaign_performance: CampaignPerformancePoint[];
+  top_postings: TopPostingPoint[];
 };

@@ -51,6 +51,35 @@ export class ApiError extends Error {
   }
 }
 
+function formatApiDetail(detail: unknown): string | null {
+  if (typeof detail === "string" && detail.trim()) return detail;
+
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .map((item) => {
+        if (!item || typeof item !== "object") return String(item);
+        const issue = item as { loc?: unknown; msg?: unknown };
+        const location = Array.isArray(issue.loc)
+          ? issue.loc
+              .filter((part): part is string | number => typeof part === "string" || typeof part === "number")
+              .slice(1)
+              .join(".")
+          : "";
+        const message = typeof issue.msg === "string" ? issue.msg : "Invalid value";
+        return location ? `${location}: ${message}` : message;
+      })
+      .filter(Boolean);
+    if (messages.length) return messages.join("; ");
+  }
+
+  if (detail && typeof detail === "object" && "message" in detail) {
+    const message = (detail as { message?: unknown }).message;
+    if (typeof message === "string" && message.trim()) return message;
+  }
+
+  return null;
+}
+
 type FetchOptions = {
   method?: string;
   body?: unknown;
@@ -89,7 +118,7 @@ export async function apiFetch<T = unknown>(path: string, options: FetchOptions 
   if (!res.ok) {
     const detail =
       (data && typeof data === "object" && "detail" in data
-        ? String((data as { detail: unknown }).detail)
+        ? formatApiDetail((data as { detail: unknown }).detail)
         : null) ||
       (res.status === 429
         ? "Too many requests. Please slow down and try again shortly."

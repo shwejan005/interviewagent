@@ -5,9 +5,12 @@ These models define the exact JSON structure each agent must produce,
 ensuring deterministic, parseable, and validateable outputs.
 """
 
-from pydantic import BaseModel, EmailStr, Field
 from typing import Optional
+
+from pydantic import BaseModel, EmailStr, Field
 from enum import Enum
+
+from input_validation import NormalizedEmail
 
 
 # ── Enums ──────────────────────────────────────────────────────────
@@ -147,7 +150,7 @@ class AnswerRequest(BaseModel):
 
 
 class RegisterRequest(BaseModel):
-    email: EmailStr = Field(description="Account email address")
+    email: NormalizedEmail = Field(description="Account email address")
     # 12 chars is a deliberate floor: composition rules (symbols, mixed case)
     # push users toward predictable substitutions, while length is the factor
     # that actually resists offline cracking. NIST SP 800-63B agrees.
@@ -156,7 +159,7 @@ class RegisterRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    email: NormalizedEmail
     password: str = Field(min_length=1, max_length=256)
 
 
@@ -204,7 +207,7 @@ class OrganizationResponse(BaseModel):
 
 
 class AddMemberRequest(BaseModel):
-    email: EmailStr
+    email: NormalizedEmail
     role: str = Field(description="One of the org-scoped system role names")
 
 

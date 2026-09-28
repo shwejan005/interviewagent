@@ -2,13 +2,11 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { motion } from "framer-motion";
 import { useAuth } from "../../lib/auth-context";
 import { api } from "../../lib/api";
 import type { JobPosting, JobRecommendation } from "../../lib/types";
 import Navbar from "../components/Navbar";
 import {
-  Alert,
   Button,
   ButtonLink,
   EmptyState,
@@ -17,7 +15,7 @@ import {
   PageShell,
   SkeletonList,
 } from "../components/ui";
-import { staggerContainer, staggerItem } from "../../lib/motion";
+import { notify } from "../../lib/toast";
 
 type Tab = "recommended" | "all";
 
@@ -86,20 +84,7 @@ function JobsResults({ loading, tab, recommendations, postings }: Readonly<Resul
         />
       );
     }
-    return (
-      <motion.div
-        initial="hidden"
-        animate="visible"
-        variants={staggerContainer(0.05)}
-        className="flex flex-col gap-3"
-      >
-        {recommendations.map((rec) => (
-          <motion.div key={rec.posting_id} variants={staggerItem}>
-            <RecommendationCard rec={rec} />
-          </motion.div>
-        ))}
-      </motion.div>
-    );
+    return <RecommendationTable recommendations={recommendations} />;
   }
 
   if (postings.length === 0) {
@@ -111,19 +96,28 @@ function JobsResults({ loading, tab, recommendations, postings }: Readonly<Resul
     );
   }
 
+  return <PostingTable postings={postings} />;
+}
+
+function RecommendationTable({ recommendations }: Readonly<{ recommendations: JobRecommendation[] }>) {
   return (
-    <motion.div
-      initial="hidden"
-      animate="visible"
-      variants={staggerContainer(0.05)}
-      className="flex flex-col gap-3"
-    >
-      {postings.map((posting) => (
-        <motion.div key={posting.id} variants={staggerItem}>
-          <PostingCard posting={posting} />
-        </motion.div>
-      ))}
-    </motion.div>
+    <div className="overflow-x-auto border border-subtle bg-[rgba(17,18,30,0.74)]">
+      <table className="w-full min-w-[700px] border-collapse text-left">
+        <thead className="border-b border-subtle bg-[rgba(255,255,255,0.025)]"><tr className="mono text-[10px] tracking-[0.08em] text-ink-subtle"><th className="px-5 py-3">ROLE</th><th className="px-5 py-3">COMPANY</th><th className="px-5 py-3">LOCATION</th><th className="px-5 py-3">MATCH</th><th className="px-5 py-3">WHY IT FITS</th></tr></thead>
+        <tbody>{recommendations.map((rec) => <tr key={rec.posting_id} className="border-b border-subtle last:border-0 hover:bg-[rgba(255,255,255,0.025)]"><td className="px-5 py-4"><Link href={`/jobs/${rec.posting_id}`} className="text-[13px] font-semibold text-ink-heading no-underline hover:text-brand">{rec.title}</Link></td><td className="px-5 py-4 text-[12px] text-ink-muted">{rec.org_name}</td><td className="px-5 py-4 text-[12px] text-ink-muted">{rec.location} · {rec.remote_policy}</td><td className="mono px-5 py-4 text-[14px] font-bold text-brand">{rec.score}/10</td><td className="max-w-[260px] px-5 py-4 text-[12px] leading-[1.5] text-ink-muted">{rec.explanation}</td></tr>)}</tbody>
+      </table>
+    </div>
+  );
+}
+
+function PostingTable({ postings }: Readonly<{ postings: JobPosting[] }>) {
+  return (
+    <div className="overflow-x-auto border border-subtle bg-[rgba(17,18,30,0.74)]">
+      <table className="w-full min-w-[700px] border-collapse text-left">
+        <thead className="border-b border-subtle bg-[rgba(255,255,255,0.025)]"><tr className="mono text-[10px] tracking-[0.08em] text-ink-subtle"><th className="px-5 py-3">ROLE</th><th className="px-5 py-3">COMPANY</th><th className="px-5 py-3">LOCATION</th><th className="px-5 py-3">WORK MODEL</th><th className="px-5 py-3">COMPENSATION</th></tr></thead>
+        <tbody>{postings.map((posting) => <tr key={posting.id} className="border-b border-subtle last:border-0 hover:bg-[rgba(255,255,255,0.025)]"><td className="px-5 py-4"><Link href={`/jobs/${posting.id}`} className="text-[13px] font-semibold text-ink-heading no-underline hover:text-brand">{posting.title}</Link></td><td className="px-5 py-4 text-[12px] text-ink-muted">{posting.org_name}</td><td className="px-5 py-4 text-[12px] text-ink-muted">{posting.location}</td><td className="px-5 py-4 text-[12px] text-ink-muted">{posting.remote_policy}</td><td className="mono px-5 py-4 text-[12px] text-ink-muted">{formatSalary(posting.salary_min, posting.salary_max, posting.currency)}</td></tr>)}</tbody>
+      </table>
+    </div>
   );
 }
 
@@ -135,7 +129,6 @@ export default function JobsPage() {
   const [query, setQuery] = useState("");
   const [location, setLocation] = useState("");
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!authLoading && actor) setTab("recommended");
@@ -149,7 +142,6 @@ export default function JobsPage() {
 
   const searchJobs = async () => {
     setLoading(true);
-    setError(null);
     try {
       const params = new URLSearchParams();
       if (query.trim()) params.set("q", query.trim());
@@ -157,7 +149,7 @@ export default function JobsPage() {
       const data = await api.get<{ postings: JobPosting[] }>(`/jobs?${params.toString()}`);
       setPostings(data.postings);
     } catch {
-      setError("Failed to load jobs.");
+      notify.error("Failed to load jobs.");
     } finally {
       setLoading(false);
     }
@@ -165,12 +157,11 @@ export default function JobsPage() {
 
   const loadRecommendations = async () => {
     setLoading(true);
-    setError(null);
     try {
       const data = await api.get<{ recommendations: JobRecommendation[] }>("/me/recommended-jobs");
       setRecommendations(data.recommendations);
     } catch {
-      setError("Failed to load recommendations.");
+      notify.error("Failed to load recommendations.");
     } finally {
       setLoading(false);
     }
@@ -223,12 +214,6 @@ export default function JobsPage() {
               Search
             </Button>
           </div>
-        )}
-
-        {error && (
-          <Alert tone="error" className="mt-6">
-            {error}
-          </Alert>
         )}
 
         <div className="mt-8">

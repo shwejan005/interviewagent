@@ -6,7 +6,6 @@ import Link from "next/link";
 import { motion } from "framer-motion";
 import Navbar from "../components/Navbar";
 import {
-  Alert,
   Button,
   GlassCard,
   Input,
@@ -18,6 +17,7 @@ import {
 } from "../components/ui";
 import { useAuth } from "../../lib/auth-context";
 import { api, ApiError } from "../../lib/api";
+import { notify } from "../../lib/toast";
 import type { CandidateProfile, Education, Skill, WorkExperience } from "../../lib/types";
 import { staggerContainer, staggerItem } from "../../lib/motion";
 
@@ -57,8 +57,6 @@ export default function ProfilePage() {
   const [profile, setProfile] = useState<CandidateProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
 
   // Form state
   const [headline, setHeadline] = useState("");
@@ -97,7 +95,7 @@ export default function ProfilePage() {
       if (err instanceof ApiError && err.status === 404) {
         setProfile(null); // No profile yet — the form below creates one.
       } else {
-        setError(err instanceof ApiError ? err.detail : "Failed to load profile.");
+        notify.error(err instanceof ApiError ? err.detail : "Failed to load profile.");
       }
     } finally {
       setLoading(false);
@@ -118,8 +116,6 @@ export default function ProfilePage() {
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
-    setError(null);
-    setMessage(null);
     try {
       const data = await api.put<CandidateProfile>("/me/profile", {
         headline,
@@ -130,9 +126,9 @@ export default function ProfilePage() {
         is_discoverable: isDiscoverable,
       });
       applyProfile(data);
-      setMessage("Profile saved.");
+      notify.success("Profile saved.");
     } catch (err) {
-      setError(err instanceof ApiError ? err.detail : "Failed to save profile.");
+      notify.error(err instanceof ApiError ? err.detail : "Failed to save profile.");
     } finally {
       setSaving(false);
     }
@@ -140,7 +136,6 @@ export default function ProfilePage() {
 
   const handleSaveSkills = async () => {
     setSaving(true);
-    setError(null);
     try {
       const skills = skillsText
         .split(",")
@@ -149,9 +144,9 @@ export default function ProfilePage() {
         .map((skill) => ({ skill }));
       await api.put("/me/profile/skills", { skills });
       await loadProfile();
-      setMessage("Skills updated.");
+      notify.success("Skills updated.");
     } catch (err) {
-      setError(err instanceof ApiError ? err.detail : "Failed to save skills.");
+      notify.error(err instanceof ApiError ? err.detail : "Failed to save skills.");
     } finally {
       setSaving(false);
     }
@@ -161,7 +156,6 @@ export default function ProfilePage() {
     e.preventDefault();
     if (!expCompany.trim() || !expTitle.trim() || !expStart.trim()) return;
     setSaving(true);
-    setError(null);
     try {
       await api.post("/me/profile/experience", {
         company: expCompany.trim(),
@@ -174,8 +168,9 @@ export default function ProfilePage() {
       setExpStart("");
       setExpCurrent(false);
       await loadProfile();
+      notify.success("Experience added.");
     } catch (err) {
-      setError(err instanceof ApiError ? err.detail : "Failed to add experience.");
+      notify.error(err instanceof ApiError ? err.detail : "Failed to add experience.");
     } finally {
       setSaving(false);
     }
@@ -186,7 +181,7 @@ export default function ProfilePage() {
       await api.delete(`/me/profile/experience/${id}`);
       await loadProfile();
     } catch (err) {
-      setError(err instanceof ApiError ? err.detail : "Failed to remove experience.");
+      notify.error(err instanceof ApiError ? err.detail : "Failed to remove experience.");
     }
   };
 
@@ -194,7 +189,6 @@ export default function ProfilePage() {
     e.preventDefault();
     if (!eduInstitution.trim()) return;
     setSaving(true);
-    setError(null);
     try {
       await api.post("/me/profile/education", {
         institution: eduInstitution.trim(),
@@ -205,8 +199,9 @@ export default function ProfilePage() {
       setEduDegree("");
       setEduEndYear("");
       await loadProfile();
+      notify.success("Education added.");
     } catch (err) {
-      setError(err instanceof ApiError ? err.detail : "Failed to add education.");
+      notify.error(err instanceof ApiError ? err.detail : "Failed to add education.");
     } finally {
       setSaving(false);
     }
@@ -240,17 +235,6 @@ export default function ProfilePage() {
               Skip for now and browse jobs →
             </Link>
           </p>
-        )}
-
-        {message && (
-          <Alert tone="success" className="mt-6">
-            {message}
-          </Alert>
-        )}
-        {error && (
-          <Alert tone="error" className="mt-6">
-            {error}
-          </Alert>
         )}
 
         <motion.div

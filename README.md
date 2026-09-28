@@ -60,6 +60,22 @@ protect against.
 
 ## Project structure
 
+## Local demo data
+
+The default `DATABASE_URL=` setting uses SQLite at `backend/evalia.db`. Seed a
+complete local workspace with demo recruiter, candidate, job, application, and
+evaluation records by running this from the repository root:
+
+```powershell
+python backend/seed_demo.py
+```
+
+The command is idempotent and refuses to run when `DATABASE_URL` points to
+PostgreSQL. It prints the demo login emails and shared development password.
+The seeded workspace includes two recruiter accounts, four candidate accounts,
+eight published jobs, one draft job, and applications in several pipeline
+stages. All demo accounts use `EvaliaDemo2026!`.
+
 ```
 interviewagent/
 ├── backend/

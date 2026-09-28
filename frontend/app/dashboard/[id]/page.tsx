@@ -5,8 +5,8 @@ import { useRouter, useParams } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import Navbar from "../../components/Navbar";
 import {
-  Alert,
   Button,
+  EmptyState,
   GlassCard,
   PageHeader,
   PageShell,
@@ -15,6 +15,7 @@ import {
 } from "../../components/ui";
 import type { PillTone } from "../../components/ui";
 import { staggerContainer, staggerItem } from "../../../lib/motion";
+import { notify } from "../../../lib/toast";
 
 const API_BASE = "/api";
 
@@ -197,6 +198,7 @@ export default function EvaluationDetailPage() {
       setReport(data);
     } catch (err: any) {
       setError(err.message);
+      notify.error(err.message || "Failed to load evaluation report.");
     } finally {
       setLoading(false);
     }
@@ -227,12 +229,15 @@ export default function EvaluationDetailPage() {
       <div className="min-h-screen">
         <Navbar />
         <PageShell className="!max-w-[520px] pt-[112px]">
-          <Alert tone="error">{error || "Evaluation not found."}</Alert>
-          <div className="mt-6 flex justify-center">
-            <Button variant="secondary" onClick={() => router.push("/dashboard")}>
-              Back to dashboard
-            </Button>
-          </div>
+          <EmptyState
+            title="Evaluation not found"
+            description={error || "We couldn't find that evaluation report."}
+            action={
+              <Button variant="secondary" onClick={() => router.push("/dashboard")}>
+                Back to dashboard
+              </Button>
+            }
+          />
         </PageShell>
       </div>
     );
