@@ -81,11 +81,10 @@ function VerdictCard({ title, agent, verdict, roundNumber }: Readonly<{ title: s
       <AnimatePresence initial={false}>
         {expanded && (
           <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
-            className="overflow-hidden"
+            initial={{ opacity: 0, y: -6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -6 }}
+            transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
           >
             <div className="flex flex-col gap-4 border-t border-subtle px-5 py-5">
               {confidence !== null && confidence !== undefined && (

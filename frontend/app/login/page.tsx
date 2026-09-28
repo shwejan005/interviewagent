@@ -46,7 +46,7 @@ function LoginForm() {
           </motion.p>
           <motion.h1
             variants={fadeUp}
-            className="mb-7 mt-2 text-center text-[28px] font-bold tracking-[-0.02em] text-ink-heading"
+            className="mb-7 mt-2 text-center text-[28px] font-bold tracking-normal text-ink-heading"
           >
             Log in
           </motion.h1>

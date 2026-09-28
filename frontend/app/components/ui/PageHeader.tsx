@@ -31,7 +31,7 @@ export function PageHeader({ eyebrow, title, description, actions, className }: 
         <motion.h1
           variants={fadeUp}
           className={cn(
-            "text-[clamp(26px,4vw,38px)] font-semibold leading-[1.15] tracking-[-0.02em] text-ink-heading",
+            "text-[clamp(26px,4vw,38px)] font-semibold leading-[1.15] tracking-normal text-ink-heading",
             eyebrow && "mt-2",
           )}
         >

@@ -149,7 +149,7 @@ export default function Navbar() {
       <div className="mx-auto flex h-14 max-w-[var(--max-width)] items-center justify-between px-6">
         {/* Brand */}
         <Link href="/" className="group flex items-center gap-2.5">
-          <span className="mono text-[14px] font-bold tracking-[-0.02em] text-brand transition-[text-shadow] duration-base ease-out-expo group-hover:[text-shadow:0_0_16px_rgba(249,115,22,0.6)]">
+          <span className="mono text-[14px] font-bold tracking-normal text-brand transition-[text-shadow] duration-base ease-out-expo group-hover:[text-shadow:0_0_16px_rgba(249,115,22,0.6)]">
             EVALIA
           </span>
           <span className="text-[12px] text-ink-subtle/50">/</span>

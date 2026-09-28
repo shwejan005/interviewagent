@@ -129,7 +129,7 @@ function RegisterForm() {
 
           <motion.h1
             variants={fadeUp}
-            className="mt-7 text-center text-[28px] font-bold tracking-[-0.02em] text-ink-heading"
+            className="mt-7 text-center text-[28px] font-bold tracking-normal text-ink-heading"
           >
             {copy.heading}
           </motion.h1>

@@ -258,7 +258,7 @@ export default function PostingDetailPage() {
 
         <div className="mt-4 flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
-            <h1 className="text-[26px] font-bold tracking-[-0.02em] text-ink-heading">{posting.title}</h1>
+            <h1 className="text-[26px] font-bold tracking-normal text-ink-heading">{posting.title}</h1>
             <p className="mt-1 text-[12px] text-ink-subtle">
               {posting.location} · {posting.remote_policy} ·{" "}
               {formatSalaryRange(posting.salary_min, posting.salary_max)}

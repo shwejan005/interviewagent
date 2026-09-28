@@ -158,7 +158,7 @@ export default function JobDetailPage() {
           ← BACK TO JOBS
         </Link>
 
-        <h1 className="mb-1.5 mt-4 text-[clamp(24px,3.6vw,32px)] font-bold tracking-[-0.02em] text-ink-heading">
+        <h1 className="mb-1.5 mt-4 text-[clamp(24px,3.6vw,32px)] font-bold tracking-normal text-ink-heading">
           {posting.title}
         </h1>
         <p className="text-[13px] text-ink-subtle">

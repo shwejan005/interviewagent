@@ -18,7 +18,7 @@ import type { PillTone } from "../components/ui";
 import { useAuth } from "../../lib/auth-context";
 import { api, ApiError } from "../../lib/api";
 import type { ApplicationDetail, ApplicationEvent, ApplicationSummary } from "../../lib/types";
-import { DUR, EASE_OUT, staggerContainer, staggerItem } from "../../lib/motion";
+import { EASE_OUT, staggerContainer, staggerItem } from "../../lib/motion";
 
 const STAGE_TONE: Record<string, PillTone> = {
   APPLIED: "primary",
@@ -164,11 +164,10 @@ export default function ApplicationsPage() {
                     <AnimatePresence initial={false}>
                       {open && (
                         <motion.div
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: "auto", opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          transition={{ duration: DUR.base, ease: EASE_OUT }}
-                          className="overflow-hidden"
+                          initial={{ opacity: 0, y: -6 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -6 }}
+                          transition={{ duration: 0.2, ease: EASE_OUT }}
                         >
                           <div className="border-t border-subtle px-5 pb-5 pt-4">
                             {detail && (

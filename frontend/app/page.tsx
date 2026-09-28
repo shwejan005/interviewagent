@@ -122,11 +122,10 @@ function FAQAccordion({ q, a }: Readonly<{ q: string; a: string }>) {
         {open && (
           <motion.div
             key="answer"
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: DUR.base, ease: EASE_OUT }}
-            className="overflow-hidden"
+            initial={{ opacity: 0, y: -6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -6 }}
+            transition={{ duration: 0.2, ease: EASE_OUT }}
           >
             <p className="border-t border-subtle px-5 py-4 text-[13px] leading-[1.7] text-ink-muted">{a}</p>
           </motion.div>
@@ -152,7 +151,7 @@ function SectionHeading({
       </motion.p>
       <motion.h2
         variants={fadeUp}
-        className="mt-3 text-[clamp(24px,3.4vw,34px)] font-bold tracking-[-0.02em] text-ink-heading"
+        className="mt-3 text-[clamp(24px,3.4vw,34px)] font-bold tracking-normal text-ink-heading"
       >
         {title}
       </motion.h2>
@@ -274,7 +273,7 @@ export default function LandingPage() {
 
           <motion.h1
             variants={fadeUp}
-            className="mx-auto mt-5 max-w-[17ch] text-[clamp(38px,6.5vw,66px)] font-extrabold leading-[1.05] tracking-[-0.035em] text-ink-heading"
+            className="mx-auto mt-5 max-w-[17ch] text-[clamp(38px,6.5vw,66px)] font-extrabold leading-[1.05] tracking-normal text-ink-heading"
           >
             Hiring or job-hunting, <span className="text-gradient">built for your side</span> of the table
           </motion.h1>
@@ -573,7 +572,7 @@ export default function LandingPage() {
       >
         <motion.h2
           variants={fadeUp}
-          className="text-[clamp(26px,4vw,36px)] font-bold tracking-[-0.02em] text-ink-heading"
+          className="text-[clamp(26px,4vw,36px)] font-bold tracking-normal text-ink-heading"
         >
           Ready to get started?
         </motion.h2>

@@ -116,11 +116,10 @@ function VerdictRow({ verdictRecord, expanded, onToggle }: Readonly<VerdictRowPr
         <AnimatePresence initial={false}>
           {expanded && (
             <motion.div
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: "auto", opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
-              className="overflow-hidden"
+              initial={{ opacity: 0, y: -6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
             >
               <div className="flex flex-col gap-3.5 border-t border-subtle p-[18px]">
                 {(verdict.strengths?.length > 0 || verdict.weaknesses?.length > 0) && (
