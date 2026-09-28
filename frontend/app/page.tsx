@@ -203,7 +203,7 @@ export default function LandingPage() {
   const { actor, loading: authLoading } = useAuth();
 
   return (
-    <div style={{ minHeight: "100vh", background: "var(--color-bg)" }}>
+    <div style={{ minHeight: "100vh" }}>
       <Navbar />
 
       {/* Hero Section */}

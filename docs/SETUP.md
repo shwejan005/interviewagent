@@ -51,8 +51,20 @@ Run the server:
 
 ```powershell
 cd backend
-uvicorn main:app --reload --port 8000
+../.venv/Scripts/python.exe -m uvicorn main:app --reload --port 8000
 ```
+
+Use the venv's `python.exe` explicitly (`-m uvicorn`) rather than a bare
+`uvicorn` command. If another Python install on `PATH` also has `uvicorn`
+installed (e.g. a prior `pip install --user uvicorn`), a bare `uvicorn`
+command can silently resolve to *that* install instead of the venv — it
+still launches, but immediately fails with `ModuleNotFoundError: No module
+named 'crewai'` because the dependencies were installed into the venv, not
+into whichever Python actually has `uvicorn` on `PATH`. Confirm with
+`where uvicorn` (or `Get-Command uvicorn -All` in PowerShell) if this
+happens — the venv's activation script is supposed to shadow `PATH`
+correctly, but a fresh terminal that skipped the `Activate.ps1` step, or a
+second `uvicorn` install ahead of the venv on `PATH`, will hit this.
 
 ## Frontend
 

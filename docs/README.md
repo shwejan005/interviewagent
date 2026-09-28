@@ -32,6 +32,7 @@ difference explicitly.
 |---|---|---|
 | [PRODUCT_BLUEPRINT.md](PRODUCT_BLUEPRINT.md) | The full product Evalia becomes: RBAC & multi-tenancy, recruiter campaigns/ATS, candidate profile vault & one-click apply, matching engine, DSA/dev prep suite with in-browser IDE, gamification, auto-apply agent, admin console, phased delivery plan | Understand the target product and how to get there from here. |
 | [DECISIONS.md](DECISIONS.md) | The 10 architectural/product decisions that block the blueprint's Phase 0, each with options, trade-offs, and a recommendation | Make the calls needed before platform work starts. |
+| [UI_REVAMP_PLAN.md](UI_REVAMP_PLAN.md) | Glassmorphism design system, motion system, and a phased plan to migrate 501 inline styles into a real styling layer — including why the current UI structurally cannot animate | Understand the UI/UX direction and migration approach. |
 | [../PRODUCTION_ROADMAP.md](../PRODUCTION_ROADMAP.md) | Hardening plan for the *existing* interview pipeline (durable execution, evaluation harness, observability) | Improve the pipeline that exists today. |
 
 > **Relationship between the plans:** `PRODUCTION_ROADMAP.md` makes the current pipeline production-grade. `PRODUCT_BLUEPRINT.md` builds a platform around it. The blueprint's Phase 0 subsumes several roadmap items (notably durable execution and migrations) because they become hard prerequisites rather than improvements.

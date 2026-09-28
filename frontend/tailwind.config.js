@@ -9,10 +9,51 @@ module.exports = {
   ],
   theme: {
   	extend: {
+  		fontFamily: {
+  			sans: ['var(--font-inter)', 'system-ui', 'sans-serif'],
+  			mono: ['var(--font-jetbrains-mono)', 'monospace'],
+  		},
   		borderRadius: {
   			lg: 'var(--radius)',
   			md: 'calc(var(--radius) - 2px)',
   			sm: 'calc(var(--radius) - 4px)'
+  		},
+  		// Design-system tokens, namespaced so they never collide with the
+  		// shadcn HSL scale below.
+  		backgroundColor: {
+  			'glass-low': 'var(--glass-bg-low)',
+  			'glass-mid': 'var(--glass-bg-mid)',
+  			'glass-high': 'var(--glass-bg-high)',
+  		},
+  		textColor: {
+  			ink: 'var(--color-text)',
+  			'ink-muted': 'var(--color-text-muted)',
+  			'ink-subtle': 'var(--color-text-subtle)',
+  			'ink-heading': 'var(--color-text-heading)',
+  			brand: 'var(--color-primary)',
+  		},
+  		borderColor: {
+  			subtle: 'var(--color-border)',
+  			strong: 'var(--color-border-hover)',
+  			brand: 'var(--color-primary)',
+  		},
+  		boxShadow: {
+  			glass: 'var(--glass-highlight), var(--glass-shadow)',
+  			'glass-lg': 'var(--glass-highlight), var(--glass-shadow-lg)',
+  			'glow-primary': 'var(--glow-primary)',
+  			'glow-success': 'var(--glow-success)',
+  		},
+  		backdropBlur: {
+  			glass: 'var(--glass-blur-md)',
+  		},
+  		transitionTimingFunction: {
+  			'out-expo': 'var(--ease-out)',
+  			spring: 'var(--ease-spring)',
+  		},
+  		transitionDuration: {
+  			fast: '150ms',
+  			base: '250ms',
+  			slow: '400ms',
   		},
   		colors: {
   			background: 'hsl(var(--background))',

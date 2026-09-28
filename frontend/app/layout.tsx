@@ -4,6 +4,7 @@ import { Inter, JetBrains_Mono } from 'next/font/google'
 
 import './globals.css'
 import { AuthProvider } from '../lib/auth-context'
+import { AmbientBackground } from './components/AmbientBackground'
 
 const inter = Inter({
   subsets: ['latin'],
@@ -32,7 +33,7 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
-  themeColor: '#05080f',
+  themeColor: '#070810',
 }
 
 export default function RootLayout({
@@ -42,12 +43,8 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={`${inter.variable} ${jetbrainsMono.variable}`}>
-      <body
-        style={{
-          fontFamily: 'var(--font-inter, var(--font-sans))',
-          minHeight: '100vh',
-        }}
-      >
+      <body>
+        <AmbientBackground />
         <AuthProvider>{children}</AuthProvider>
       </body>
     </html>
