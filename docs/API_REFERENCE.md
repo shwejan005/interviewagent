@@ -126,6 +126,74 @@ All require platform-admin capabilities and are audited at Tier 1.
 
 ---
 
+## Candidate: profile vault
+
+All operate on the **caller's own** data — every query is keyed on the
+authenticated user ID, never on an ID from the request, so there is no path
+by which one candidate reads another's profile.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /me/profile` | The complete vault in one call: profile, experience, education, skills, preferences, saved answers |
+| `PUT /me/profile` | Create or update. Idempotent. Stamps data-processing consent on creation |
+| `POST /me/profile/experience` · `DELETE /me/profile/experience/{id}` | Work history. Deletes are scoped by profile, so a guessed ID returns 404 |
+| `POST /me/profile/education` | Education history |
+| `PUT /me/profile/skills` | Replace claimed skills. **Skills verified by in-platform performance keep their verified flag** — a profile edit cannot fabricate or erase that signal |
+| `PUT /me/profile/preferences` | Target roles, locations, comp band, notice period |
+| `PUT /me/profile/vault` | Save a reusable answer directly |
+
+## Candidate: jobs and applications
+
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `GET /jobs` | none | Public job board. Published postings only, across all orgs. Filters: `q`, `location`, `remote_policy` |
+| `GET /jobs/{id}` | none | Posting detail. 404 unless published |
+| `GET /jobs/{id}/application-form` | required | **The "fill it once" endpoint.** Returns the posting's questions with `prefilled_answer` populated from the vault and `unanswered_count` — the client only prompts for genuinely new questions |
+| `POST /jobs/{id}/apply` | required | Submit. Answers not supplied are taken from the vault; supplied answers are written back unless `save_answers_to_vault: false`. 409 on duplicate, 400 without a profile or with missing required answers |
+| `GET /me/applications` | required | Application tracker |
+| `GET /me/applications/{id}` | required | Detail plus timeline. **Internal recruiter notes are deliberately excluded** |
+| `POST /me/applications/{id}/withdraw` | required | Withdraw. Allows re-applying later, since the uniqueness index excludes withdrawn rows |
+
+## Recruiter: campaigns, postings, pipeline
+
+All require `X-Org-Id` and a capability. Every query is org-scoped in SQL as
+well as checked at the route layer.
+
+| Endpoint | Capability |
+|---|---|
+| `POST /orgs/{org_id}/campaigns` | `campaign:create` |
+| `GET /orgs/{org_id}/campaigns` · `GET .../campaigns/{id}` | `campaign:read:assigned` |
+| `PATCH /orgs/{org_id}/campaigns/{id}` | `campaign:update` |
+| `POST /orgs/{org_id}/postings` | `campaign:create` — created as `DRAFT`; cannot attach to another org's campaign |
+| `GET /orgs/{org_id}/postings` · `GET .../postings/{id}` | `campaign:read:assigned` |
+| `PATCH /orgs/{org_id}/postings/{id}` | `campaign:update` |
+| `POST /orgs/{org_id}/postings/{id}/status` | `posting:publish` — publishing is gated separately from editing, since it exposes the posting publicly |
+| `GET /orgs/{org_id}/postings/{id}/applications` | `application:read` — returns applicants plus per-stage funnel counts |
+| `GET /orgs/{org_id}/applications/{id}` | `application:read` — **audited at Tier 3** as a sensitive read |
+| `POST /orgs/{org_id}/applications/{id}/transition` | `application:advance`, **plus `application:reject` to reject** |
+
+### Application stages
+
+```
+APPLIED → SCREENING → TECHNICAL → BEHAVIORAL → INTERVIEW → OFFER → HIRED
+    ↓          ↓           ↓            ↓           ↓         ↓
+         PENDING_REVIEW (automated adverse recommendation, awaiting a human)
+                              ↓
+                    REJECTED / WITHDRAWN  (terminal)
+```
+
+Transitions are validated against an explicit table — an out-of-order or
+replayed request returns **409** rather than corrupting pipeline history.
+Terminal stages have no exits.
+
+`PENDING_REVIEW` exists because **automated rejection is disabled by
+default** (`auto_reject_enabled: false` on every posting). An automated stage
+producing an adverse recommendation parks the application for human review
+rather than rejecting it. It can transition in either direction — overriding
+the machine is the point. See [DECISIONS.md](DECISIONS.md) D-10.
+
+---
+
 
 
 ## `POST /start`

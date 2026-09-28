@@ -188,6 +188,41 @@ story. Unowned rows are treated as legacy.
 This also preserves the pre-identity API contract — `POST /start` still works
 without credentials and simply produces an unowned evaluation.
 
+## Hiring domain tables
+
+Added in Phase 1. DDL lives in `hiring_schema.py`, data access in
+`candidate_db.py` and `hiring_db.py` — split by domain so `database.py` does
+not grow without bound.
+
+**Candidate vault:** `candidate_profiles`, `work_experiences`,
+`education_entries`, `skill_claims`, `job_preferences`,
+`answer_vault_entries`.
+
+**Hiring:** `campaigns`, `job_postings`, `applications`,
+`application_answers`, `application_events`.
+
+### Constraints that encode product decisions
+
+| Constraint | Why |
+|---|---|
+| `uq_application_candidate_posting` is a **partial** unique index excluding `withdrawn_at IS NOT NULL` | One live application per candidate per posting, but a candidate who withdrew can genuinely re-apply |
+| `uq_vault_entry (profile_id, question_key)` | `question_key` is stable across organizations, which is what lets one company's question pre-fill for the next |
+| `job_postings.auto_reject_enabled` defaults to **FALSE** | An automated employment decision is a regulated act. Orgs opt in explicitly and auditably — see [DECISIONS.md](DECISIONS.md) D-10 |
+| `applications.profile_snapshot` | Immutable copy of the profile at submission. A candidate editing their profile later must not silently rewrite what a recruiter actually assessed |
+| `skill_claims.verified` separate from the claim | Verified means demonstrated in-platform, never self-asserted. Kept distinct so matching can never conflate the two |
+| `candidate_profiles.data_consent_at` / `retention_until` | Captured from day one. Consent cannot be obtained retroactively for data already held, so the columns must exist before the data does |
+
+### Application state machine
+
+Transitions are validated against an explicit table in `hiring_db.py` rather
+than being unconstrained, so a replayed or out-of-order request is rejected
+instead of corrupting pipeline history. Terminal stages (`HIRED`, `REJECTED`,
+`WITHDRAWN`) have no outward transitions.
+
+`PENDING_REVIEW` is where an automated stage parks an adverse recommendation
+awaiting human confirmation. It can transition in either direction, because
+overriding the machine is the entire reason it exists.
+
 ## Decision-memory files on disk
 
 ```

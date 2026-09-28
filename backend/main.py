@@ -38,6 +38,8 @@ from starlette.requests import Request  # noqa: E402
 from routes import router  # noqa: E402
 from auth_routes import router as auth_router, org_router  # noqa: E402
 from admin_routes import router as admin_router  # noqa: E402
+from candidate_routes import router as candidate_router, jobs_router  # noqa: E402
+from recruiter_routes import router as recruiter_router  # noqa: E402
 from database import init_db  # noqa: E402
 from rate_limit import InMemoryRateLimitMiddleware  # noqa: E402
 
@@ -181,6 +183,11 @@ async def global_exception_handler(request: Request, exc: Exception):
 app.include_router(auth_router)
 app.include_router(org_router)
 app.include_router(admin_router)
+app.include_router(candidate_router)
+app.include_router(jobs_router)
+# Registered before the legacy router because both define /orgs/* paths;
+# recruiter_router's are more specific and must match first.
+app.include_router(recruiter_router)
 app.include_router(router)
 
 

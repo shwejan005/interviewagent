@@ -537,10 +537,13 @@ def _seed_roles(cur) -> None:
 
 def init_db() -> None:
     """Initialize database schema. Safe to call multiple times."""
+    import hiring_schema
+
     if USE_POSTGRES:
         with _get_conn() as (conn, cur):
             cur.execute(_PG_SCHEMA)
             cur.execute(_PG_IDENTITY_SCHEMA)
+            cur.execute(hiring_schema.SCHEMA_PG)
             _apply_additive_columns(cur)
             _seed_roles(cur)
         logger.info("PostgreSQL database initialized (DATABASE_URL detected).")
@@ -549,6 +552,7 @@ def init_db() -> None:
         try:
             conn.executescript(_SQLITE_SCHEMA)
             conn.executescript(_SQLITE_IDENTITY_SCHEMA)
+            conn.executescript(hiring_schema.SCHEMA_SQLITE)
             cur = conn.cursor()
             _apply_additive_columns(cur)
             _seed_roles(cur)

@@ -6,6 +6,44 @@ Companion to [PRODUCT_BLUEPRINT.md](PRODUCT_BLUEPRINT.md).
 
 ---
 
+## Settled — 2026-09-28
+
+The decision-maker was unavailable, so the four blocking decisions were taken
+autonomously to unblock Phase 1. **Each was resolved to the reversible or
+lower-risk option**, and each is recorded here with its reversal cost so the
+call can be revisited on review.
+
+| ID | Settled as | Rationale | Cost to reverse |
+|---|---|---|---|
+| **D-01** | Application-layer tenancy now; **RLS deferred** until a real-Postgres test environment exists | The whole test suite runs on SQLite, which has no RLS. Adding it now means shipping *untested* security code and creating false confidence. The schema is RLS-ready (`org_id` on every tenant table), so adding it later is additive. | Low — additive migration plus policy DDL |
+| **D-02** | **Keep in-house auth** | Works, is tested, and no enterprise SSO requirement exists yet. Migrating now would pay a real cost for a hypothetical customer. | Medium, and rises with usage. Revisit the moment SSO is actually asked for |
+| **D-05** | **Design to the strictest, activate per-market later** | Consent, retention, and bias-audit *capture* are built into the schema now; enforcement is configuration. Retrofitting consent onto data already collected without it is not legally possible. | Low if built now, very high if deferred — hence building now |
+| **D-10** | **No automated rejection.** Automated stages produce a recommendation; a human confirms every adverse decision | An automated employment decision is a regulated act in several target markets. Defaulting to human confirmation is slower and is the correct default for a hiring product. Implemented as a per-posting `auto_reject_enabled` flag defaulting to `false`, so an org can opt in deliberately and auditably. | Low — flip a default |
+
+**D-07 (build order)** was settled as **marketplace-first**: campaigns →
+postings → applications → tracking. Reasoning: the prep suite is only
+valuable to candidates who have jobs to apply to, and the existing agent
+pipeline is already the differentiated part of the hiring flow. Marketplace
+work also exercises the tenancy model hardest, surfacing foundation problems
+early rather than after a second product is built on top.
+
+**D-08** was settled as **preserve and retrofit**, and this is now done — see
+the Phase 0 entry in [CHANGELOG.md](CHANGELOG.md).
+
+### One consequence worth flagging
+
+Because D-10 was settled as "no automated rejection", the new application
+pipeline does **not** inherit the legacy evaluation behaviour where a FAIL
+verdict auto-rejects. The standalone `/start` evaluation flow keeps its
+existing behaviour unchanged (it is not attached to a job posting and has no
+applicant to notify), but an application moving through an automated stage
+lands in `PENDING_REVIEW` with the recommendation attached, not `REJECTED`.
+These two flows now differ deliberately.
+
+---
+
+
+
 ## D-01 · Tenancy isolation model
 **Blocks:** every table, every query. **Reversibility:** very low.
 

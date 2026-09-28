@@ -10,6 +10,80 @@ Entries are in **reverse chronological order** (most recent session first).
 
 ---
 
+## Session 7 — Phase 1: profile vault, campaigns, postings, applications
+
+**Trigger:** instruction to settle the open decisions, then build Phase 1.
+
+### Decisions settled
+
+The decision-maker was unavailable, so the four blocking decisions were taken
+autonomously, each resolved to the **reversible or lower-risk** option and
+recorded in [DECISIONS.md](DECISIONS.md) with its reversal cost. Summary:
+RLS deferred until a Postgres test environment exists (adding it now means
+shipping untested security code); in-house auth kept; consent and retention
+captured now but enforced per-market later; and **no automated rejection**.
+
+### New modules
+
+`hiring_schema.py` (DDL), `candidate_db.py` (profile vault),
+`hiring_db.py` (campaigns/postings/applications plus the state machine),
+`hiring_models.py`, `candidate_routes.py`, `recruiter_routes.py`.
+
+### The "fill it once" vault
+
+The retention mechanic, and the thing that makes application two cheaper than
+application one: `GET /jobs/{id}/application-form` returns the posting's
+questions already pre-filled from the candidate's vault, and answers supplied
+at submission are written back. A `question_key` is stable across
+organizations, so a question one company asks pre-fills for the next.
+
+Candidates can opt out per-application (`save_answers_to_vault: false`),
+because "notice period" and "reason for leaving" are not equally reusable.
+
+### Decisions embedded in the code
+
+- **`auto_reject_enabled` defaults to `false`** on every posting. An
+  automated employment decision is a regulated act; orgs opt in explicitly
+  and auditably.
+- **`PENDING_REVIEW` stage** — an automated stage producing an adverse
+  recommendation parks the application here rather than rejecting it. The
+  stage can transition in either direction, because overriding the machine is
+  the entire point of it existing.
+- **Explicit transition table** rather than "anything goes", so a replayed or
+  out-of-order request is rejected instead of corrupting pipeline history.
+  Terminal stages have no exits.
+- **`profile_snapshot` on every application** — an immutable copy of the
+  profile at submission. A candidate editing their profile later must not
+  silently rewrite what a recruiter actually assessed.
+- **Verified skills survive a profile edit.** Verification is earned by
+  demonstrated performance; a profile edit must not be able to fabricate or
+  erase it. Tested.
+- **Partial unique index excludes withdrawn applications**, so a candidate
+  who withdrew can genuinely re-apply. Tested.
+- **Rejection requires `APPLICATION_REJECT` on top of `APPLICATION_ADVANCE`**
+  — advancing someone and ending their candidacy are different acts.
+- **Rejection audits at Tier 1**, however routine it is operationally,
+  because it is an adverse decision about a person. Recruiters reading
+  candidate data audits at Tier 3, which is what a subject-access request
+  needs.
+- **Internal recruiter notes never reach the candidate timeline.** Tested.
+
+### Tests
+
+89 → **134 passing**. `tests/test_hiring.py` adds 45, including
+`TestHiringTenantIsolation` as a second CI gate covering campaigns, postings,
+applicants and transitions — with a positive control so it cannot pass by
+denying everything, and a case asserting one candidate cannot read another's
+application.
+
+### Known gaps
+
+Interview scheduling, notifications, and the matching engine are Phase 1/2
+scope and not yet built. The job board search is `LIKE`-based, which is
+adequate at current volume and will need real full-text search later.
+
+---
+
 ## Session 6 — Platform foundation: identity, RBAC, tenancy, audit
 
 **Trigger:** instruction to begin implementing the product blueprint, one
