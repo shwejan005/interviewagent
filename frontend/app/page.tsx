@@ -3,9 +3,13 @@
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { AnimatePresence, motion } from "framer-motion";
+
 import Navbar from "./components/Navbar";
+import { Button, GlassCard, ScoreRing, StatusPill } from "./components/ui";
 import { useAuth } from "../lib/auth-context";
 import type { Actor } from "../lib/types";
+import { DUR, EASE_OUT, fadeUp, staggerContainer, staggerItem } from "../lib/motion";
 
 const AGENTS = [
   {
@@ -98,26 +102,66 @@ const CONTEXT_MATRIX = [
 function FAQAccordion({ q, a }: Readonly<{ q: string; a: string }>) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="card-surface" style={{ padding: 0 }}>
+    <div className="glass overflow-hidden">
       <button
         type="button"
-        style={{ width: "100%", padding: "16px 20px", cursor: "pointer", background: "none", border: "none", textAlign: "left", font: "inherit", color: "inherit" }}
+        className="flex w-full cursor-pointer items-center justify-between gap-4 border-none bg-transparent px-5 py-4 text-left font-[inherit] text-[14px] font-medium text-ink-heading"
         onClick={() => setOpen(!open)}
         aria-expanded={open}
       >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span style={{ fontSize: 14, fontWeight: 500, color: "var(--color-text-heading)" }}>{q}</span>
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--color-text-subtle)", marginLeft: 16 }}>
-            {open ? "[ - ]" : "[ + ]"}
-          </span>
-        </div>
-        {open && (
-          <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--color-border)", fontSize: 13, color: "var(--color-text-muted)", lineHeight: 1.7, textAlign: "left" }}>
-            {a}
-          </div>
-        )}
+        <span>{q}</span>
+        <motion.span
+          animate={{ rotate: open ? 45 : 0 }}
+          transition={{ duration: DUR.base, ease: EASE_OUT }}
+          className="mono shrink-0 text-[16px] leading-none text-brand"
+        >
+          +
+        </motion.span>
       </button>
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            key="answer"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: DUR.base, ease: EASE_OUT }}
+            className="overflow-hidden"
+          >
+            <p className="border-t border-subtle px-5 py-4 text-[13px] leading-[1.7] text-ink-muted">{a}</p>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
+  );
+}
+
+function SectionHeading({
+  eyebrow, title, children,
+}: Readonly<{ eyebrow: string; title: string; children?: React.ReactNode }>) {
+  return (
+    <motion.div
+      initial="hidden"
+      whileInView="visible"
+      viewport={{ once: true, amount: 0.4 }}
+      variants={staggerContainer(0.07)}
+      className="mb-10 text-center"
+    >
+      <motion.p variants={fadeUp} className="eyebrow">
+        {eyebrow}
+      </motion.p>
+      <motion.h2
+        variants={fadeUp}
+        className="mt-3 text-[clamp(24px,3.4vw,34px)] font-bold tracking-[-0.02em] text-ink-heading"
+      >
+        {title}
+      </motion.h2>
+      {children && (
+        <motion.p variants={fadeUp} className="mx-auto mt-4 max-w-[62ch] text-[14px] leading-relaxed text-ink-muted">
+          {children}
+        </motion.p>
+      )}
+    </motion.div>
   );
 }
 
@@ -158,22 +202,32 @@ function PersonaCta({
   router: ReturnType<typeof useRouter>;
   showLoginHint?: boolean;
 }>) {
-  if (authLoading) return null;
+  if (authLoading) {
+    return (
+      <div className="flex justify-center gap-3">
+        <div className="skeleton h-10 w-44" />
+        <div className="skeleton h-10 w-36" />
+      </div>
+    );
+  }
 
   if (!actor) {
     return (
       <>
-        <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
-          <button className="btn-primary" onClick={() => router.push("/register?intent=candidate")}>
+        <div className="flex flex-wrap justify-center gap-3">
+          <Button size="lg" onClick={() => router.push("/register?intent=candidate")}>
             I&apos;m looking for a job
-          </button>
-          <button className="btn-secondary" onClick={() => router.push("/register?intent=recruiter")}>
+          </Button>
+          <Button size="lg" variant="secondary" onClick={() => router.push("/register?intent=recruiter")}>
             I&apos;m hiring talent
-          </button>
+          </Button>
         </div>
         {showLoginHint && (
-          <p style={{ fontSize: 12, color: "var(--color-text-subtle)", marginTop: 16 }}>
-            Already have an account? <Link href="/login" style={{ color: "var(--color-primary)" }}>Log in</Link>
+          <p className="mt-5 text-[12px] text-ink-subtle">
+            Already have an account?{" "}
+            <Link href="/login" className="text-brand hover:underline">
+              Log in
+            </Link>
           </p>
         )}
       </>
@@ -181,19 +235,24 @@ function PersonaCta({
   }
 
   const isRecruiter = actor.memberships.length > 0;
+  const [primary, secondary] = isRecruiter
+    ? ([
+        { label: "Go to recruiter workspace", href: "/org" },
+        { label: "Browse jobs", href: "/jobs" },
+      ] as const)
+    : ([
+        { label: "Browse jobs", href: "/jobs" },
+        { label: "Complete your profile", href: "/profile" },
+      ] as const);
+
   return (
-    <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
-      {isRecruiter ? (
-        <>
-          <button className="btn-primary" onClick={() => router.push("/org")}>Go to recruiter workspace</button>
-          <button className="btn-secondary" onClick={() => router.push("/jobs")}>Browse jobs</button>
-        </>
-      ) : (
-        <>
-          <button className="btn-primary" onClick={() => router.push("/jobs")}>Browse jobs</button>
-          <button className="btn-secondary" onClick={() => router.push("/profile")}>Complete your profile</button>
-        </>
-      )}
+    <div className="flex flex-wrap justify-center gap-3">
+      <Button size="lg" onClick={() => router.push(primary.href)}>
+        {primary.label}
+      </Button>
+      <Button size="lg" variant="secondary" onClick={() => router.push(secondary.href)}>
+        {secondary.label}
+      </Button>
     </div>
   );
 }
@@ -203,332 +262,331 @@ export default function LandingPage() {
   const { actor, loading: authLoading } = useAuth();
 
   return (
-    <div style={{ minHeight: "100vh" }}>
+    <div className="min-h-screen">
       <Navbar />
 
       {/* Hero Section */}
-      <section style={{ padding: "120px 24px 70px", maxWidth: "var(--max-width)", margin: "0 auto", textAlign: "center" }}>
-        <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-primary)", letterSpacing: "0.1em", marginBottom: 16 }}>
-          THE HIRING PLATFORM WITH AN AI EVALUATION ENGINE BUILT IN
-        </div>
+      <section className="mx-auto max-w-[var(--max-width)] px-6 pb-20 pt-[140px] text-center">
+        <motion.div initial="hidden" animate="visible" variants={staggerContainer(0.08)}>
+          <motion.p variants={fadeUp} className="eyebrow">
+            THE HIRING PLATFORM WITH AN AI EVALUATION ENGINE BUILT IN
+          </motion.p>
 
-        <h1
-          style={{
-            fontSize: "clamp(32px, 5vw, 56px)",
-            fontWeight: 800,
-            lineHeight: 1.1,
-            letterSpacing: "-0.03em",
-            color: "var(--color-text-heading)",
-            marginBottom: 20,
-            maxWidth: 800,
-            marginLeft: "auto",
-            marginRight: "auto",
-          }}
-        >
-          Whether you&apos;re hiring or job-hunting, Evalia is built for your side of the table
-        </h1>
+          <motion.h1
+            variants={fadeUp}
+            className="mx-auto mt-5 max-w-[17ch] text-[clamp(38px,6.5vw,66px)] font-extrabold leading-[1.05] tracking-[-0.035em] text-ink-heading"
+          >
+            Hiring or job-hunting, <span className="text-gradient">built for your side</span> of the table
+          </motion.h1>
 
-        <p
-          style={{
-            fontSize: 16,
-            color: "var(--color-text-muted)",
-            maxWidth: 600,
-            margin: "0 auto 32px",
-            lineHeight: 1.7,
-          }}
-        >
-          Candidates build one profile, get matched to roles, and track every application.
-          Recruiters post roles, run a real pipeline, and screen with 5 bias-isolated AI agents
-          and a final human-confirmed decision.
-        </p>
+          <motion.p
+            variants={fadeUp}
+            className="mx-auto mt-6 max-w-[64ch] text-[17px] leading-[1.7] text-ink-muted"
+          >
+            Candidates build one profile, get matched to roles, and track every application.
+            Recruiters post roles, run a real pipeline, and screen with 5 bias-isolated AI agents
+            and a final human-confirmed decision.
+          </motion.p>
 
-        <PersonaCta authLoading={authLoading} actor={actor} router={router} showLoginHint />
+          <motion.div variants={fadeUp} className="mt-9">
+            <PersonaCta authLoading={authLoading} actor={actor} router={router} showLoginHint />
+          </motion.div>
+        </motion.div>
 
         {/* Hero Card Preview */}
-        <div
-          className="card-surface"
-          style={{
-            marginTop: 56,
-            padding: 24,
-            textAlign: "left",
-            maxWidth: 680,
-            marginLeft: "auto",
-            marginRight: "auto",
-          }}
+        <motion.div
+          initial={{ opacity: 0, y: 28 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6, ease: EASE_OUT, delay: 0.35 }}
+          className="mx-auto mt-16 max-w-[720px]"
         >
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-            <div>
-              <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-text-subtle)", letterSpacing: "0.05em" }}>
-                SAMPLE EVALUATION #1042
+          <GlassCard elevation="high" padding="lg" className="text-left">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="mono text-[11px] tracking-[0.08em] text-ink-subtle">SAMPLE EVALUATION #1042</p>
+                <p className="mt-1 text-[17px] font-semibold text-ink-heading">
+                  Senior Software Engineer — AI Systems
+                </p>
               </div>
-              <div style={{ fontSize: 16, fontWeight: 600, color: "var(--color-text-heading)", marginTop: 2 }}>
-                Senior Software Engineer — AI Systems
-              </div>
+              <StatusPill tone="success">HIRE</StatusPill>
             </div>
-            <span className="status-tag status-tag-success">HIRE</span>
-          </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, borderTop: "1px solid var(--color-border)", paddingTop: 16 }}>
-            {[
-              { stage: "Screening", score: "8.5/10" },
-              { stage: "Technical", score: "8.0/10" },
-              { stage: "Behavioral", score: "8.2/10" },
-              { stage: "Overall", score: "8.2/10" },
-            ].map((s) => (
-              <div key={s.stage}>
-                <div style={{ fontSize: 11, color: "var(--color-text-subtle)" }}>{s.stage}</div>
-                <div style={{ fontFamily: "var(--font-mono)", fontSize: 15, fontWeight: 600, color: "var(--color-text-heading)", marginTop: 4 }}>
-                  {s.score}
-                </div>
+            <div className="mt-6 flex flex-wrap items-center justify-between gap-6 border-t border-subtle pt-6">
+              <div className="grid flex-1 grid-cols-3 gap-x-8 gap-y-4">
+                {[
+                  { stage: "Screening", score: "8.5" },
+                  { stage: "Technical", score: "8.0" },
+                  { stage: "Behavioral", score: "8.2" },
+                ].map((s) => (
+                  <div key={s.stage}>
+                    <p className="text-[11px] text-ink-subtle">{s.stage}</p>
+                    <p className="mono mt-1 text-[18px] font-semibold text-ink-heading">
+                      {s.score}
+                      <span className="text-[12px] text-ink-subtle">/10</span>
+                    </p>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-        </div>
+              <ScoreRing value={82} label="Overall" size={88} />
+            </div>
+          </GlassCard>
+        </motion.div>
       </section>
 
       <div className="section-divider" />
 
       {/* Two Audiences */}
       <section className="section-container">
-        <div style={{ marginBottom: 32, textAlign: "center" }}>
-          <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-primary)", letterSpacing: "0.1em", marginBottom: 8 }}>
-            TWO SIDES, ONE PLATFORM
-          </div>
-          <h2 style={{ fontSize: 24, fontWeight: 700, color: "var(--color-text-heading)" }}>
-            Built for job seekers and hiring teams
-          </h2>
-          <p style={{ fontSize: 14, color: "var(--color-text-muted)", marginTop: 6 }}>
-            Pick a side to get started — the same account can hold both.
-          </p>
-        </div>
+        <SectionHeading eyebrow="TWO SIDES, ONE PLATFORM" title="Built for job seekers and hiring teams">
+          Pick a side to get started — the same account can hold both.
+        </SectionHeading>
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 20 }}>
+        <motion.div
+          initial="hidden"
+          whileInView="visible"
+          viewport={{ once: true, amount: 0.2 }}
+          variants={staggerContainer(0.1)}
+          className="grid gap-5 md:grid-cols-2"
+        >
           {AUDIENCES.map((audience) => (
-            <div key={audience.intent} className="card-surface" style={{ padding: 24, display: "flex", flexDirection: "column" }}>
-              <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-primary)", letterSpacing: "0.05em", marginBottom: 8 }}>
-                {audience.eyebrow}
-              </div>
-              <h3 style={{ fontSize: 18, fontWeight: 700, color: "var(--color-text-heading)", marginBottom: 16 }}>
-                {audience.title}
-              </h3>
-              <ul style={{ listStyle: "none", margin: 0, padding: 0, marginBottom: 20, flex: 1 }}>
-                {audience.points.map((point) => (
-                  <li key={point} style={{ display: "flex", gap: 8, fontSize: 13, color: "var(--color-text-muted)", lineHeight: 1.6, marginBottom: 10 }}>
-                    <span style={{ color: "var(--color-primary)" }}>·</span>
-                    <span>{point}</span>
-                  </li>
-                ))}
-              </ul>
-              <button
-                className="btn-primary"
-                style={{ alignSelf: "flex-start" }}
-                onClick={() => router.push(`/register?intent=${audience.intent}`)}
-              >
-                {audience.cta}
-              </button>
-            </div>
+            <motion.div key={audience.intent} variants={staggerItem} className="flex">
+              <GlassCard interactive padding="lg" className="flex w-full flex-col">
+                <p className="eyebrow">{audience.eyebrow}</p>
+                <h3 className="mt-3 text-[20px] font-bold text-ink-heading">{audience.title}</h3>
+                <ul className="mt-5 flex-1 space-y-3">
+                  {audience.points.map((point) => (
+                    <li key={point} className="flex gap-3 text-[13px] leading-relaxed text-ink-muted">
+                      <span className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-[var(--color-primary)]" />
+                      <span>{point}</span>
+                    </li>
+                  ))}
+                </ul>
+                <Button
+                  className="mt-7 self-start"
+                  onClick={() => router.push(`/register?intent=${audience.intent}`)}
+                >
+                  {audience.cta}
+                </Button>
+              </GlassCard>
+            </motion.div>
           ))}
-        </div>
+        </motion.div>
       </section>
 
       <div className="section-divider" />
 
       {/* Stats Bar */}
-      <section style={{ padding: "40px 24px", maxWidth: "var(--max-width)", margin: "0 auto", display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 24, textAlign: "center" }}>
+      <motion.section
+        initial="hidden"
+        whileInView="visible"
+        viewport={{ once: true, amount: 0.4 }}
+        variants={staggerContainer(0.06)}
+        className="mx-auto grid max-w-[var(--max-width)] grid-cols-2 gap-8 px-6 py-14 text-center md:grid-cols-4"
+      >
         {STATS.map((s) => (
-          <div key={s.label}>
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: 28, fontWeight: 700, color: "var(--color-primary)" }}>
+          <motion.div key={s.label} variants={staggerItem}>
+            <p className="mono text-[clamp(28px,4vw,38px)] font-bold text-brand [text-shadow:0_0_24px_rgba(249,115,22,0.3)]">
               {s.value}
-            </div>
-            <div style={{ fontSize: 12, color: "var(--color-text-subtle)", marginTop: 4 }}>
-              {s.label}
-            </div>
-          </div>
+            </p>
+            <p className="mt-2 text-[12px] text-ink-subtle">{s.label}</p>
+          </motion.div>
         ))}
-      </section>
+      </motion.section>
 
       <div className="section-divider" />
 
       {/* Agents Architecture */}
       <section className="section-container">
-        <div style={{ marginBottom: 40, textAlign: "center" }}>
-          <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-primary)", letterSpacing: "0.1em", marginBottom: 8 }}>
-            HOW APPLICATIONS GET SCREENED
-          </div>
-          <h2 style={{ fontSize: 28, fontWeight: 700, color: "var(--color-text-heading)" }}>
-            Five Autonomous Agents
-          </h2>
-          <p style={{ fontSize: 14, color: "var(--color-text-muted)", marginTop: 6 }}>
-            This is the AI screening engine that runs inside every application on the platform — each
-            agent handles a distinct evaluation domain with isolated context boundaries. Recruiters
-            configure whether it runs per posting; a human always confirms the final decision.{" "}
-            <Link href="/interview" style={{ color: "var(--color-primary)" }}>Try it in the public sandbox →</Link>
-          </p>
-        </div>
+        <SectionHeading eyebrow="HOW APPLICATIONS GET SCREENED" title="Five Autonomous Agents">
+          This is the AI screening engine that runs inside every application on the platform — each
+          agent handles a distinct evaluation domain with isolated context boundaries. Recruiters
+          configure whether it runs per posting; a human always confirms the final decision.{" "}
+          <Link href="/interview" className="text-brand hover:underline">
+            Try it in the public sandbox →
+          </Link>
+        </SectionHeading>
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 16 }}>
+        <motion.div
+          initial="hidden"
+          whileInView="visible"
+          viewport={{ once: true, amount: 0.15 }}
+          variants={staggerContainer(0.06)}
+          className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3"
+        >
           {AGENTS.map((agent) => (
-            <div key={agent.title} className="card-surface" style={{ padding: 20 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-primary)" }}>
-                  {agent.stage}
-                </span>
-                <span style={{ fontSize: 11, color: "var(--color-text-subtle)", fontFamily: "var(--font-mono)" }}>
-                  {agent.output}
-                </span>
-              </div>
-              <h3 style={{ fontSize: 15, fontWeight: 600, color: "var(--color-text-heading)", marginBottom: 6 }}>
-                {agent.title}
-              </h3>
-              <p style={{ fontSize: 13, color: "var(--color-text-muted)", lineHeight: 1.6 }}>
-                {agent.description}
-              </p>
-            </div>
+            <motion.div key={agent.title} variants={staggerItem} className="flex">
+              <GlassCard interactive className="flex w-full flex-col">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="mono text-[11px] font-semibold tracking-[0.08em] text-brand">
+                    {agent.stage}
+                  </span>
+                  <span className="mono text-[10px] text-ink-subtle">{agent.output}</span>
+                </div>
+                <h3 className="mt-4 text-[15px] font-semibold text-ink-heading">{agent.title}</h3>
+                <p className="mt-2 text-[13px] leading-[1.65] text-ink-muted">{agent.description}</p>
+              </GlassCard>
+            </motion.div>
           ))}
-        </div>
+        </motion.div>
       </section>
 
       <div className="section-divider" />
 
       {/* Pipeline Stepper */}
       <section className="section-container">
-        <div style={{ marginBottom: 32, textAlign: "center" }}>
-          <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-primary)", letterSpacing: "0.1em", marginBottom: 8 }}>
-            PIPELINE FLOW
-          </div>
-          <h2 style={{ fontSize: 24, fontWeight: 700, color: "var(--color-text-heading)" }}>
-            Sequential Agent Pipeline
-          </h2>
-        </div>
+        <SectionHeading eyebrow="PIPELINE FLOW" title="Sequential Agent Pipeline" />
 
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center", alignItems: "center" }}>
+        <motion.div
+          initial="hidden"
+          whileInView="visible"
+          viewport={{ once: true, amount: 0.3 }}
+          variants={staggerContainer(0.05)}
+          className="flex flex-wrap items-center justify-center gap-2"
+        >
           {PIPELINE_STEPS.map((step, idx) => (
             <React.Fragment key={step}>
-              {idx > 0 && <span style={{ color: "var(--color-border)", fontSize: 12 }}>→</span>}
-              <div
-                style={{
-                  padding: "8px 14px",
-                  background: "var(--color-surface)",
-                  border: "1px solid var(--color-border)",
-                  borderRadius: 6,
-                  fontFamily: "var(--font-mono)",
-                  fontSize: 12,
-                  color: idx === PIPELINE_STEPS.length - 1 ? "var(--color-primary)" : "var(--color-text)",
-                }}
+              {idx > 0 && <span className="text-[13px] text-ink-subtle/60">→</span>}
+              <motion.span
+                variants={staggerItem}
+                className={`glass-low mono rounded-lg px-3.5 py-2 text-[12px] ${
+                  idx === PIPELINE_STEPS.length - 1
+                    ? "border-brand text-brand shadow-glow-primary"
+                    : "text-ink"
+                }`}
               >
                 {step}
-              </div>
+              </motion.span>
             </React.Fragment>
           ))}
-        </div>
+        </motion.div>
       </section>
 
       <div className="section-divider" />
 
       {/* Context Isolation Matrix */}
       <section className="section-container">
-        <div style={{ marginBottom: 32, textAlign: "center" }}>
-          <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-primary)", letterSpacing: "0.1em", marginBottom: 8 }}>
-            BIAS ISOLATION
-          </div>
-          <h2 style={{ fontSize: 24, fontWeight: 700, color: "var(--color-text-heading)" }}>
-            Context Isolation Matrix
-          </h2>
-          <p style={{ fontSize: 14, color: "var(--color-text-muted)", marginTop: 6 }}>
-            The Committee Evaluator receives peer agent evaluation output only — no resume access.
-          </p>
-        </div>
+        <SectionHeading eyebrow="BIAS ISOLATION" title="Context Isolation Matrix">
+          The Committee Evaluator receives peer agent evaluation output only — no resume access.
+        </SectionHeading>
 
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, fontFamily: "var(--font-mono)" }}>
+        <motion.div
+          initial="hidden"
+          whileInView="visible"
+          viewport={{ once: true, amount: 0.2 }}
+          variants={fadeUp}
+          className="glass overflow-x-auto"
+        >
+          <table className="mono w-full border-collapse text-[13px]">
             <thead>
-              <tr style={{ borderBottom: "1px solid var(--color-border)", textAlign: "left" }}>
-                <th style={{ padding: "10px 16px", color: "var(--color-text-subtle)", fontSize: 11 }}>AGENT</th>
-                <th style={{ padding: "10px 16px", color: "var(--color-text-subtle)", fontSize: 11, textAlign: "center" }}>RESUME</th>
-                <th style={{ padding: "10px 16px", color: "var(--color-text-subtle)", fontSize: 11, textAlign: "center" }}>ROUND 1</th>
-                <th style={{ padding: "10px 16px", color: "var(--color-text-subtle)", fontSize: 11, textAlign: "center" }}>ROUND 2</th>
-                <th style={{ padding: "10px 16px", color: "var(--color-text-subtle)", fontSize: 11, textAlign: "center" }}>ROUND 3</th>
-                <th style={{ padding: "10px 16px", color: "var(--color-text-subtle)", fontSize: 11, textAlign: "center" }}>ROUND 4</th>
+              <tr className="border-b border-subtle text-left">
+                <th className="px-5 py-3.5 text-[10px] font-semibold tracking-[0.08em] text-ink-subtle">
+                  AGENT
+                </th>
+                {["RESUME", "ROUND 1", "ROUND 2", "ROUND 3", "ROUND 4"].map((h) => (
+                  <th
+                    key={h}
+                    className="px-5 py-3.5 text-center text-[10px] font-semibold tracking-[0.08em] text-ink-subtle"
+                  >
+                    {h}
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
               {CONTEXT_MATRIX.map((row) => (
-                <tr key={row.agent} style={{ borderBottom: "1px solid var(--color-border)" }}>
-                  <td style={{ padding: "12px 16px", color: "var(--color-text-heading)", fontWeight: 500 }}>{row.agent}</td>
-                  <td style={{ padding: "12px 16px", textAlign: "center", color: row.resume ? "var(--color-success)" : "var(--color-text-subtle)" }}>{row.resume ? "YES" : "NO"}</td>
-                  <td style={{ padding: "12px 16px", textAlign: "center", color: row.r1 ? "var(--color-success)" : "var(--color-text-subtle)" }}>{row.r1 ? "YES" : "NO"}</td>
-                  <td style={{ padding: "12px 16px", textAlign: "center", color: row.r2 ? "var(--color-success)" : "var(--color-text-subtle)" }}>{row.r2 ? "YES" : "NO"}</td>
-                  <td style={{ padding: "12px 16px", textAlign: "center", color: row.r3 ? "var(--color-success)" : "var(--color-text-subtle)" }}>{row.r3 ? "YES" : "NO"}</td>
-                  <td style={{ padding: "12px 16px", textAlign: "center", color: row.r4 ? "var(--color-success)" : "var(--color-text-subtle)" }}>{row.r4 ? "YES" : "NO"}</td>
+                <tr
+                  key={row.agent}
+                  className="border-b border-subtle transition-colors duration-fast ease-out-expo last:border-0 hover:bg-glass-low"
+                >
+                  <td className="px-5 py-3.5 font-medium text-ink-heading">{row.agent}</td>
+                  {[row.resume, row.r1, row.r2, row.r3, row.r4].map((granted, i) => (
+                    <td
+                      key={`${row.agent}-col-${i}`}
+                      className={`px-5 py-3.5 text-center ${
+                        granted ? "text-[var(--color-success)]" : "text-ink-subtle/60"
+                      }`}
+                    >
+                      {granted ? "YES" : "NO"}
+                    </td>
+                  ))}
                 </tr>
               ))}
             </tbody>
           </table>
-        </div>
+        </motion.div>
       </section>
 
       <div className="section-divider" />
 
       {/* Transparency */}
       <section className="section-container">
-        <div style={{ marginBottom: 32, textAlign: "center" }}>
-          <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-primary)", letterSpacing: "0.1em", marginBottom: 8 }}>
-            AUDITABILITY
-          </div>
-          <h2 style={{ fontSize: 24, fontWeight: 700, color: "var(--color-text-heading)" }}>
-            Evaluation Rigor & Transparency
-          </h2>
-        </div>
+        <SectionHeading eyebrow="AUDITABILITY" title="Evaluation Rigor & Transparency" />
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 16 }}>
+        <motion.div
+          initial="hidden"
+          whileInView="visible"
+          viewport={{ once: true, amount: 0.2 }}
+          variants={staggerContainer(0.07)}
+          className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4"
+        >
           {TRANSPARENCY_ITEMS.map((item) => (
-            <div key={item.title} className="card-surface" style={{ padding: 20 }}>
-              <div style={{ fontSize: 14, fontWeight: 600, color: "var(--color-text-heading)", marginBottom: 6 }}>
-                {item.title}
-              </div>
-              <div style={{ fontSize: 13, color: "var(--color-text-muted)", lineHeight: 1.6 }}>
-                {item.text}
-              </div>
-            </div>
+            <motion.div key={item.title} variants={staggerItem} className="flex">
+              <GlassCard interactive className="w-full">
+                <p className="text-[14px] font-semibold text-ink-heading">{item.title}</p>
+                <p className="mt-2 text-[13px] leading-[1.65] text-ink-muted">{item.text}</p>
+              </GlassCard>
+            </motion.div>
           ))}
-        </div>
+        </motion.div>
       </section>
 
       <div className="section-divider" />
 
       {/* FAQ */}
-      <section className="section-container" style={{ maxWidth: 720 }}>
-        <div style={{ marginBottom: 32, textAlign: "center" }}>
-          <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-primary)", letterSpacing: "0.1em", marginBottom: 8 }}>
-            FREQUENTLY ASKED QUESTIONS
-          </div>
-          <h2 style={{ fontSize: 24, fontWeight: 700, color: "var(--color-text-heading)" }}>
-            Common Questions
-          </h2>
-        </div>
+      <section className="section-container !max-w-[760px]">
+        <SectionHeading eyebrow="FREQUENTLY ASKED QUESTIONS" title="Common Questions" />
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <motion.div
+          initial="hidden"
+          whileInView="visible"
+          viewport={{ once: true, amount: 0.1 }}
+          variants={staggerContainer(0.05)}
+          className="flex flex-col gap-3"
+        >
           {FAQ_ITEMS.map((faq) => (
-            <FAQAccordion key={faq.q} q={faq.q} a={faq.a} />
+            <motion.div key={faq.q} variants={staggerItem}>
+              <FAQAccordion q={faq.q} a={faq.a} />
+            </motion.div>
           ))}
-        </div>
+        </motion.div>
       </section>
 
       <div className="section-divider" />
 
       {/* CTA */}
-      <section style={{ padding: "80px 24px", textAlign: "center", maxWidth: 600, margin: "0 auto" }}>
-        <h2 style={{ fontSize: 28, fontWeight: 700, color: "var(--color-text-heading)", marginBottom: 12 }}>
+      <motion.section
+        initial="hidden"
+        whileInView="visible"
+        viewport={{ once: true, amount: 0.3 }}
+        variants={staggerContainer(0.08)}
+        className="mx-auto max-w-[640px] px-6 py-24 text-center"
+      >
+        <motion.h2
+          variants={fadeUp}
+          className="text-[clamp(26px,4vw,36px)] font-bold tracking-[-0.02em] text-ink-heading"
+        >
           Ready to get started?
-        </h2>
-        <p style={{ fontSize: 14, color: "var(--color-text-muted)", marginBottom: 24 }}>
+        </motion.h2>
+        <motion.p variants={fadeUp} className="mt-3 text-[14px] text-ink-muted">
           Free to try for both candidates and hiring teams.
-        </p>
-        <PersonaCta authLoading={authLoading} actor={actor} router={router} />
-      </section>
+        </motion.p>
+        <motion.div variants={fadeUp} className="mt-8">
+          <PersonaCta authLoading={authLoading} actor={actor} router={router} />
+        </motion.div>
+      </motion.section>
 
       {/* Footer */}
-      <footer style={{ borderTop: "1px solid var(--color-border)", padding: "32px 24px", textAlign: "center", fontSize: 12, color: "var(--color-text-subtle)", fontFamily: "var(--font-mono)" }}>
+      <footer className="mono border-t border-subtle px-6 py-9 text-center text-[11px] tracking-[0.06em] text-ink-subtle">
         EVALIA — HIRING PLATFORM WITH AN AI EVALUATION ENGINE
       </footer>
     </div>
