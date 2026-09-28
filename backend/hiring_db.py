@@ -594,3 +594,258 @@ def count_applications_for_posting(posting_id: int, org_id: int) -> dict:
         )
         counts = {r["current_stage"]: r["c"] for r in cur.fetchall()}
     return {"by_stage": counts, "total": sum(counts.values())}
+
+
+# ── Referrals ────────────────────────────────────────────────────────
+
+
+class DuplicateReferralError(Exception):
+    """Raised when the same candidate already has a pending referral for this posting."""
+
+
+def create_referral(org_id: int, posting_id: int, referred_by_user_id: int,
+                    candidate_email: str, note: str = "") -> int:
+    """Refer a candidate to a posting.
+
+    candidate_user_id is resolved from the email if that person is already
+    registered; if not, the referral is still recorded (candidate_user_id
+    stays NULL) so it can be linked once they sign up. There is no
+    not-yet-a-user notification path yet — see docs/PRODUCT_BLUEPRINT.md
+    Phase 4 (invitations) for where that belongs.
+    """
+    from database import get_user_by_email, normalize_email
+
+    p = _ph()
+    normalized = normalize_email(candidate_email)
+    user = get_user_by_email(candidate_email)
+
+    try:
+        with _get_conn() as (conn, cur):
+            columns = ["org_id", "posting_id", "referred_by_user_id",
+                      "candidate_user_id", "candidate_email", "note"]
+            values = (org_id, posting_id, referred_by_user_id,
+                      user["id"] if user else None, normalized, note)
+            placeholders = ", ".join([p] * len(columns))
+            if USE_POSTGRES:
+                cur.execute(
+                    f"INSERT INTO referrals ({', '.join(columns)}) "
+                    f"VALUES ({placeholders}) RETURNING id",
+                    values,
+                )
+                return cur.fetchone()["id"]
+            cur.execute(
+                f"INSERT INTO referrals ({', '.join(columns)}) VALUES ({placeholders})",
+                values,
+            )
+            return cur.lastrowid
+    except _IntegrityError as exc:
+        raise DuplicateReferralError(
+            "This candidate already has a pending referral for this posting."
+        ) from exc
+
+
+def get_referral(referral_id: int, org_id: Optional[int] = None) -> Optional[dict]:
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        if org_id is None:
+            cur.execute(f"SELECT * FROM referrals WHERE id = {p}", (referral_id,))
+        else:
+            cur.execute(
+                f"SELECT * FROM referrals WHERE id = {p} AND org_id = {p}",
+                (referral_id, org_id),
+            )
+        return _row_to_dict(cur.fetchone())
+
+
+def list_referrals_for_org(org_id: int, posting_id: Optional[int] = None,
+                           limit: int = 50, offset: int = 0) -> list[dict]:
+    p = _ph()
+    clauses = [f"org_id = {p}"]
+    params: list = [org_id]
+    if posting_id is not None:
+        clauses.append(f"posting_id = {p}")
+        params.append(posting_id)
+    params.extend([limit, offset])
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"SELECT * FROM referrals WHERE {' AND '.join(clauses)} "
+            f"ORDER BY created_at DESC LIMIT {p} OFFSET {p}",
+            tuple(params),
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+
+def list_referrals_for_candidate(candidate_email: str, limit: int = 50, offset: int = 0) -> list[dict]:
+    """A candidate's referral inbox, matched by email.
+
+    Matched on email rather than candidate_user_id so a referral sent before
+    registration still shows up once the person signs in with that address.
+    """
+    from database import normalize_email
+
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"SELECT r.*, jp.title AS posting_title, o.name AS org_name "
+            f"FROM referrals r "
+            f"JOIN job_postings jp ON jp.id = r.posting_id "
+            f"JOIN organizations o ON o.id = r.org_id "
+            f"WHERE r.candidate_email = {p} "
+            f"ORDER BY r.created_at DESC LIMIT {p} OFFSET {p}",
+            (normalize_email(candidate_email), limit, offset),
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+
+def respond_to_referral(referral_id: int, status: str,
+                        resulting_application_id: Optional[int] = None) -> bool:
+    """Mark a referral APPLIED or DECLINED. Only a PENDING referral can be actioned."""
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"UPDATE referrals SET status = {p}, responded_at = {p}, "
+            f"resulting_application_id = {p} "
+            f"WHERE id = {p} AND status = 'PENDING'",
+            (status, _now(), resulting_application_id, referral_id),
+        )
+        return cur.rowcount > 0
+
+
+# ── Analytics ────────────────────────────────────────────────────────
+
+
+def get_funnel(org_id: int, campaign_id: Optional[int] = None,
+              posting_id: Optional[int] = None) -> dict:
+    """Stage counts and stage-to-stage conversion across a scope.
+
+    Conversion is computed against the ever-reached count per stage (i.e.
+    "how many applications ever reached SCREENING" vs "how many are
+    currently sitting in SCREENING"), using application_events rather than
+    current_stage, so an application that has since moved on still counts
+    at every stage it passed through.
+    """
+    p = _ph()
+    clauses = [f"a.org_id = {p}"]
+    params: list = [org_id]
+    if campaign_id is not None:
+        clauses.append(f"jp.campaign_id = {p}")
+        params.append(campaign_id)
+    if posting_id is not None:
+        clauses.append(f"a.posting_id = {p}")
+        params.append(posting_id)
+
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"SELECT ae.to_stage, COUNT(DISTINCT ae.application_id) AS c "
+            f"FROM application_events ae "
+            f"JOIN applications a ON a.id = ae.application_id "
+            f"JOIN job_postings jp ON jp.id = a.posting_id "
+            f"WHERE {' AND '.join(clauses)} AND ae.to_stage IS NOT NULL "
+            f"GROUP BY ae.to_stage",
+            tuple(params),
+        )
+        reached = {r["to_stage"]: r["c"] for r in cur.fetchall()}
+
+    ordered_stages = [
+        "APPLIED", "SCREENING", "TECHNICAL", "BEHAVIORAL",
+        "INTERVIEW", "OFFER", "HIRED",
+    ]
+    funnel = []
+    applied_count = reached.get("APPLIED", 0)
+    previous_count = applied_count
+    for stage in ordered_stages:
+        count = reached.get(stage, 0)
+        conversion_from_previous = round(count / previous_count, 3) if previous_count else None
+        conversion_from_start = round(count / applied_count, 3) if applied_count else None
+        funnel.append({
+            "stage": stage, "reached": count,
+            "conversion_from_previous_stage": conversion_from_previous,
+            "conversion_from_applied": conversion_from_start,
+        })
+        if count:
+            previous_count = count
+
+    return {
+        "funnel": funnel,
+        "rejected": reached.get("REJECTED", 0),
+        "withdrawn": reached.get("WITHDRAWN", 0),
+    }
+
+
+def get_selection_rates(org_id: int, segment_by: str) -> dict:
+    """Selection-rate divergence across a segment, using only data already
+    on file (no protected-characteristic collection — see DECISIONS.md D-05).
+
+    This is a general disparate-impact-style calculator, not a legally
+    compliant EEO bias audit: it reports the same four-fifths-rule ratio a
+    real audit would use (selection rate of the lowest-rate group divided by
+    the highest), applied to whichever available, non-protected segment is
+    requested. It exists so the *mechanism* is built and tested; pointing it
+    at true protected characteristics requires the consent, disclosure, and
+    legal review described in DECISIONS.md D-05, which has not happened.
+    """
+    if segment_by not in ("source", "experience_band"):
+        raise ValueError("segment_by must be 'source' or 'experience_band'")
+
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"SELECT source, status, current_stage, profile_snapshot FROM applications "
+            f"WHERE org_id = {p}",
+            (org_id,),
+        )
+        rows = [_row_to_dict(r) for r in cur.fetchall()]
+
+    def _segment_key(row: dict) -> str:
+        if segment_by == "source":
+            return row["source"]
+        snapshot = row["profile_snapshot"]
+        years = json.loads(snapshot).get("years_experience") if isinstance(snapshot, str) else None
+        if years is None:
+            return "unknown"
+        if years < 2:
+            return "0-2 years"
+        if years < 5:
+            return "2-5 years"
+        if years < 10:
+            return "5-10 years"
+        return "10+ years"
+
+    def _is_selected(row: dict) -> bool:
+        return row["current_stage"] in ("OFFER", "HIRED")
+
+    segments: dict[str, dict] = {}
+    for row in rows:
+        key = _segment_key(row)
+        bucket = segments.setdefault(key, {"total": 0, "selected": 0})
+        bucket["total"] += 1
+        if _is_selected(row):
+            bucket["selected"] += 1
+
+    rates = {
+        key: round(v["selected"] / v["total"], 3) if v["total"] else 0.0
+        for key, v in segments.items()
+    }
+    non_zero_rates = [r for r in rates.values() if r > 0]
+    adverse_impact_ratio = (
+        round(min(non_zero_rates) / max(rates.values()), 3)
+        if rates and max(rates.values()) > 0
+        else None
+    )
+
+    return {
+        "segment_by": segment_by,
+        "segments": {
+            key: {**segments[key], "selection_rate": rates[key]} for key in segments
+        },
+        # Conventionally, a ratio below 0.8 flags a segment selected at less
+        # than 80% the rate of the most-selected segment ("four-fifths rule").
+        "adverse_impact_ratio": adverse_impact_ratio,
+        "flag_adverse_impact": adverse_impact_ratio is not None and adverse_impact_ratio < 0.8,
+        "note": (
+            "General disparate-impact calculator over available, non-protected "
+            "fields. Not a substitute for a compliant EEO bias audit — see "
+            "DECISIONS.md D-05."
+        ),
+    }
+

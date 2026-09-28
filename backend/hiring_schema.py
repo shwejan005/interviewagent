@@ -27,6 +27,11 @@ CREATE TABLE IF NOT EXISTS candidate_profiles (
     work_authorization TEXT NOT NULL DEFAULT '',
     years_experience DOUBLE PRECISION,
     open_to_work BOOLEAN NOT NULL DEFAULT TRUE,
+    -- Opt-in, defaults closed. Being "open to work" and being willing to have
+    -- a stranger's recruiter search surface your profile are different
+    -- decisions; conflating them would make passive candidates searchable
+    -- without ever having agreed to it.
+    is_discoverable BOOLEAN NOT NULL DEFAULT FALSE,
     resume_text TEXT NOT NULL DEFAULT '',
     -- Consent and retention are captured from day one. Retrofitting consent
     -- onto data already collected without it is not legally possible.
@@ -114,6 +119,7 @@ CREATE TABLE IF NOT EXISTS candidate_profiles (
     work_authorization TEXT NOT NULL DEFAULT '',
     years_experience REAL,
     open_to_work INTEGER NOT NULL DEFAULT 1,
+    is_discoverable INTEGER NOT NULL DEFAULT 0,
     resume_text TEXT NOT NULL DEFAULT '',
     data_consent_at TEXT,
     data_consent_version TEXT,
@@ -270,6 +276,30 @@ CREATE TABLE IF NOT EXISTS application_events (
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS referrals (
+    id SERIAL PRIMARY KEY,
+    org_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    posting_id INTEGER NOT NULL REFERENCES job_postings(id) ON DELETE CASCADE,
+    referred_by_user_id INTEGER NOT NULL REFERENCES users(id),
+    -- Nullable: a recruiter may refer someone who has not registered yet.
+    -- The referral becomes actionable once that email registers (Phase 4:
+    -- invitations for non-users follow the same pattern).
+    candidate_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    candidate_email TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    resulting_application_id INTEGER REFERENCES applications(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    responded_at TIMESTAMPTZ
+);
+
+-- One live referral per candidate per posting from any recruiter at the org,
+-- so repeatedly referring the same person does not spam their inbox.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_referral_candidate_posting
+    ON referrals (posting_id, candidate_email) WHERE status = 'PENDING';
+CREATE INDEX IF NOT EXISTS idx_referral_candidate ON referrals(candidate_user_id);
+CREATE INDEX IF NOT EXISTS idx_referral_org ON referrals(org_id);
+
 -- One live application per candidate per posting. Withdrawn applications are
 -- excluded so a candidate who withdrew can genuinely re-apply.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_application_candidate_posting
@@ -359,6 +389,25 @@ CREATE TABLE IF NOT EXISTS application_events (
     note TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS referrals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    posting_id INTEGER NOT NULL REFERENCES job_postings(id) ON DELETE CASCADE,
+    referred_by_user_id INTEGER NOT NULL REFERENCES users(id),
+    candidate_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    candidate_email TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    resulting_application_id INTEGER REFERENCES applications(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    responded_at TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_referral_candidate_posting
+    ON referrals (posting_id, candidate_email) WHERE status = 'PENDING';
+CREATE INDEX IF NOT EXISTS idx_referral_candidate ON referrals(candidate_user_id);
+CREATE INDEX IF NOT EXISTS idx_referral_org ON referrals(org_id);
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_application_candidate_posting
     ON applications (posting_id, candidate_user_id) WHERE withdrawn_at IS NULL;

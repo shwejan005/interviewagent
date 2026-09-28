@@ -15,13 +15,16 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 import audit
+import candidate_db as cdb
 import hiring_db as hdb
+import matching
 from authz import Actor, assert_tenant, requires
 from hiring_models import (
     CampaignRequest,
     PostingRequest,
     PostingStatusRequest,
     PostingUpdateRequest,
+    ReferralRequest,
     TransitionRequest,
 )
 from rbac import Capability
@@ -328,4 +331,151 @@ async def transition_application(
         resource_type="application", resource_id=application_id, resource_org_id=org_id,
         detail={"from": result["from_stage"], "to": result["to_stage"], "note": req.note},
     )
+    return result
+
+
+# ── Candidate sourcing ───────────────────────────────────────────────
+
+
+@router.get("/candidates/search")
+async def search_candidates(
+    org_id: int,
+    actor: Actor = Depends(requires(Capability.CANDIDATE_SEARCH)),
+    skill: Optional[str] = Query(default=None, max_length=100),
+    location: Optional[str] = Query(default=None, max_length=200),
+    min_years: Optional[float] = Query(default=None, ge=0, le=70),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+):
+    """Talent pool search.
+
+    Only candidates who opted into `is_discoverable` ever appear here — that
+    filter is enforced in the query itself, not as a post-filter, so it
+    cannot be bypassed by a route bug. Reading this endpoint is audited
+    because browsing candidates, unlike browsing your own pipeline, is a
+    search over people who have not applied to you.
+    """
+    _require_org(actor, org_id)
+    result = await _db(
+        cdb.search_discoverable_profiles,
+        skill, location, min_years, limit, offset,
+    )
+    audit.record_from_actor(
+        actor, "candidate.searched",
+        tier=audit.AuditTier.SENSITIVE_READ,
+        resource_org_id=org_id,
+        detail={"skill": skill, "location": location, "result_count": len(result["profiles"])},
+    )
+    return result
+
+
+@router.get("/postings/{posting_id}/recommended-candidates")
+async def recommended_candidates(
+    org_id: int,
+    posting_id: int,
+    actor: Actor = Depends(requires(Capability.CANDIDATE_SEARCH)),
+    skill: Optional[str] = Query(default=None, max_length=100),
+    location: Optional[str] = Query(default=None, max_length=200),
+    limit: int = Query(default=20, ge=1, le=50),
+):
+    """Candidates ranked against this posting's requirements. See matching.py
+    for the scoring model and its explicit, deterministic-not-learned scope."""
+    _require_org(actor, org_id)
+    if await _db(hdb.get_posting, posting_id, org_id) is None:
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+
+    results = await _db(
+        matching.rank_candidates_for_posting, posting_id, org_id, limit, skill, location
+    )
+    audit.record_from_actor(
+        actor, "candidate.searched",
+        tier=audit.AuditTier.SENSITIVE_READ,
+        resource_type="job_posting", resource_id=posting_id, resource_org_id=org_id,
+        detail={"mode": "recommended", "result_count": len(results)},
+    )
+    return {"posting_id": posting_id, "candidates": results}
+
+
+# ── Referrals ────────────────────────────────────────────────────────
+
+
+@router.post("/postings/{posting_id}/referrals", status_code=201)
+async def refer_candidate(
+    org_id: int,
+    posting_id: int,
+    req: ReferralRequest,
+    request: Request,
+    actor: Actor = Depends(requires(Capability.CANDIDATE_REFER)),
+):
+    """Refer a candidate a recruiter knows or has sourced to this posting."""
+    _require_org(actor, org_id)
+    if await _db(hdb.get_posting, posting_id, org_id) is None:
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+
+    try:
+        referral_id = await _db(
+            hdb.create_referral, org_id, posting_id, actor.user_id,
+            str(req.candidate_email), req.note,
+        )
+    except hdb.DuplicateReferralError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    audit.record_from_actor(
+        actor, "referral.created",
+        actor_ip=_client_ip(request),
+        resource_type="referral", resource_id=referral_id, resource_org_id=org_id,
+        detail={"posting_id": posting_id},
+    )
+    return await _db(hdb.get_referral, referral_id, org_id)
+
+
+@router.get("/referrals")
+async def list_referrals(
+    org_id: int,
+    actor: Actor = Depends(requires(Capability.APPLICATION_READ)),
+    posting_id: Optional[int] = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+):
+    _require_org(actor, org_id)
+    return {"referrals": await _db(hdb.list_referrals_for_org, org_id, posting_id, limit, offset)}
+
+
+# ── Analytics ────────────────────────────────────────────────────────
+
+
+@router.get("/analytics/funnel")
+async def analytics_funnel(
+    org_id: int,
+    actor: Actor = Depends(requires(Capability.CAMPAIGN_READ_ORG)),
+    campaign_id: Optional[int] = Query(default=None),
+    posting_id: Optional[int] = Query(default=None),
+):
+    """Stage-to-stage conversion. Gated at org-wide read (hiring_manager+),
+    not the narrower campaign:read:assigned a plain recruiter holds."""
+    _require_org(actor, org_id)
+    return await _db(hdb.get_funnel, org_id, campaign_id, posting_id)
+
+
+@router.get("/analytics/selection-rates")
+async def analytics_selection_rates(
+    org_id: int,
+    actor: Actor = Depends(requires(Capability.CAMPAIGN_READ_ORG)),
+    segment_by: str = Query(default="source", pattern="^(source|experience_band)$"),
+):
+    """Disparate-impact-style selection-rate divergence. See hiring_db.get_selection_rates
+    for the explicit, honest scope of what this is and is not."""
+    _require_org(actor, org_id)
+    try:
+        result = await _db(hdb.get_selection_rates, org_id, segment_by)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if result["flag_adverse_impact"]:
+        audit.record_from_actor(
+            actor, "analytics.adverse_impact_flagged",
+            tier=audit.AuditTier.SECURITY,
+            resource_org_id=org_id,
+            detail={"segment_by": segment_by, "ratio": result["adverse_impact_ratio"]},
+        )
     return result

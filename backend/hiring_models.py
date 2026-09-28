@@ -8,7 +8,7 @@ an LLM must emit, these by what a client sends.
 
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 
 
 # ── Candidate profile ────────────────────────────────────────────────
@@ -22,6 +22,9 @@ class ProfileUpsertRequest(BaseModel):
     work_authorization: str = Field(default="", max_length=200)
     years_experience: Optional[float] = Field(default=None, ge=0, le=70)
     open_to_work: bool = True
+    # Opt-in, defaults closed. See hiring_schema.py for why this is distinct
+    # from open_to_work.
+    is_discoverable: bool = False
     resume_text: str = Field(default="", max_length=20_000)
 
 
@@ -150,4 +153,12 @@ class TransitionRequest(BaseModel):
     to_stage: str = Field(
         pattern="^(SCREENING|PENDING_REVIEW|TECHNICAL|BEHAVIORAL|INTERVIEW|OFFER|HIRED|REJECTED)$"
     )
+    note: str = Field(default="", max_length=2_000)
+
+
+# ── Referrals ────────────────────────────────────────────────────────
+
+
+class ReferralRequest(BaseModel):
+    candidate_email: EmailStr
     note: str = Field(default="", max_length=2_000)

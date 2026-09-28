@@ -15,7 +15,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 import audit
 import candidate_db as cdb
+import database as db
 import hiring_db as hdb
+import matching
 from authz import Actor, current_actor
 from hiring_models import (
     ApplyRequest,
@@ -347,3 +349,74 @@ async def withdraw_application(
         resource_id=application_id,
     )
     return {"application_id": application_id, "status": "WITHDRAWN"}
+
+
+# ── Recommendations ──────────────────────────────────────────────────
+
+
+@router.get("/recommended-jobs")
+async def recommended_jobs(
+    actor: Actor = Depends(current_actor),
+    limit: int = Query(default=20, ge=1, le=50),
+):
+    """Published postings ranked against the caller's profile, with an
+    explanation for every score. See matching.py for the scoring model."""
+    results = await _db(matching.rank_jobs_for_candidate, actor.user_id, limit)
+    return {"recommendations": results}
+
+
+# ── Referrals ────────────────────────────────────────────────────────
+
+
+@router.get("/referrals")
+async def list_my_referrals(actor: Actor = Depends(current_actor)):
+    """Referrals sent to the caller's email address, across every organization."""
+    return {"referrals": await _db(hdb.list_referrals_for_candidate, actor.email)}
+
+
+@router.post("/referrals/{referral_id}/apply", status_code=201)
+async def apply_via_referral(
+    referral_id: int,
+    req: ApplyRequest,
+    request: Request,
+    actor: Actor = Depends(current_actor),
+):
+    """Accept a referral by applying through it — one action, not two."""
+    referral = await _db(hdb.get_referral, referral_id)
+    if referral is None or referral["candidate_email"] != db.normalize_email(actor.email):
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    if referral["status"] != "PENDING":
+        raise HTTPException(status_code=409, detail="This referral has already been responded to.")
+
+    apply_response = await apply_to_job(referral["posting_id"], req, request, actor)
+    await _db(
+        hdb.respond_to_referral, referral_id, "APPLIED", apply_response["application_id"]
+    )
+    audit.record_from_actor(
+        actor, "referral.accepted",
+        actor_ip=_client_ip(request),
+        resource_type="referral", resource_id=referral_id, resource_org_id=referral["org_id"],
+    )
+    return apply_response
+
+
+@router.post("/referrals/{referral_id}/decline", status_code=200)
+async def decline_referral(
+    referral_id: int,
+    request: Request,
+    actor: Actor = Depends(current_actor),
+):
+    referral = await _db(hdb.get_referral, referral_id)
+    if referral is None or referral["candidate_email"] != db.normalize_email(actor.email):
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+
+    if not await _db(hdb.respond_to_referral, referral_id, "DECLINED"):
+        raise HTTPException(status_code=409, detail="This referral has already been responded to.")
+
+    audit.record_from_actor(
+        actor, "referral.declined",
+        actor_ip=_client_ip(request),
+        resource_type="referral", resource_id=referral_id, resource_org_id=referral["org_id"],
+    )
+    return {"referral_id": referral_id, "status": "DECLINED"}
+

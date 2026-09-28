@@ -47,10 +47,12 @@ def normalize_skill(skill: str) -> str:
 def create_profile(user_id: int, **fields) -> int:
     """Create a candidate profile for a user."""
     allowed = {
-        "headline", "summary", "location", "phone",
+        "headline", "summary", "location", "phone", "is_discoverable",
         "work_authorization", "years_experience", "resume_text",
     }
     data = {k: v for k, v in fields.items() if k in allowed and v is not None}
+    if "is_discoverable" in data:
+        data["is_discoverable"] = _bool(data["is_discoverable"])
     columns = ["user_id", *data.keys()]
     values = [user_id, *data.values()]
     p = _ph()
@@ -94,7 +96,7 @@ def get_profile(profile_id: int) -> Optional[dict]:
 def update_profile(profile_id: int, **fields) -> None:
     allowed = {
         "headline", "summary", "location", "phone", "work_authorization",
-        "years_experience", "open_to_work", "resume_text",
+        "years_experience", "open_to_work", "is_discoverable", "resume_text",
         "data_consent_at", "data_consent_version", "retention_until",
     }
     data = {k: v for k, v in fields.items() if k in allowed}
@@ -102,6 +104,8 @@ def update_profile(profile_id: int, **fields) -> None:
         return
     if "open_to_work" in data:
         data["open_to_work"] = _bool(data["open_to_work"])
+    if "is_discoverable" in data:
+        data["is_discoverable"] = _bool(data["is_discoverable"])
     data["updated_at"] = _now()
 
     p = _ph()
@@ -268,6 +272,24 @@ def list_skills(profile_id: int) -> list[dict]:
         return [_row_to_dict(r) for r in cur.fetchall()]
 
 
+def get_skills_for_profiles(profile_ids: list[int]) -> dict[int, list[dict]]:
+    """Batch-fetch skills for many profiles in one query (avoids N+1 when scoring a pool)."""
+    if not profile_ids:
+        return {}
+    p = _ph()
+    placeholders = ", ".join([p] * len(profile_ids))
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"SELECT * FROM skill_claims WHERE profile_id IN ({placeholders}) ORDER BY skill",
+            tuple(profile_ids),
+        )
+        rows = [_row_to_dict(r) for r in cur.fetchall()]
+    grouped: dict[int, list[dict]] = {pid: [] for pid in profile_ids}
+    for row in rows:
+        grouped.setdefault(row["profile_id"], []).append(row)
+    return grouped
+
+
 def mark_skill_verified(profile_id: int, skill: str, source: str) -> bool:
     """Flag a skill as demonstrated in-platform (e.g. by a passed assessment)."""
     p = _ph()
@@ -278,6 +300,66 @@ def mark_skill_verified(profile_id: int, skill: str, source: str) -> bool:
             (source, profile_id, normalize_skill(skill)),
         )
         return cur.rowcount > 0
+
+
+# ── Talent pool search (recruiter-facing) ───────────────────────────
+
+
+def search_discoverable_profiles(
+    skill: Optional[str] = None,
+    location: Optional[str] = None,
+    min_years: Optional[float] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict:
+    """Search candidates who opted into being found.
+
+    Deliberately excludes non-discoverable profiles at the SQL level, not as
+    a post-filter — a passive candidate must never appear in a recruiter's
+    result set regardless of how the query is shaped.
+    """
+    p = _ph()
+    true_literal = "TRUE" if USE_POSTGRES else "1"
+    clauses = [
+        f"cp.is_discoverable = {true_literal}",
+        f"cp.open_to_work = {true_literal}",
+        "cp.deleted_at IS NULL",
+    ]
+    params: list = []
+    joins = ""
+
+    if skill:
+        joins = "JOIN skill_claims sc ON sc.profile_id = cp.id"
+        clauses.append(f"sc.skill_normalized = {p}")
+        params.append(normalize_skill(skill))
+    if location:
+        clauses.append(f"LOWER(cp.location) LIKE {p}")
+        params.append(f"%{location.casefold()}%")
+    if min_years is not None:
+        clauses.append(f"cp.years_experience >= {p}")
+        params.append(min_years)
+
+    where = " AND ".join(clauses)
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"SELECT COUNT(DISTINCT cp.id) AS c FROM candidate_profiles cp {joins} WHERE {where}",
+            tuple(params),
+        )
+        total = cur.fetchone()["c"]
+        cur.execute(
+            f"SELECT DISTINCT cp.*, u.full_name, u.email FROM candidate_profiles cp "
+            f"{joins} JOIN users u ON u.id = cp.user_id WHERE {where} "
+            f"ORDER BY cp.updated_at DESC LIMIT {p} OFFSET {p}",
+            (*params, limit, offset),
+        )
+        profiles = [_row_to_dict(r) for r in cur.fetchall()]
+
+    profile_ids = [prof["id"] for prof in profiles]
+    skills_by_profile = get_skills_for_profiles(profile_ids)
+    for prof in profiles:
+        prof["skills"] = skills_by_profile.get(prof["id"], [])
+
+    return {"profiles": profiles, "total": total, "limit": limit, "offset": offset}
 
 
 # ── Preferences ──────────────────────────────────────────────────────
