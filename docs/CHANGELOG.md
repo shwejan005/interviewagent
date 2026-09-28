@@ -10,6 +10,92 @@ Entries are in **reverse chronological order** (most recent session first).
 
 ---
 
+## Session 8 — Phase 2: matching engine, sourcing, referrals, analytics, and the first frontend
+
+**Trigger:** instruction to proceed with Phase 2, building backend and
+frontend functionality together rather than backend-only.
+
+### Backend: `matching.py`
+
+A deterministic, explainable matching engine — deliberately Stage 1 of the
+three-stage plan in [PRODUCT_BLUEPRINT.md](PRODUCT_BLUEPRINT.md) §8.1.
+Semantic (pgvector) and learned ranking are documented as explicitly
+deferred, the latter because it needs real outcome data that does not exist
+yet; building it now would mean training on nothing.
+
+Every score ships with its own explanation — a bare number nobody can
+interrogate is a black box, not a recommendation. The scoring function
+(`score_match`) is pure (no database access), which is what let it be
+unit-tested exhaustively without a database; orchestration (`rank_jobs_for_candidate`,
+`rank_candidates_for_posting`) is a thin, separately-tested layer on top.
+
+A verified skill earns a bonus within the skills component, capped so it
+cannot alone guarantee a match — deliberately conservative, per the
+gamification guardrail in the blueprint: prep-suite performance should never
+silently become a hiring ranking factor without disclosure.
+
+### Backend: sourcing, referrals, analytics
+
+- **Talent-pool search** (`candidate_db.search_discoverable_profiles`) —
+  gated on a candidate opt-in (`is_discoverable`) enforced in the query
+  itself, not a post-filter, so it cannot be bypassed by a route bug.
+  Reading it is audited at Tier 3: browsing people who have not applied to
+  you is a materially different act than reading your own pipeline.
+- **Referrals** — a recruiter can refer a candidate by email before that
+  candidate necessarily has an account; matching is by normalized email. A
+  partial unique index blocks a duplicate *open* referral without blocking a
+  fresh one after the first was closed.
+- **Analytics: funnel** — stage-to-stage conversion, gated at org-wide read
+  (`campaign:read:org`, hiring-manager-and-above) rather than the narrower
+  scope a plain recruiter holds.
+- **Analytics: selection-rate divergence** — reports the same four-fifths-rule
+  ratio a formal EEO audit would use, computed over non-protected fields
+  (`source`, a derived experience band) since no protected characteristic is
+  collected (see [DECISIONS.md](DECISIONS.md) D-05). Documented explicitly,
+  including in its own API response, as the mechanism rather than a
+  compliant audit — the distinction matters and is stated rather than
+  implied. A flagged result audits at Tier 1.
+
+### Frontend: first UI for the platform
+
+Previously the platform existed only as an API. This session adds the first
+pages: `lib/api.ts` (typed fetch wrapper, attaches the bearer token and
+active-org header automatically), `lib/auth-context.tsx` (session state,
+org-switching), `lib/types.ts` (shared domain types mirroring the backend
+response shapes), and pages for registration, login, the profile vault
+editor, job search with recommendations, job detail/apply, the application
+tracker, the referral inbox, and — on the recruiter side — campaign/posting
+management, the applicant pipeline, and the analytics dashboard.
+
+### Fixed during this session
+
+- A duplication bug in `hiring_schema.py` (a dropped assignment left part of
+  the SQLite DDL unreachable) was caught by the new tests failing, not by
+  static analysis — worth noting as a reminder that schema changes need a
+  test that actually exercises `init_db()`, which the existing suite already
+  does.
+- A nested-ternary lint finding in `Navbar.tsx`'s auth-state rendering was
+  extracted into a small `DesktopAuthArea` component.
+
+### Tests
+
+134 → **176 passing**. `tests/test_matching.py` unit-tests `score_match`
+exhaustively (skills overlap and gaps, experience under/over-qualification,
+location/remote combinations, compensation overlap, recency decay) without
+touching a database. `tests/test_hiring.py` gained coverage for sourcing
+opt-in, referral creation/duplication, and the funnel/selection-rate
+endpoints, including that non-discoverable candidates never appear in
+search results.
+
+### Known gaps
+
+Interview scheduling and notifications remain unbuilt. The frontend has no
+automated test suite (no Playwright/Vitest config exists) — only `tsc
+--noEmit`, consistent with the pre-existing gap noted in
+[TESTING.md](TESTING.md).
+
+---
+
 ## Session 7 — Phase 1: profile vault, campaigns, postings, applications
 
 **Trigger:** instruction to settle the open decisions, then build Phase 1.

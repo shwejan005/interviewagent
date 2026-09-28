@@ -194,6 +194,66 @@ the machine is the point. See [DECISIONS.md](DECISIONS.md) D-10.
 
 ---
 
+## Candidate: recommendations & referrals
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /me/recommended-jobs` | Every open posting the candidate hasn't applied to, ranked by the matching engine, each with a human-readable `explanation` |
+| `GET /me/referrals` | Referrals made *to* this candidate's email, across every organization — matched by normalized email, not requiring the referrer to know the candidate has an account |
+
+## Recruiter: sourcing, referrals, analytics
+
+| Endpoint | Capability | Purpose |
+|---|---|---|
+| `GET /orgs/{org_id}/candidates/search` | `candidate:search` | Talent-pool search. Only returns profiles with `is_discoverable = true` — enforced in the query itself, not a post-filter. **Audited at Tier 3**: browsing people who haven't applied to you is a different act than reading your own pipeline |
+| `GET /orgs/{org_id}/postings/{id}/recommended-candidates` | `candidate:search` | Discoverable candidates ranked against this posting by the same matching engine used for job recommendations |
+| `POST /orgs/{org_id}/postings/{id}/referrals` | `candidate:refer` | Refer a candidate by email. 409 on a duplicate open referral for the same posting |
+| `GET /orgs/{org_id}/referrals` | `application:read` | Referrals made by this organization's recruiters |
+| `GET /orgs/{org_id}/analytics/funnel` | `campaign:read:org` | Stage-to-stage conversion. Gated at org-wide read (hiring manager and above), not the narrower `campaign:read:assigned` a plain recruiter holds |
+| `GET /orgs/{org_id}/analytics/selection-rates` | `campaign:read:org` | Disparate-impact-style selection-rate divergence by `source` or `experience_band` |
+
+### The matching engine (Stage 1: deterministic)
+
+Every score is a weighted average of five explainable components —
+skills (40%), experience fit (25%), location/remote fit (20%), compensation
+overlap (10%), profile recency (5%) — scaled to 0–10. **Every score ships
+with its own explanation**; a bare number nobody can interrogate is not a
+recommendation, it's a black box.
+
+```json
+{
+  "score": 8.4,
+  "components": {"skills": 0.9, "experience": 1.0, "location": 1.0, "compensation": 0.7, "recency": 1.0},
+  "matched_skills": ["Python", "FastAPI", "PostgreSQL"],
+  "missing_skills": ["Kubernetes"],
+  "explanation": "Strong overlap on Python, FastAPI, PostgreSQL. Gap: missing Kubernetes. 5 years is within the 4-7 year requirement. posting location matches a candidate preference."
+}
+```
+
+The same scoring function ranks both directions (jobs→candidate and
+candidates→job); only which side is held fixed differs at the call site. See
+[PRODUCT_BLUEPRINT.md §8.1](PRODUCT_BLUEPRINT.md) for why semantic (Stage 2)
+and learned (Stage 3) ranking are deliberately deferred — Stage 3 in
+particular requires real outcome data that does not exist yet.
+
+A verified skill (demonstrated in-platform, not self-claimed) earns a bonus
+within the skills component, capped so it cannot alone guarantee a match —
+see [SECURITY.md](SECURITY.md) for why this is weighted conservatively
+rather than treated as a hard filter.
+
+### Selection-rate divergence — what it is and isn't
+
+`GET /analytics/selection-rates` reports the same four-fifths-rule ratio a
+formal EEO bias audit would use (lowest selection rate ÷ highest, flagged
+below 0.8), computed over `source` or a derived `experience_band` —
+deliberately **not** a protected characteristic, since none is collected
+(see [DECISIONS.md](DECISIONS.md) D-05). This is the mechanism, tested and
+working; it is explicitly **not** a substitute for a compliant bias audit,
+and the response's own `note` field says so. A `flag_adverse_impact: true`
+result is itself audited at Tier 1.
+
+---
+
 
 
 ## `POST /start`

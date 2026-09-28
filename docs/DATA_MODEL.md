@@ -223,6 +223,30 @@ instead of corrupting pipeline history. Terminal stages (`HIRED`, `REJECTED`,
 awaiting human confirmation. It can transition in either direction, because
 overriding the machine is the entire reason it exists.
 
+## Matching, sourcing & referrals (Phase 2)
+
+Added in Phase 2. `matching.py` is pure/stateless (no I/O, exhaustively unit
+testable) and produces a score plus a human-readable explanation for every
+ranking — see [API_REFERENCE.md](API_REFERENCE.md) for the scoring model.
+
+| Column | Table | Purpose |
+|---|---|---|
+| `candidate_profiles.is_discoverable` | Candidate opt-in | Only profiles with this set appear in recruiter talent-pool search. Enforced in the query itself so it cannot be bypassed by a route-layer bug |
+
+**`referrals`** table: a recruiter referring a candidate (by email, matched
+normalized — the candidate need not have an account yet) to a specific
+posting. A partial unique index prevents a duplicate *open* referral for the
+same candidate/posting pair, while a previously closed one does not block a
+fresh referral.
+
+### Why matching stays deterministic for now
+
+`PRODUCT_BLUEPRINT.md §8.1` stages the matching engine deliberately:
+deterministic scoring now, semantic (pgvector) similarity once there is
+posting/profile volume to make it worth the infrastructure, and learned
+ranking only once real outcome data exists to train on — which it does not
+yet. Building Stage 3 now would mean training on nothing.
+
 ## Decision-memory files on disk
 
 ```
