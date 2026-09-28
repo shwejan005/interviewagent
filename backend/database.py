@@ -206,6 +206,31 @@ CREATE INDEX IF NOT EXISTS idx_evaluations_status ON evaluations(status);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_verdicts_canonical
     ON agent_verdicts (evaluation_id, round_number)
     WHERE decision <> 'INVALID_OUTPUT';
+
+CREATE TABLE IF NOT EXISTS background_jobs (
+    id BIGSERIAL PRIMARY KEY,
+    job_type TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 3,
+    available_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    locked_at TIMESTAMPTZ,
+    locked_by TEXT,
+    last_error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMPTZ,
+    idempotency_key TEXT,
+    CHECK (status IN ('PENDING', 'RUNNING', 'COMPLETED', 'DEAD')),
+    CHECK (attempts >= 0 AND max_attempts > 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_background_jobs_claim
+    ON background_jobs(status, available_at, id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_background_jobs_idempotency
+    ON background_jobs(idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
 """
 
 _SQLITE_SCHEMA = """
@@ -262,6 +287,31 @@ CREATE INDEX IF NOT EXISTS idx_evaluations_status ON evaluations(status);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_verdicts_canonical
     ON agent_verdicts (evaluation_id, round_number)
     WHERE decision <> 'INVALID_OUTPUT';
+
+CREATE TABLE IF NOT EXISTS background_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_type TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 3,
+    available_at TEXT NOT NULL DEFAULT (datetime('now')),
+    locked_at TEXT,
+    locked_by TEXT,
+    last_error TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_at TEXT,
+    idempotency_key TEXT,
+    CHECK (status IN ('PENDING', 'RUNNING', 'COMPLETED', 'DEAD')),
+    CHECK (attempts >= 0 AND max_attempts > 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_background_jobs_claim
+    ON background_jobs(status, available_at, id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_background_jobs_idempotency
+    ON background_jobs(idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
 """
 
 
@@ -592,6 +642,294 @@ def init_db() -> None:
         finally:
             conn.close()
 
+
+
+# ── Durable background jobs ────────────────────────────────────────
+
+def enqueue_job(
+    job_type: str,
+    payload: dict,
+    *,
+    max_attempts: int = 3,
+    idempotency_key: Optional[str] = None,
+) -> int:
+    """Persist a job and return its ID.
+
+    An idempotency key makes admission safe to retry after a lost HTTP
+    response. The unique partial index guarantees this property across
+    processes, not just within one worker.
+    """
+    if not job_type.strip():
+        raise ValueError("job_type cannot be empty")
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be at least 1")
+
+    p = _ph()
+    serialized_payload = json.dumps(payload, separators=(",", ":"))
+    with _get_conn() as (conn, cur):
+        if USE_POSTGRES:
+            cur.execute(
+                f"""INSERT INTO background_jobs
+                    (job_type, payload, max_attempts, idempotency_key)
+                    VALUES ({p}, {p}, {p}, {p})
+                    ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
+                    DO NOTHING RETURNING id""",
+                (job_type.strip(), serialized_payload, max_attempts, idempotency_key),
+            )
+            row = cur.fetchone()
+            if row is not None:
+                return int(row["id"])
+        else:
+            try:
+                cur.execute(
+                    f"""INSERT INTO background_jobs
+                        (job_type, payload, max_attempts, idempotency_key)
+                        VALUES ({p}, {p}, {p}, {p})""",
+                    (job_type.strip(), serialized_payload, max_attempts, idempotency_key),
+                )
+                return int(cur.lastrowid)
+            except _IntegrityError:
+                if idempotency_key is None:
+                    raise
+
+        if idempotency_key is None:
+            raise RuntimeError("Job insert did not return an ID")
+        cur.execute(
+            f"SELECT id FROM background_jobs WHERE idempotency_key = {p}",
+            (idempotency_key,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise RuntimeError("Idempotent job lookup failed after insert conflict")
+        return int(row["id"])
+
+
+def get_job(job_id: int) -> Optional[dict]:
+    """Return one durable job, including its decoded payload."""
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        cur.execute(f"SELECT * FROM background_jobs WHERE id = {p}", (job_id,))
+        row = _row_to_dict(cur.fetchone())
+    if row is None:
+        return None
+    row["payload"] = json.loads(row["payload"])
+    return row
+
+
+def get_job_by_idempotency_key(idempotency_key: str) -> Optional[dict]:
+    """Return the job associated with an idempotency key, if present."""
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"SELECT * FROM background_jobs WHERE idempotency_key = {p}",
+            (idempotency_key,),
+        )
+        row = _row_to_dict(cur.fetchone())
+    if row is None:
+        return None
+    row["payload"] = json.loads(row["payload"])
+    return row
+
+
+def claim_job(job_id: int, worker_id: str, *, lease_seconds: int = 300) -> Optional[dict]:
+    """Claim one known job, including a previously expired lease."""
+    if not worker_id.strip():
+        raise ValueError("worker_id cannot be empty")
+    if lease_seconds < 1:
+        raise ValueError("lease_seconds must be at least 1")
+
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        if USE_POSTGRES:
+            cur.execute(
+                f"""UPDATE background_jobs
+                    SET status = 'DEAD', updated_at = CURRENT_TIMESTAMP,
+                        last_error = COALESCE(last_error, 'lease expired after max attempts')
+                    WHERE id = {p} AND status = 'RUNNING'
+                      AND locked_at <= CURRENT_TIMESTAMP - ({p} * INTERVAL '1 second')
+                      AND attempts >= max_attempts""",
+                (job_id, lease_seconds),
+            )
+            cur.execute(
+                f"""UPDATE background_jobs
+                    SET status = 'RUNNING', attempts = attempts + 1,
+                        locked_at = CURRENT_TIMESTAMP, locked_by = {p},
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = {p}
+                      AND attempts < max_attempts
+                      AND ((status = 'PENDING' AND available_at <= CURRENT_TIMESTAMP)
+                        OR (status = 'RUNNING' AND locked_at <= CURRENT_TIMESTAMP - ({p} * INTERVAL '1 second')))
+                    RETURNING *""",
+                (worker_id.strip(), job_id, lease_seconds),
+            )
+            row = _row_to_dict(cur.fetchone())
+        else:
+            conn.execute("BEGIN IMMEDIATE")
+            stale_after = f"-{lease_seconds} seconds"
+            cur.execute(
+                f"""UPDATE background_jobs
+                    SET status = 'DEAD', updated_at = datetime('now'),
+                        last_error = COALESCE(last_error, 'lease expired after max attempts')
+                    WHERE id = {p} AND status = 'RUNNING'
+                      AND locked_at <= datetime('now', {p})
+                      AND attempts >= max_attempts""",
+                (job_id, stale_after),
+            )
+            cur.execute(
+                f"""UPDATE background_jobs
+                    SET status = 'RUNNING', attempts = attempts + 1,
+                        locked_at = datetime('now'), locked_by = {p},
+                        updated_at = datetime('now')
+                    WHERE id = {p}
+                      AND attempts < max_attempts
+                      AND ((status = 'PENDING' AND available_at <= datetime('now'))
+                        OR (status = 'RUNNING' AND locked_at <= datetime('now', {p})))""",
+                (worker_id.strip(), job_id, stale_after),
+            )
+            if cur.rowcount != 1:
+                return None
+            cur.execute(f"SELECT * FROM background_jobs WHERE id = {p}", (job_id,))
+            row = _row_to_dict(cur.fetchone())
+
+    if row is None:
+        return None
+    row["payload"] = json.loads(row["payload"])
+    return row
+
+
+def claim_next_job(worker_id: str, *, lease_seconds: int = 300) -> Optional[dict]:
+    """Atomically claim the next ready job or reclaim an expired lease."""
+    if not worker_id.strip():
+        raise ValueError("worker_id cannot be empty")
+    if lease_seconds < 1:
+        raise ValueError("lease_seconds must be at least 1")
+
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        if USE_POSTGRES:
+            cur.execute(
+                f"""UPDATE background_jobs
+                    SET status = 'DEAD', updated_at = CURRENT_TIMESTAMP,
+                        last_error = COALESCE(last_error, 'lease expired after max attempts')
+                    WHERE status = 'RUNNING'
+                      AND locked_at <= CURRENT_TIMESTAMP - ({p} * INTERVAL '1 second')
+                      AND attempts >= max_attempts""",
+                (lease_seconds,),
+            )
+            cur.execute(
+                f"""WITH candidate AS (
+                    SELECT id FROM background_jobs
+                    WHERE ((status = 'PENDING' AND available_at <= CURRENT_TIMESTAMP)
+                       OR (status = 'RUNNING' AND locked_at <= CURRENT_TIMESTAMP - ({p} * INTERVAL '1 second')))
+                      AND attempts < max_attempts
+                    ORDER BY available_at, id
+                    FOR UPDATE SKIP LOCKED
+                    LIMIT 1
+                )
+                UPDATE background_jobs AS job
+                SET status = 'RUNNING', attempts = job.attempts + 1,
+                    locked_at = CURRENT_TIMESTAMP, locked_by = {p},
+                    updated_at = CURRENT_TIMESTAMP
+                FROM candidate
+                WHERE job.id = candidate.id
+                RETURNING job.*""",
+                (lease_seconds, worker_id.strip()),
+            )
+            row = _row_to_dict(cur.fetchone())
+        else:
+            conn.execute("BEGIN IMMEDIATE")
+            stale_after = f"-{lease_seconds} seconds"
+            cur.execute(
+                f"""UPDATE background_jobs
+                    SET status = 'DEAD', updated_at = datetime('now'),
+                        last_error = COALESCE(last_error, 'lease expired after max attempts')
+                    WHERE status = 'RUNNING'
+                      AND locked_at <= datetime('now', {p})
+                      AND attempts >= max_attempts""",
+                (stale_after,),
+            )
+            cur.execute(
+                f"""SELECT id FROM background_jobs
+                    WHERE ((status = 'PENDING' AND available_at <= datetime('now'))
+                       OR (status = 'RUNNING' AND locked_at <= datetime('now', {p})))
+                      AND attempts < max_attempts
+                    ORDER BY available_at, id LIMIT 1""",
+                (stale_after,),
+            )
+            candidate = cur.fetchone()
+            if candidate is None:
+                return None
+            cur.execute(
+                f"""UPDATE background_jobs
+                    SET status = 'RUNNING', attempts = attempts + 1,
+                        locked_at = datetime('now'), locked_by = {p},
+                        updated_at = datetime('now')
+                    WHERE id = {p}""",
+                (worker_id.strip(), candidate["id"]),
+            )
+            cur.execute(f"SELECT * FROM background_jobs WHERE id = {p}", (candidate["id"],))
+            row = _row_to_dict(cur.fetchone())
+
+    if row is None:
+        return None
+    row["payload"] = json.loads(row["payload"])
+    return row
+
+
+def complete_job(job_id: int, worker_id: str) -> bool:
+    """Mark a job complete only when it is still owned by this worker."""
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"""UPDATE background_jobs
+                SET status = 'COMPLETED', completed_at = {_now_sql()},
+                    updated_at = {_now_sql()}, locked_at = NULL, locked_by = NULL
+                WHERE id = {p} AND status = 'RUNNING' AND locked_by = {p}""",
+            (job_id, worker_id),
+        )
+        return cur.rowcount == 1
+
+
+def fail_job(
+    job_id: int,
+    worker_id: str,
+    error: str,
+    *,
+    retry_delay_seconds: int = 60,
+) -> Optional[str]:
+    """Record a failure and either retry later or move the job to DEAD."""
+    if retry_delay_seconds < 0:
+        raise ValueError("retry_delay_seconds cannot be negative")
+
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        if USE_POSTGRES:
+            cur.execute(
+                f"""UPDATE background_jobs
+                    SET status = CASE WHEN attempts >= max_attempts THEN 'DEAD' ELSE 'PENDING' END,
+                        available_at = CURRENT_TIMESTAMP + ({p} * INTERVAL '1 second'),
+                        last_error = {p}, updated_at = CURRENT_TIMESTAMP,
+                        locked_at = NULL, locked_by = NULL
+                    WHERE id = {p} AND status = 'RUNNING' AND locked_by = {p}
+                    RETURNING status""",
+                (retry_delay_seconds, error[:4000], job_id, worker_id),
+            )
+            row = cur.fetchone()
+            return row["status"] if row else None
+
+        cur.execute(
+            f"""UPDATE background_jobs
+                SET status = CASE WHEN attempts >= max_attempts THEN 'DEAD' ELSE 'PENDING' END,
+                    available_at = datetime('now', {p}), last_error = {p},
+                    updated_at = datetime('now'), locked_at = NULL, locked_by = NULL
+                WHERE id = {p} AND status = 'RUNNING' AND locked_by = {p}""",
+            (f"+{retry_delay_seconds} seconds", error[:4000], job_id, worker_id),
+        )
+        if cur.rowcount != 1:
+            return None
+        cur.execute(f"SELECT status FROM background_jobs WHERE id = {p}", (job_id,))
+        row = cur.fetchone()
+        return row["status"] if row else None
 
 
 # ── Evaluation CRUD ────────────────────────────────────────────────

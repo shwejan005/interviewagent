@@ -220,6 +220,10 @@ export default function ResultPage() {
         if (res.status === 429) detail = "AI rate limit reached. Click 'Retry' to try again.";
         throw new Error(detail);
       }
+      if (res.status === 202) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        return fetchFinalDecision();
+      }
       const data = await res.json();
       setResult(data);
     } catch (err: any) {

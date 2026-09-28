@@ -189,3 +189,73 @@ class TestEvaluationLifecycle:
         assert isolated_db.count_evaluations() == 2
         assert isolated_db.count_evaluations(status="REJECTED") == 1
         assert isolated_db.count_evaluations(status="IN_PROGRESS") == 1
+
+
+class TestDurableBackgroundJobs:
+    def test_enqueue_is_idempotent_and_payload_roundtrips(self, isolated_db):
+        first = isolated_db.enqueue_job(
+            "finalize_evaluation",
+            {"evaluation_id": 42},
+            idempotency_key="evaluation:42:finalize",
+        )
+        second = isolated_db.enqueue_job(
+            "finalize_evaluation",
+            {"evaluation_id": 42, "ignored": True},
+            idempotency_key="evaluation:42:finalize",
+        )
+
+        assert first == second
+        job = isolated_db.get_job(first)
+        assert job["status"] == "PENDING"
+        assert job["payload"] == {"evaluation_id": 42}
+
+    def test_claim_complete_requires_the_claiming_worker(self, isolated_db):
+        job_id = isolated_db.enqueue_job("example", {"value": 1})
+
+        claimed = isolated_db.claim_next_job("worker-a")
+        assert claimed["id"] == job_id
+        assert claimed["status"] == "RUNNING"
+        assert claimed["attempts"] == 1
+        assert isolated_db.complete_job(job_id, "worker-b") is False
+        assert isolated_db.get_job(job_id)["status"] == "RUNNING"
+        assert isolated_db.complete_job(job_id, "worker-a") is True
+        assert isolated_db.get_job(job_id)["status"] == "COMPLETED"
+
+    def test_failed_job_retries_then_becomes_dead(self, isolated_db):
+        job_id = isolated_db.enqueue_job("unstable", {}, max_attempts=2)
+
+        isolated_db.claim_next_job("worker-a")
+        assert isolated_db.fail_job(job_id, "worker-a", "first failure", retry_delay_seconds=0) == "PENDING"
+        isolated_db.claim_next_job("worker-a")
+        assert isolated_db.fail_job(job_id, "worker-a", "second failure", retry_delay_seconds=0) == "DEAD"
+        job = isolated_db.get_job(job_id)
+        assert job["attempts"] == 2
+        assert job["last_error"] == "second failure"
+
+    def test_claim_reclaims_expired_lease(self, isolated_db):
+        job_id = isolated_db.enqueue_job("recoverable", {})
+        isolated_db.claim_next_job("dead-worker", lease_seconds=1)
+
+        with isolated_db._get_conn() as (conn, cur):
+            cur.execute(
+                "UPDATE background_jobs SET locked_at = datetime('now', '-10 minutes') WHERE id = ?",
+                (job_id,),
+            )
+
+        reclaimed = isolated_db.claim_next_job("replacement-worker", lease_seconds=1)
+        assert reclaimed["id"] == job_id
+        assert reclaimed["attempts"] == 2
+        assert reclaimed["locked_by"] == "replacement-worker"
+
+    def test_expired_final_attempt_becomes_dead(self, isolated_db):
+        job_id = isolated_db.enqueue_job("crashed", {}, max_attempts=1)
+        isolated_db.claim_next_job("dead-worker", lease_seconds=1)
+
+        with isolated_db._get_conn() as (conn, cur):
+            cur.execute(
+                "UPDATE background_jobs SET locked_at = datetime('now', '-10 minutes') WHERE id = ?",
+                (job_id,),
+            )
+
+        assert isolated_db.claim_job(job_id, "replacement-worker", lease_seconds=1) is None
+        assert isolated_db.get_job(job_id)["status"] == "DEAD"

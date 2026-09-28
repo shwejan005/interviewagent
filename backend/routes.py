@@ -13,8 +13,10 @@ interfere with each other.
 
 import asyncio
 import logging
+import uuid
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
 
 import audit
 from authz import Actor, optional_actor
@@ -36,6 +38,7 @@ from crew_runner import (
     run_hiring_committee,
 )
 import database as db
+from finalization import FinalizationNotReadyError, finalize_evaluation
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -427,113 +430,62 @@ async def final_decision(
             detail="Interview is not complete. All rounds must be finished first.",
         )
 
-    # Idempotent replay: if already finalized, return the persisted result
-    # instead of re-running (and re-billing) the recommendation/committee agents.
-    if evaluation["status"] == "COMPLETE" and evaluation["final_decision"]:
-        committee_verdict = await _db(db.get_verdict_by_round, evaluation_id, 5)
-        if committee_verdict is not None:
-            recommendation_verdict = await _db(db.get_verdict_by_round, evaluation_id, 4)
-            return {
-                "evaluation_id": evaluation_id,
-                "decision": evaluation["final_decision"],
-                "verdict": committee_verdict["verdict_json"],
-                "verdict_text": committee_verdict["verdict_text"],
-                "rationale": committee_verdict["verdict_text"],
-                "recommendation": recommendation_verdict["verdict_json"] if recommendation_verdict else None,
-                "recommendation_text": recommendation_verdict["verdict_text"] if recommendation_verdict else None,
-                "overall_score": evaluation["overall_score"],
-                "confidence": committee_verdict["confidence"],
-                "status": "COMPLETE",
-            }
-
-    if await _db(db.get_verdict_by_round, evaluation_id, 4) is not None:
-        raise HTTPException(
-            status_code=409,
-            detail="Final decision is already being processed for this evaluation.",
-        )
-
-    # Run Round 4 — Hiring Recommendation Agent
-    logger.info("Running Hiring Recommendation Agent for evaluation %s...", evaluation_id)
-    try:
-        rec_result = await run_hiring_recommendation(evaluation_id)
-    except AgentOutputError as exc:
-        await _record_agent_output_error(evaluation_id, "recommendation", 4, exc)
-        raise HTTPException(
-            status_code=502,
-            detail="The recommendation agent returned an invalid response. Please retry.",
-        ) from exc
-
-    try:
-        await _db(
-            db.save_verdict,
-            evaluation_id=evaluation_id,
-            agent_type="recommendation",
-            round_number=4,
-            verdict_json=rec_result["verdict"],
-            verdict_text=rec_result["verdict_text"],
-            score=rec_result["score"],
-            decision=rec_result["decision"],
-            confidence=rec_result["confidence"],
-        )
-    except db.DuplicateVerdictError as exc:
-        raise HTTPException(status_code=409, detail="Final decision is already being processed.") from exc
-
-    # Run Committee Evaluator — ONLY sees agent outputs, NOT resume
-    logger.info("Running Committee Evaluator for evaluation %s...", evaluation_id)
-    try:
-        committee_result = await run_hiring_committee(evaluation_id)
-    except AgentOutputError as exc:
-        await _record_agent_output_error(evaluation_id, "committee", 5, exc)
-        raise HTTPException(
-            status_code=502,
-            detail="The committee evaluator returned an invalid response. Please retry.",
-        ) from exc
-
-    try:
-        await _db(
-            db.save_verdict,
-            evaluation_id=evaluation_id,
-            agent_type="committee",
-            round_number=5,
-            verdict_json=committee_result["verdict"],
-            verdict_text=committee_result["verdict_text"],
-            decision=committee_result["decision"],
-            confidence=committee_result["confidence"],
-        )
-    except db.DuplicateVerdictError as exc:
-        raise HTTPException(status_code=409, detail="Final decision is already being processed.") from exc
-
-    # Overall score is the average of the genuine round evaluations (screening,
-    # technical, behavioral) only — the recommendation's own score already
-    # synthesizes those three and would otherwise double-count in the average.
-    all_verdicts = await _db(db.get_verdicts, evaluation_id)
-    scores = [
-        v["score"] for v in all_verdicts
-        if v["round_number"] in (1, 2, 3) and v["score"] is not None
-    ]
-    overall_score = round(sum(scores) / len(scores), 1) if scores else None
-
-    await _db(
-        db.update_evaluation,
-        evaluation_id,
-        status="COMPLETE",
-        current_round=5,
-        final_decision=committee_result["decision"],
-        overall_score=overall_score,
+    idempotency_key = f"final-decision:{evaluation_id}"
+    job_id = await _db(
+        db.enqueue_job,
+        "final_decision",
+        {"evaluation_id": evaluation_id},
+        idempotency_key=idempotency_key,
     )
+    job = await _db(db.get_job, job_id)
+    if job["status"] == "DEAD":
+        raise HTTPException(
+            status_code=503,
+            detail="Final decision processing exhausted its retries. Please contact support.",
+        )
 
-    return {
-        "evaluation_id": evaluation_id,
-        "decision": committee_result["decision"],
-        "verdict": committee_result["verdict"],
-        "verdict_text": committee_result["verdict_text"],
-        "rationale": committee_result["verdict_text"],
-        "recommendation": rec_result["verdict"],
-        "recommendation_text": rec_result["verdict_text"],
-        "overall_score": overall_score,
-        "confidence": committee_result["confidence"],
-        "status": "COMPLETE",
-    }
+    worker_id = f"http:{uuid.uuid4().hex}"
+    claimed = await _db(db.claim_job, job_id, worker_id)
+    if claimed is None:
+        job = await _db(db.get_job, job_id)
+        if job["status"] == "COMPLETED":
+            return await finalize_evaluation(
+                evaluation_id, run_recommendation=run_hiring_recommendation,
+                run_committee=run_hiring_committee,
+            )
+        return JSONResponse(
+            status_code=202,
+            content={
+                "evaluation_id": evaluation_id,
+                "status": "PROCESSING",
+                "job_id": job_id,
+                "message": "Final decision is already being processed. Retry shortly.",
+            },
+            headers={"Retry-After": "2"},
+        )
+
+    try:
+        result = await finalize_evaluation(
+            evaluation_id,
+            run_recommendation=run_hiring_recommendation,
+            run_committee=run_hiring_committee,
+        )
+    except FinalizationNotReadyError as exc:
+        await _db(db.fail_job, job_id, worker_id, str(exc), retry_delay_seconds=0)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except AgentOutputError as exc:
+        await _db(db.fail_job, job_id, worker_id, str(exc), retry_delay_seconds=0)
+        raise HTTPException(
+            status_code=502,
+            detail="A finalization agent returned an invalid response. Please retry.",
+        ) from exc
+    except Exception as exc:
+        await _db(db.fail_job, job_id, worker_id, str(exc), retry_delay_seconds=0)
+        raise
+
+    if not await _db(db.complete_job, job_id, worker_id):
+        logger.error("Final decision job %s completed without its lease owner", job_id)
+    return result
 
 
 # ── GET /roles ───────────────────────────────────────────────────────
