@@ -4,8 +4,8 @@
 
 | Suite | Location | What it covers | Live LLM calls? | Last verified run |
 |---|---|---|---|---|
-| Backend automated tests | `backend/tests/` (pytest) | Output parsing/validation, database PII/uniqueness/batching, full route pipeline (mocked agents), rate-limit middleware, health/readiness, durable worker retries/cancellation/shutdown, structured event redaction | No | 202 passed, 0 failed, ~8m33s (2026-09-27) |
-| Frontend type-check | `frontend/` (`npm run typecheck`) | TypeScript type safety across the whole `app/`/`components/` tree | N/A | 0 errors (2026-09-27) |
+| Backend automated tests | `backend/tests/` (pytest) | Output parsing/validation, database PII/uniqueness/batching, full route pipeline (mocked agents), rate-limit middleware, health/readiness, durable worker retries/cancellation/shutdown, structured event redaction | No | 202 passed, 0 failed, ~8m33s (2026-09-29) |
+| Frontend type-check | `frontend/` (`npm run typecheck`) | TypeScript type safety across the whole `app/`/`components/` tree | N/A | 0 errors (2026-09-29) |
 | Live agent smoke test | Ad hoc, not checked in (see below) | The actual CrewAI agents against a real LLM endpoint, end-to-end | **Yes** | Full happy path (PASS→PASS→PASS→HIRE) + reject path, verified manually 2026-09-27; not automated/repeatable as a checked-in test |
 
 There is **no frontend browser/E2E test suite** (no Playwright/Cypress

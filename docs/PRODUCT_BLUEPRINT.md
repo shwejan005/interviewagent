@@ -1,6 +1,6 @@
 # Evalia Product Blueprint
 
-**Status:** proposed plan — not implemented.
+**Status:** Phases 0–2 are partially implemented; Phase 3 and later remain proposed. See the [2026-09-29 implementation audit](PHASE_0_2_IMPLEMENTATION_AUDIT.md). This blueprint describes target state, not current product capability.
 **Supersedes in scope:** [PRODUCTION_ROADMAP.md](../PRODUCTION_ROADMAP.md), which hardens the *existing* interview pipeline. This document defines the product Evalia becomes around it.
 **Companion:** [DECISIONS.md](DECISIONS.md) — the choices that must be made before Phase 0 code is written.
 
@@ -8,7 +8,7 @@
 
 ## 1. The core reframe
 
-Today Evalia is **one linear pipeline**: paste a resume → three agent-evaluated rounds → a committee verdict. One anonymous user, one evaluation at a time, no accounts, no jobs, no company.
+The original Evalia baseline was **one linear pipeline**: paste a resume → three agent-evaluated rounds → a committee verdict. Since then, an authenticated candidate/recruiter marketplace and deterministic matching have been added alongside the legacy pipeline. The implementation is still partial: in particular, legacy evaluations remain globally accessible, the agent pipeline is not attached to applications, and key scheduling/invitation flows are absent. See the [implementation audit](PHASE_0_2_IMPLEMENTATION_AUDIT.md) for source and test evidence.
 
 The product being described is fundamentally different in shape. It is a **two-sided talent platform** where the agent pipeline is one feature among many, not the product itself:
 
@@ -634,13 +634,13 @@ Deliberately deferred. Recorded now so the architecture does not preclude it:
 | Current | Becomes |
 |---|---|
 | `evaluations` table as root entity | `applications` is the root; `evaluations` becomes an artifact of an automated pipeline stage |
-| Anonymous, single-user | Every record tenant- and actor-scoped |
+| Authenticated candidate/recruiter platform plus legacy anonymous interview endpoints | Tenant-and-actor-scoped platform routes; legacy evaluation endpoints still need isolation |
 | Hardcoded 5-stage pipeline | One configurable pipeline *template*, selectable per posting |
 | `AVAILABLE_ROLES` string list | `job_postings` with structured, versioned requirements |
 | Resume text pasted per evaluation | Profile Vault, referenced by application |
-| Agent calls inside HTTP requests | Queued background jobs with durable state |
-| `CREATE TABLE IF NOT EXISTS` | Versioned Alembic migrations |
-| No tests → 38 tests (current) | Tenant-isolation and authorization tests as CI gates |
+| Rounds 1–3 run in HTTP requests; finalization has durable-job/recovery foundations but may execute inline | All agent stages admitted through durable jobs with durable state |
+| `CREATE TABLE IF NOT EXISTS` plus a small custom migration ledger | Complete, reviewable migrations for all domain changes |
+| 202 backend tests; no browser E2E or automated real-Postgres suite | Tenant-isolation, authorization, browser, and PostgreSQL concurrency tests as CI gates |
 
 The agent pipeline itself — strict output validation, bias-isolated committee, per-evaluation verdict storage — is genuinely good work and survives intact. It gets *repositioned* from "the product" to "a differentiated feature inside the product."
 
@@ -664,4 +664,4 @@ A few things worth stating plainly rather than burying:
 
 ## 15. Next step
 
-Review [DECISIONS.md](DECISIONS.md) — it lists the choices that block Phase 0 from starting. Once those are settled, Phase 0 implementation can begin immediately against the existing codebase.
+Review [PHASE_0_2_IMPLEMENTATION_AUDIT.md](PHASE_0_2_IMPLEMENTATION_AUDIT.md) and [DECISIONS.md](DECISIONS.md). Phase 0–2 implementation has begun but remains incomplete; address the audit's legacy evaluation isolation and candidate-data projection findings before treating the platform as launch-ready. Phase 3 scope can then be planned, with code execution gated on the sandbox decision in D-03.
