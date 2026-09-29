@@ -22,6 +22,7 @@ from fastapi import Depends, Header, HTTPException, Request
 
 import audit
 import database as db
+import security
 from rbac import Capability, SystemRole, capabilities_for_role
 from security import TokenError, decode_access_token
 
@@ -66,7 +67,7 @@ async def _load_actor(token: str, org_id: Optional[int], ip: Optional[str]) -> A
     import asyncio
 
     try:
-        user_id = decode_access_token(token)
+        user_id, impersonated_by = security.decode_access_token_details(token)
     except TokenError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
@@ -79,6 +80,7 @@ async def _load_actor(token: str, org_id: Optional[int], ip: Optional[str]) -> A
     # No org requested: the actor operates in their personal (candidate) scope.
     if org_id is None:
         role = SystemRole.PLATFORM_ADMIN if is_admin else SystemRole.CANDIDATE
+        capabilities = await asyncio.to_thread(db.get_role_capabilities, str(role))
         return Actor(
             user_id=user["id"],
             email=user["email"],
@@ -86,7 +88,8 @@ async def _load_actor(token: str, org_id: Optional[int], ip: Optional[str]) -> A
             is_platform_admin=is_admin,
             org_id=None,
             role=str(role),
-            capabilities=capabilities_for_role(str(role)),
+            capabilities=capabilities or capabilities_for_role(str(role)),
+            impersonated_by=impersonated_by,
             ip=ip,
         )
 
@@ -95,6 +98,9 @@ async def _load_actor(token: str, org_id: Optional[int], ip: Optional[str]) -> A
         # Deny existence rather than confirming the org is real.
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
 
+    capabilities = await asyncio.to_thread(
+        db.get_role_capabilities, membership["role_name"]
+    )
     return Actor(
         user_id=user["id"],
         email=user["email"],
@@ -102,7 +108,8 @@ async def _load_actor(token: str, org_id: Optional[int], ip: Optional[str]) -> A
         is_platform_admin=is_admin,
         org_id=org_id,
         role=membership["role_name"],
-        capabilities=capabilities_for_role(membership["role_name"]),
+        capabilities=capabilities or capabilities_for_role(membership["role_name"]),
+        impersonated_by=impersonated_by,
         ip=ip,
     )
 

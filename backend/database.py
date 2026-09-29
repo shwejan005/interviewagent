@@ -13,7 +13,7 @@ import os
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from contextlib import contextmanager
 
@@ -421,6 +421,8 @@ CREATE TABLE IF NOT EXISTS audit_events (
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_membership_user_org
     ON org_memberships (org_id, user_id) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_pending_invitation_email
+    ON invitations (org_id, email_normalized) WHERE status = 'PENDING';
 CREATE INDEX IF NOT EXISTS idx_membership_user ON org_memberships(user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_events(actor_user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_resource ON audit_events(resource_type, resource_id);
@@ -515,6 +517,8 @@ CREATE TABLE IF NOT EXISTS audit_events (
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_membership_user_org
     ON org_memberships (org_id, user_id) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_pending_invitation_email
+    ON invitations (org_id, email_normalized) WHERE status = 'PENDING';
 CREATE INDEX IF NOT EXISTS idx_membership_user ON org_memberships(user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_events(actor_user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_resource ON audit_events(resource_type, resource_id);
@@ -531,6 +535,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_org ON audit_events(actor_org_id);
 _EVALUATION_TENANCY_COLUMNS = (
     ("org_id", "INTEGER"),
     ("owner_user_id", "INTEGER"),
+    ("access_token_hash", "TEXT"),
 )
 
 # Additive columns introduced after the initial hiring schema. These are
@@ -621,6 +626,26 @@ def _seed_roles(cur) -> None:
                 f"INSERT INTO role_capabilities (role_id, capability) VALUES ({p}, {p})",
                 (role_id, str(capability)),
             )
+
+
+def get_role_capabilities(role_name: str) -> frozenset:
+    """Load the persisted capability bundle for a role."""
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"SELECT rc.capability FROM role_capabilities rc "
+            f"JOIN roles r ON r.id = rc.role_id WHERE r.name = {p}",
+            (role_name,),
+        )
+        from rbac import Capability
+
+        capabilities = set()
+        for row in cur.fetchall():
+            try:
+                capabilities.add(Capability(row["capability"]))
+            except ValueError:
+                logger.warning("Ignoring unknown capability %s for role %s", row["capability"], role_name)
+        return frozenset(capabilities)
 
 
 def init_db() -> None:
@@ -1008,6 +1033,7 @@ def create_evaluation(
     candidate_name: str = "",
     org_id: Optional[int] = None,
     owner_user_id: Optional[int] = None,
+    access_token_hash: Optional[str] = None,
 ) -> int:
     """Create a new evaluation and return its ID.
 
@@ -1020,16 +1046,16 @@ def create_evaluation(
     with _get_conn() as (conn, cur):
         if USE_POSTGRES:
             cur.execute(
-                f"INSERT INTO evaluations (candidate_name, resume_text, role, org_id, owner_user_id) "
-                f"VALUES ({p}, {p}, {p}, {p}, {p}) RETURNING id",
-                (candidate_name, resume_text, role, org_id, owner_user_id),
+                f"INSERT INTO evaluations (candidate_name, resume_text, role, org_id, owner_user_id, access_token_hash) "
+                f"VALUES ({p}, {p}, {p}, {p}, {p}, {p}) RETURNING id",
+                (candidate_name, resume_text, role, org_id, owner_user_id, access_token_hash),
             )
             eval_id = cur.fetchone()["id"]
         else:
             cur.execute(
-                f"INSERT INTO evaluations (candidate_name, resume_text, role, org_id, owner_user_id) "
-                f"VALUES ({p}, {p}, {p}, {p}, {p})",
-                (candidate_name, resume_text, role, org_id, owner_user_id),
+                f"INSERT INTO evaluations (candidate_name, resume_text, role, org_id, owner_user_id, access_token_hash) "
+                f"VALUES ({p}, {p}, {p}, {p}, {p}, {p})",
+                (candidate_name, resume_text, role, org_id, owner_user_id, access_token_hash),
             )
             eval_id = cur.lastrowid
     logger.info("Created evaluation %s for role '%s' (org=%s)", eval_id, role, org_id)
@@ -1051,6 +1077,17 @@ def get_evaluation(eval_id: int) -> Optional[dict]:
         return _row_to_dict(row)
 
 
+def get_evaluation_by_access_token_hash(access_token_hash: str) -> Optional[dict]:
+    """Load an anonymous sandbox evaluation by its hashed bearer token."""
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"SELECT * FROM evaluations WHERE access_token_hash = {p}",
+            (access_token_hash,),
+        )
+        return _row_to_dict(cur.fetchone())
+
+
 def get_evaluation_public(eval_id: int) -> Optional[dict]:
     """Get a single evaluation by ID, projected to exclude resume_text."""
     p = _ph()
@@ -1067,37 +1104,67 @@ def list_evaluations(
     status: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
+    owner_user_id: Optional[int] = None,
+    org_id: Optional[int] = None,
+    public_only: bool = False,
 ) -> list[dict]:
     """List evaluations with optional status filter (excludes resume_text)."""
     p = _ph()
+    clauses = []
+    params = []
+    if status:
+        clauses.append(f"status = {p}")
+        params.append(status)
+    if owner_user_id is not None and org_id is not None:
+        clauses.append(f"(owner_user_id = {p} OR org_id = {p})")
+        params.extend([owner_user_id, org_id])
+    elif owner_user_id is not None:
+        clauses.append(f"owner_user_id = {p}")
+        params.append(owner_user_id)
+    elif org_id is not None:
+        clauses.append(f"org_id = {p}")
+        params.append(org_id)
+    elif public_only:
+        clauses.append("org_id IS NULL AND owner_user_id IS NULL")
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.extend([limit, offset])
     with _get_conn() as (conn, cur):
-        if status:
-            cur.execute(
-                f"SELECT {_EVALUATION_SUMMARY_COLUMNS} FROM evaluations WHERE status = {p} "
-                f"ORDER BY created_at DESC LIMIT {p} OFFSET {p}",
-                (status, limit, offset),
-            )
-        else:
-            cur.execute(
-                f"SELECT {_EVALUATION_SUMMARY_COLUMNS} FROM evaluations "
-                f"ORDER BY created_at DESC LIMIT {p} OFFSET {p}",
-                (limit, offset),
-            )
+        cur.execute(
+            f"SELECT {_EVALUATION_SUMMARY_COLUMNS} FROM evaluations {where} "
+            f"ORDER BY created_at DESC LIMIT {p} OFFSET {p}",
+            tuple(params),
+        )
         rows = cur.fetchall()
         return [_row_to_dict(r) for r in rows]
 
 
-def count_evaluations(status: Optional[str] = None) -> int:
+def count_evaluations(
+    status: Optional[str] = None,
+    owner_user_id: Optional[int] = None,
+    org_id: Optional[int] = None,
+    public_only: bool = False,
+) -> int:
     """Count total evaluations."""
     p = _ph()
     with _get_conn() as (conn, cur):
+        clauses = []
+        params = []
         if status:
-            cur.execute(
-                f"SELECT COUNT(*) as c FROM evaluations WHERE status = {p}",
-                (status,),
-            )
-        else:
-            cur.execute("SELECT COUNT(*) as c FROM evaluations")
+            clauses.append(f"status = {p}")
+            params.append(status)
+        if owner_user_id is not None and org_id is not None:
+            clauses.append(f"(owner_user_id = {p} OR org_id = {p})")
+            params.extend([owner_user_id, org_id])
+        elif owner_user_id is not None:
+            clauses.append(f"owner_user_id = {p}")
+            params.append(owner_user_id)
+        elif org_id is not None:
+            clauses.append(f"org_id = {p}")
+            params.append(org_id)
+        elif public_only:
+            clauses.append("org_id IS NULL AND owner_user_id IS NULL")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        cur.execute(f"SELECT COUNT(*) as c FROM evaluations {where}", tuple(params))
         row = cur.fetchone()
         if USE_POSTGRES:
             return row["c"]
@@ -1338,27 +1405,63 @@ def get_answer(evaluation_id: int, round_number: int) -> Optional[str]:
 
 # ── Dashboard Stats ────────────────────────────────────────────────
 
-def get_dashboard_stats() -> dict:
+def get_dashboard_stats(
+    owner_user_id: Optional[int] = None,
+    org_id: Optional[int] = None,
+    public_only: bool = False,
+) -> dict:
     """Get aggregated statistics for the dashboard."""
     p = _ph()
     with _get_conn() as (conn, cur):
-        cur.execute("SELECT COUNT(*) as c FROM evaluations")
+        clauses = []
+        scope_params = []
+        if owner_user_id is not None and org_id is not None:
+            clauses.append(f"(owner_user_id = {p} OR org_id = {p})")
+            scope_params.extend([owner_user_id, org_id])
+        elif owner_user_id is not None:
+            clauses.append(f"owner_user_id = {p}")
+            scope_params.append(owner_user_id)
+        elif org_id is not None:
+            clauses.append(f"org_id = {p}")
+            scope_params.append(org_id)
+        elif public_only:
+            clauses.append("org_id IS NULL AND owner_user_id IS NULL")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        cur.execute(f"SELECT COUNT(*) as c FROM evaluations {where}", tuple(scope_params))
         total = cur.fetchone()["c"]
 
-        cur.execute(f"SELECT COUNT(*) as c FROM evaluations WHERE status = {p}", ("COMPLETE",))
+        cur.execute(
+            f"SELECT COUNT(*) as c FROM evaluations {where}"
+            f"{' AND ' if where else 'WHERE '}status = {p}",
+            (*scope_params, "COMPLETE"),
+        )
         completed = cur.fetchone()["c"]
 
-        cur.execute(f"SELECT COUNT(*) as c FROM evaluations WHERE status = {p}", ("IN_PROGRESS",))
+        cur.execute(
+            f"SELECT COUNT(*) as c FROM evaluations {where}"
+            f"{' AND ' if where else 'WHERE '}status = {p}",
+            (*scope_params, "IN_PROGRESS"),
+        )
         in_progress = cur.fetchone()["c"]
 
-        cur.execute(f"SELECT COUNT(*) as c FROM evaluations WHERE status = {p}", ("REJECTED",))
+        cur.execute(
+            f"SELECT COUNT(*) as c FROM evaluations {where}"
+            f"{' AND ' if where else 'WHERE '}status = {p}",
+            (*scope_params, "REJECTED"),
+        )
         rejected = cur.fetchone()["c"]
 
-        cur.execute(f"SELECT COUNT(*) as c FROM evaluations WHERE final_decision = {p}", ("HIRE",))
+        cur.execute(
+            f"SELECT COUNT(*) as c FROM evaluations {where}"
+            f"{' AND ' if where else 'WHERE '}final_decision = {p}",
+            (*scope_params, "HIRE"),
+        )
         hired = cur.fetchone()["c"]
 
         cur.execute(
-            "SELECT AVG(overall_score) as avg FROM evaluations WHERE overall_score IS NOT NULL"
+            f"SELECT AVG(overall_score) as avg FROM evaluations {where}"
+            f"{' AND ' if where else 'WHERE '}overall_score IS NOT NULL",
+            tuple(scope_params),
         )
         avg_score = cur.fetchone()["avg"]
 
@@ -1461,6 +1564,18 @@ def touch_user_login(user_id: int) -> None:
 
 class DuplicateSlugError(Exception):
     """Raised when an organization slug is already taken."""
+
+
+class DuplicateInvitationError(Exception):
+    """Raised when an organization already has a pending invite for an email."""
+
+
+class InvalidInvitationError(Exception):
+    """Raised when an invitation token is missing, expired, or already used."""
+
+
+class InvitationEmailMismatchError(Exception):
+    """Raised when the accepting account does not match the invited email."""
 
 
 def create_organization(name: str, slug: str, plan: str = "trial") -> int:
@@ -1589,6 +1704,156 @@ def list_org_members(org_id: int) -> list[dict]:
             (org_id,),
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
+
+
+def create_invitation(
+    org_id: int,
+    email: str,
+    role_name: str,
+    invited_by: int,
+    *,
+    expires_in_days: int = 7,
+) -> dict:
+    """Create a hashed, expiring organization invitation."""
+    from security import generate_invite_token, hash_invite_token
+
+    role = get_role_by_name(role_name)
+    if role is None:
+        raise ValueError(f"Unknown role: {role_name}")
+    if expires_in_days < 1:
+        raise ValueError("expires_in_days must be at least 1")
+
+    token = generate_invite_token()
+    expires_at = datetime.now(timezone.utc) + timedelta(days=expires_in_days)
+    p = _ph()
+    try:
+        with _get_conn() as (conn, cur):
+            columns = (
+                "org_id", "email_normalized", "role_id", "token_hash",
+                "invited_by", "expires_at",
+            )
+            values = (
+                org_id, normalize_email(email), role["id"], hash_invite_token(token),
+                invited_by, expires_at.isoformat(),
+            )
+            placeholders = ", ".join([p] * len(columns))
+            if USE_POSTGRES:
+                cur.execute(
+                    f"INSERT INTO invitations ({', '.join(columns)}) "
+                    f"VALUES ({placeholders}) RETURNING id, created_at",
+                    values,
+                )
+                row = cur.fetchone()
+                invitation_id = row["id"]
+                created_at = row["created_at"]
+            else:
+                cur.execute(
+                    f"INSERT INTO invitations ({', '.join(columns)}) VALUES ({placeholders})",
+                    values,
+                )
+                invitation_id = cur.lastrowid
+                created_at = datetime.now(timezone.utc).isoformat()
+    except _IntegrityError as exc:
+        raise DuplicateInvitationError(
+            "A pending invitation already exists for this email."
+        ) from exc
+    return {
+        "id": invitation_id,
+        "org_id": org_id,
+        "email_normalized": normalize_email(email),
+        "role_name": role_name,
+        "expires_at": expires_at.isoformat(),
+        "created_at": str(created_at),
+        "token": token,
+    }
+
+
+def list_invitations(org_id: int, *, include_completed: bool = False) -> list[dict]:
+    """List invitation metadata without returning secret token hashes."""
+    p = _ph()
+    status_clause = "" if include_completed else " AND i.status = 'PENDING'"
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"SELECT i.id, i.org_id, i.email_normalized, r.name AS role_name, "
+            f"i.status, i.expires_at, i.accepted_at, i.created_at "
+            f"FROM invitations i JOIN roles r ON r.id = i.role_id "
+            f"WHERE i.org_id = {p}{status_clause} ORDER BY i.created_at DESC",
+            (org_id,),
+        )
+        return [_row_to_dict(row) for row in cur.fetchall()]
+
+
+def accept_invitation(token: str, user_id: int) -> dict:
+    """Accept an invitation only when the authenticated email matches."""
+    from security import hash_invite_token
+
+    if not token.strip():
+        raise InvalidInvitationError("Invitation token is required.")
+    p = _ph()
+    now = datetime.now(timezone.utc)
+    with _get_conn() as (conn, cur):
+        if not USE_POSTGRES:
+            conn.execute("BEGIN IMMEDIATE")
+        lock_suffix = " FOR UPDATE" if USE_POSTGRES else ""
+        cur.execute(
+            f"SELECT i.*, r.name AS role_name FROM invitations i "
+            f"JOIN roles r ON r.id = i.role_id "
+            f"WHERE i.token_hash = {p} AND i.status = 'PENDING'{lock_suffix}",
+            (hash_invite_token(token),),
+        )
+        invitation = _row_to_dict(cur.fetchone())
+        if invitation is None:
+            raise InvalidInvitationError("Invitation is invalid or already used.")
+
+        expires_at = invitation["expires_at"]
+        if isinstance(expires_at, str):
+            expires_at = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at <= now:
+            cur.execute(
+                f"UPDATE invitations SET status = 'EXPIRED' WHERE id = {p}",
+                (invitation["id"],),
+            )
+            raise InvalidInvitationError("Invitation has expired.")
+
+        cur.execute(
+            f"SELECT id, email_normalized FROM users WHERE id = {p} AND deleted_at IS NULL",
+            (user_id,),
+        )
+        user = _row_to_dict(cur.fetchone())
+        if user is None or user["email_normalized"] != invitation["email_normalized"]:
+            raise InvitationEmailMismatchError(
+                "Sign in with the email address that received this invitation."
+            )
+
+        cur.execute(
+            f"SELECT id FROM org_memberships WHERE org_id = {p} AND user_id = {p} "
+            f"AND deleted_at IS NULL",
+            (invitation["org_id"], user_id),
+        )
+        if cur.fetchone() is None:
+            if USE_POSTGRES:
+                cur.execute(
+                    f"INSERT INTO org_memberships (org_id, user_id, role_id) "
+                    f"VALUES ({p}, {p}, {p})",
+                    (invitation["org_id"], user_id, invitation["role_id"]),
+                )
+            else:
+                cur.execute(
+                    f"INSERT INTO org_memberships (org_id, user_id, role_id) VALUES ({p}, {p}, {p})",
+                    (invitation["org_id"], user_id, invitation["role_id"]),
+                )
+        cur.execute(
+            f"UPDATE invitations SET status = 'ACCEPTED', accepted_at = {_now_sql()} "
+            f"WHERE id = {p} AND status = 'PENDING'",
+            (invitation["id"],),
+        )
+    return {
+        "invitation_id": invitation["id"],
+        "org_id": invitation["org_id"],
+        "role": invitation["role_name"],
+    }
 
 
 def set_membership_role(org_id: int, user_id: int, role_name: str) -> bool:

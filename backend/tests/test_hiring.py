@@ -440,6 +440,51 @@ class TestApplicationStateMachine:
         assert "internal note" not in str(detail["timeline"])
 
 
+class TestApplicationScreening:
+    def test_screening_attaches_evaluation_and_routes_adverse_result_to_review(
+        self, client, recruiter, candidate, monkeypatch
+    ):
+        import recruiter_routes
+
+        client.put(
+            "/me/profile",
+            json={"resume_text": "Python backend experience", "headline": "Backend"},
+            headers=_auth(candidate["token"]),
+        )
+        posting = _make_posting(client, recruiter)
+        application_id = client.post(
+            f"/jobs/{posting['id']}/apply", json={}, headers=_auth(candidate["token"])
+        ).json()["application_id"]
+
+        async def fake_screening(evaluation_id, resume, role):
+            return {
+                "round": 1,
+                "decision": "BORDERLINE",
+                "verdict": {"decision": "BORDERLINE", "score": 5.0},
+                "verdict_text": "Needs human review.",
+                "score": 5.0,
+                "confidence": 0.7,
+            }
+
+        monkeypatch.setattr(recruiter_routes, "run_screening", fake_screening)
+        response = client.post(
+            f"/orgs/{recruiter['org_id']}/applications/{application_id}/screen",
+            headers=_auth(recruiter["token"], recruiter["org_id"]),
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["human_review_required"] is True
+        assert body["current_stage"] == "PENDING_REVIEW"
+
+        detail = client.get(
+            f"/orgs/{recruiter['org_id']}/applications/{application_id}",
+            headers=_auth(recruiter["token"], recruiter["org_id"]),
+        ).json()["application"]
+        assert detail["evaluation_id"] == body["evaluation_id"]
+        assert detail["current_stage"] == "PENDING_REVIEW"
+
+
 # ── Tenant isolation (CI gate) ───────────────────────────────────────
 
 

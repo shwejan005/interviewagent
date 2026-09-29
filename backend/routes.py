@@ -13,9 +13,10 @@ interfere with each other.
 
 import asyncio
 import logging
+import os
 import uuid
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, Response
 from fastapi.responses import JSONResponse
 
 import audit
@@ -39,6 +40,7 @@ from crew_runner import (
 )
 import database as db
 from finalization import FinalizationNotReadyError, finalize_evaluation
+import security
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -47,6 +49,46 @@ router = APIRouter()
 async def _db(func, *args, **kwargs):
     """Run a synchronous database call off the event loop."""
     return await asyncio.to_thread(func, *args, **kwargs)
+
+
+async def _load_accessible_evaluation(
+    evaluation_id: int,
+    actor: Optional[Actor],
+    access_token: Optional[str],
+) -> dict:
+    """Load an evaluation only through its owner, tenant, or sandbox token."""
+    evaluation = await _db(db.get_evaluation, evaluation_id)
+    if evaluation is None:
+        raise HTTPException(status_code=404, detail="Evaluation not found.")
+
+    if actor is not None:
+        owns_evaluation = evaluation.get("owner_user_id") == actor.user_id
+        belongs_to_org = actor.org_id is not None and evaluation.get("org_id") == actor.org_id
+        if owns_evaluation or belongs_to_org:
+            return evaluation
+        raise HTTPException(status_code=404, detail="Evaluation not found.")
+
+    if not access_token:
+        raise HTTPException(status_code=401, detail="Evaluation access token required.")
+    if evaluation.get("access_token_hash") != security.hash_evaluation_access_token(access_token):
+        raise HTTPException(status_code=404, detail="Evaluation not found.")
+    return evaluation
+
+
+def _sandbox_error_response(status_code: int, detail: str, access_token: Optional[str]):
+    """Return an error while preserving the anonymous sandbox's scoped cookie."""
+    response = JSONResponse(status_code=status_code, content={"detail": detail})
+    if access_token:
+        response.set_cookie(
+            "evalia_evaluation_token",
+            access_token,
+            httponly=True,
+            samesite="lax",
+            secure=os.getenv("APP_ENV", "development").strip().lower() == "production",
+            max_age=60 * 60 * 12,
+            path="/",
+        )
+    return response
 
 
 async def _record_agent_output_error(
@@ -96,7 +138,11 @@ async def reset_interview():
 
 
 @router.post("/start")
-async def start_interview(req: StartRequest, actor: Optional[Actor] = Depends(optional_actor)):
+async def start_interview(
+    req: StartRequest,
+    response: Response,
+    actor: Optional[Actor] = Depends(optional_actor),
+):
     """
     Start a new interview evaluation.
     - Creates an isolated evaluation record in the database
@@ -119,6 +165,7 @@ async def start_interview(req: StartRequest, actor: Optional[Actor] = Depends(op
     if role not in AVAILABLE_ROLES:
         raise HTTPException(status_code=400, detail=f"Invalid role. Choose from: {AVAILABLE_ROLES}")
 
+    access_token = security.generate_evaluation_access_token() if actor is None else None
     evaluation_id = await _db(
         db.create_evaluation,
         resume_text=resume,
@@ -126,7 +173,18 @@ async def start_interview(req: StartRequest, actor: Optional[Actor] = Depends(op
         candidate_name=candidate_name,
         org_id=actor.org_id if actor else None,
         owner_user_id=actor.user_id if actor else None,
+        access_token_hash=(security.hash_evaluation_access_token(access_token) if access_token else None),
     )
+    if access_token:
+        response.set_cookie(
+            "evalia_evaluation_token",
+            access_token,
+            httponly=True,
+            samesite="lax",
+            secure=os.getenv("APP_ENV", "development").strip().lower() == "production",
+            max_age=60 * 60 * 12,
+            path="/",
+        )
 
     if actor is not None:
         audit.record_from_actor(
@@ -144,10 +202,11 @@ async def start_interview(req: StartRequest, actor: Optional[Actor] = Depends(op
         result = await run_screening(evaluation_id, resume, role)
     except AgentOutputError as exc:
         await _record_agent_output_error(evaluation_id, "screening", 1, exc)
-        raise HTTPException(
-            status_code=502,
-            detail="The screening agent returned an invalid response. Please retry.",
-        ) from exc
+        return _sandbox_error_response(
+            502,
+            "The screening agent returned an invalid response. Please retry.",
+            access_token,
+        )
 
     await _db(
         db.save_verdict,
@@ -176,6 +235,7 @@ async def start_interview(req: StartRequest, actor: Optional[Actor] = Depends(op
             "verdict_text": result["verdict_text"],
             "status": "REJECTED",
             "message": "The candidate did not pass the screening round.",
+            "evaluation_access_token": access_token,
         }
 
     # PASS or BORDERLINE — generate technical questions for Round 2
@@ -183,10 +243,11 @@ async def start_interview(req: StartRequest, actor: Optional[Actor] = Depends(op
         tech_result = await run_technical_questions(evaluation_id, resume)
     except AgentOutputError as exc:
         await _record_agent_output_error(evaluation_id, "technical", 2, exc)
-        raise HTTPException(
-            status_code=502,
-            detail="The technical agent failed to generate questions. Please retry.",
-        ) from exc
+        return _sandbox_error_response(
+            502,
+            "The technical agent failed to generate questions. Please retry.",
+            access_token,
+        )
 
     await _db(db.save_questions, evaluation_id, 2, tech_result["questions"])
     await _db(db.update_evaluation, evaluation_id, current_round=2)
@@ -200,6 +261,7 @@ async def start_interview(req: StartRequest, actor: Optional[Actor] = Depends(op
         "status": "IN_PROGRESS",
         "next_round": 2,
         "question": tech_result["questions"],
+        "evaluation_access_token": access_token,
     }
 
 
@@ -210,6 +272,9 @@ async def start_interview(req: StartRequest, actor: Optional[Actor] = Depends(op
 async def round2_answer(
     req: AnswerRequest,
     evaluation_id: int = Query(..., description="Evaluation ID returned by /start"),
+    actor: Optional[Actor] = Depends(optional_actor),
+    evaluation_token: Optional[str] = Header(default=None, alias="X-Evaluation-Token"),
+    evaluation_cookie: Optional[str] = Cookie(default=None, alias="evalia_evaluation_token"),
 ):
     """
     Submit answer for Round 2 (Technical).
@@ -221,9 +286,9 @@ async def round2_answer(
     if not answer:
         raise HTTPException(status_code=400, detail="Answer cannot be empty.")
 
-    evaluation = await _db(db.get_evaluation, evaluation_id)
-    if evaluation is None:
-        raise HTTPException(status_code=404, detail="Evaluation not found.")
+    evaluation = await _load_accessible_evaluation(
+        evaluation_id, actor, evaluation_token or evaluation_cookie
+    )
     if evaluation["status"] != "IN_PROGRESS":
         raise HTTPException(status_code=400, detail=f"Evaluation is {evaluation['status']}.")
     if evaluation["current_round"] != 2:
@@ -311,6 +376,9 @@ async def round2_answer(
 async def round3_answer(
     req: AnswerRequest,
     evaluation_id: int = Query(..., description="Evaluation ID returned by /start"),
+    actor: Optional[Actor] = Depends(optional_actor),
+    evaluation_token: Optional[str] = Header(default=None, alias="X-Evaluation-Token"),
+    evaluation_cookie: Optional[str] = Cookie(default=None, alias="evalia_evaluation_token"),
 ):
     """
     Submit answer for Round 3 (Behavioral).
@@ -322,9 +390,9 @@ async def round3_answer(
     if not answer:
         raise HTTPException(status_code=400, detail="Answer cannot be empty.")
 
-    evaluation = await _db(db.get_evaluation, evaluation_id)
-    if evaluation is None:
-        raise HTTPException(status_code=404, detail="Evaluation not found.")
+    evaluation = await _load_accessible_evaluation(
+        evaluation_id, actor, evaluation_token or evaluation_cookie
+    )
     if evaluation["status"] != "IN_PROGRESS":
         raise HTTPException(status_code=400, detail=f"Evaluation is {evaluation['status']}.")
     if evaluation["current_round"] != 3:
@@ -400,9 +468,13 @@ async def round3_answer(
 # ── GET /final-decision ─────────────────────────────────────────────
 
 
+@router.post("/final-decision")
 @router.get("/final-decision")
 async def final_decision(
     evaluation_id: int = Query(..., description="Evaluation ID returned by /start"),
+    actor: Optional[Actor] = Depends(optional_actor),
+    evaluation_token: Optional[str] = Header(default=None, alias="X-Evaluation-Token"),
+    evaluation_cookie: Optional[str] = Cookie(default=None, alias="evalia_evaluation_token"),
 ):
     """
     Get the final hiring decision.
@@ -411,9 +483,9 @@ async def final_decision(
     - Neither agent sees the resume or raw answers
     - Idempotent: replays the persisted committee verdict if already finalized
     """
-    evaluation = await _db(db.get_evaluation, evaluation_id)
-    if evaluation is None:
-        raise HTTPException(status_code=404, detail="Evaluation not found.")
+    evaluation = await _load_accessible_evaluation(
+        evaluation_id, actor, evaluation_token or evaluation_cookie
+    )
 
     if evaluation["status"] == "REJECTED":
         return {
@@ -504,11 +576,14 @@ async def get_available_roles():
 @router.get("/status")
 async def get_interview_status(
     evaluation_id: int = Query(..., description="Evaluation ID returned by /start"),
+    actor: Optional[Actor] = Depends(optional_actor),
+    evaluation_token: Optional[str] = Header(default=None, alias="X-Evaluation-Token"),
+    evaluation_cookie: Optional[str] = Cookie(default=None, alias="evalia_evaluation_token"),
 ):
     """Return the current status of one evaluation, derived from the database."""
-    evaluation = await _db(db.get_evaluation_public, evaluation_id)
-    if evaluation is None:
-        raise HTTPException(status_code=404, detail="Evaluation not found.")
+    evaluation = await _load_accessible_evaluation(
+        evaluation_id, actor, evaluation_token or evaluation_cookie
+    )
 
     verdicts = await _db(db.get_verdicts, evaluation_id)
     completed_rounds = {
@@ -533,10 +608,15 @@ async def list_evaluations(
     status: Optional[str] = Query(None, description="Filter by status"),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    actor: Optional[Actor] = Depends(optional_actor),
 ):
     """List evaluations with optional filtering (resume text is never included)."""
-    evaluations = await _db(db.list_evaluations, status=status, limit=limit, offset=offset)
-    total = await _db(db.count_evaluations, status=status)
+    scope = {
+        "owner_user_id": actor.user_id,
+        "org_id": actor.org_id,
+    } if actor is not None else {"public_only": True}
+    evaluations = await _db(db.list_evaluations, status=status, limit=limit, offset=offset, **scope)
+    total = await _db(db.count_evaluations, status=status, **scope)
 
     # Batch-fetch verdict summaries in a single query instead of one per evaluation.
     summaries = await _db(db.get_verdict_summaries, [ev["id"] for ev in evaluations])
@@ -565,26 +645,38 @@ async def list_evaluations(
 
 
 @router.get("/evaluations/{eval_id}")
-async def get_evaluation(eval_id: int):
+async def get_evaluation(
+    eval_id: int,
+    actor: Optional[Actor] = Depends(optional_actor),
+    evaluation_token: Optional[str] = Header(default=None, alias="X-Evaluation-Token"),
+    evaluation_cookie: Optional[str] = Cookie(default=None, alias="evalia_evaluation_token"),
+):
     """Get evaluation summary + all verdicts. Resume text is never included here."""
-    evaluation = await _db(db.get_evaluation_public, eval_id)
-    if not evaluation:
-        raise HTTPException(status_code=404, detail="Evaluation not found.")
+    await _load_accessible_evaluation(
+        eval_id, actor, evaluation_token or evaluation_cookie
+    )
+    public_evaluation = await _db(db.get_evaluation_public, eval_id)
 
     verdicts = await _db(db.get_verdicts, eval_id)
 
     return {
-        "evaluation": evaluation,
+        "evaluation": public_evaluation,
         "verdicts": verdicts,
     }
 
 
 @router.get("/evaluations/{eval_id}/report")
-async def get_evaluation_report(eval_id: int):
+async def get_evaluation_report(
+    eval_id: int,
+    actor: Optional[Actor] = Depends(optional_actor),
+    evaluation_token: Optional[str] = Header(default=None, alias="X-Evaluation-Token"),
+    evaluation_cookie: Optional[str] = Cookie(default=None, alias="evalia_evaluation_token"),
+):
     """Get a structured evaluation report. Resume text is never included here."""
-    evaluation = await _db(db.get_evaluation_public, eval_id)
-    if not evaluation:
-        raise HTTPException(status_code=404, detail="Evaluation not found.")
+    await _load_accessible_evaluation(
+        eval_id, actor, evaluation_token or evaluation_cookie
+    )
+    public_evaluation = await _db(db.get_evaluation_public, eval_id)
 
     verdicts = await _db(db.get_verdicts, eval_id)
 
@@ -598,7 +690,7 @@ async def get_evaluation_report(eval_id: int):
         failed_output = verdict is None and any(v["decision"] == "INVALID_OUTPUT" for v in stage_verdicts)
 
         stage_status = "complete" if verdict else "pending"
-        if evaluation["current_round"] == ps["stage"] and evaluation["status"] == "IN_PROGRESS":
+        if public_evaluation["current_round"] == ps["stage"] and public_evaluation["status"] == "IN_PROGRESS":
             stage_status = "active"
         if verdict and verdict["decision"] in ("FAIL", "REJECT"):
             stage_status = "failed"
@@ -617,24 +709,30 @@ async def get_evaluation_report(eval_id: int):
 
     return {
         "evaluation_id": eval_id,
-        "candidate_name": evaluation["candidate_name"],
-        "role": evaluation["role"],
-        "status": evaluation["status"],
-        "overall_score": evaluation["overall_score"],
-        "final_decision": evaluation["final_decision"],
+        "candidate_name": public_evaluation["candidate_name"],
+        "role": public_evaluation["role"],
+        "status": public_evaluation["status"],
+        "overall_score": public_evaluation["overall_score"],
+        "final_decision": public_evaluation["final_decision"],
         "pipeline": stages,
         "verdicts": verdicts,
-        "created_at": evaluation["created_at"],
-        "updated_at": evaluation["updated_at"],
+        "created_at": public_evaluation["created_at"],
+        "updated_at": public_evaluation["updated_at"],
     }
 
 
 @router.get("/evaluations/{eval_id}/pipeline")
-async def get_pipeline_status(eval_id: int):
+async def get_pipeline_status(
+    eval_id: int,
+    actor: Optional[Actor] = Depends(optional_actor),
+    evaluation_token: Optional[str] = Header(default=None, alias="X-Evaluation-Token"),
+    evaluation_cookie: Optional[str] = Cookie(default=None, alias="evalia_evaluation_token"),
+):
     """Get pipeline status for an evaluation. Resume text is never included here."""
-    evaluation = await _db(db.get_evaluation_public, eval_id)
-    if not evaluation:
-        raise HTTPException(status_code=404, detail="Evaluation not found.")
+    await _load_accessible_evaluation(
+        eval_id, actor, evaluation_token or evaluation_cookie
+    )
+    public_evaluation = await _db(db.get_evaluation_public, eval_id)
 
     verdicts = await _db(db.get_verdicts, eval_id)
 
@@ -644,7 +742,7 @@ async def get_pipeline_status(eval_id: int):
         verdict = next((v for v in stage_verdicts if v["decision"] != "INVALID_OUTPUT"), None)
 
         stage_status = "complete" if verdict else "pending"
-        if evaluation["current_round"] == ps["stage"] and evaluation["status"] == "IN_PROGRESS":
+        if public_evaluation["current_round"] == ps["stage"] and public_evaluation["status"] == "IN_PROGRESS":
             stage_status = "active"
 
         stages.append(PipelineStage(
@@ -659,8 +757,8 @@ async def get_pipeline_status(eval_id: int):
     return PipelineStatus(
         evaluation_id=eval_id,
         stages=stages,
-        current_stage=evaluation["current_round"],
-        overall_status=evaluation["status"],
+        current_stage=public_evaluation["current_round"],
+        overall_status=public_evaluation["status"],
     )
 
 
@@ -668,7 +766,13 @@ async def get_pipeline_status(eval_id: int):
 
 
 @router.get("/dashboard/stats")
-async def get_dashboard_stats():
+async def get_dashboard_stats(actor: Optional[Actor] = Depends(optional_actor)):
     """Get aggregated dashboard statistics."""
-    return await _db(db.get_dashboard_stats)
+    if actor is None:
+        return await _db(db.get_dashboard_stats, public_only=True)
+    return await _db(
+        db.get_dashboard_stats,
+        owner_user_id=actor.user_id,
+        org_id=actor.org_id,
+    )
 

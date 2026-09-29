@@ -208,6 +208,15 @@ CREATE TABLE IF NOT EXISTS campaigns (
     deleted_at TIMESTAMPTZ
 );
 
+CREATE TABLE IF NOT EXISTS campaign_members (
+    id SERIAL PRIMARY KEY,
+    campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    member_role TEXT NOT NULL DEFAULT 'RECRUITER',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (campaign_id, user_id)
+);
+
 CREATE TABLE IF NOT EXISTS job_postings (
     id SERIAL PRIMARY KEY,
     org_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
@@ -276,6 +285,31 @@ CREATE TABLE IF NOT EXISTS application_events (
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS interviews (
+    id SERIAL PRIMARY KEY,
+    org_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    application_id INTEGER NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+    title TEXT NOT NULL DEFAULT 'Interview',
+    scheduled_start TIMESTAMPTZ NOT NULL,
+    scheduled_end TIMESTAMPTZ NOT NULL,
+    timezone TEXT NOT NULL DEFAULT 'UTC',
+    meeting_url TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'SCHEDULED',
+    created_by INTEGER REFERENCES users(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK (scheduled_end > scheduled_start),
+    CHECK (status IN ('SCHEDULED', 'CANCELLED', 'COMPLETED'))
+);
+
+CREATE TABLE IF NOT EXISTS interview_participants (
+    id SERIAL PRIMARY KEY,
+    interview_id INTEGER NOT NULL REFERENCES interviews(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    participant_role TEXT NOT NULL,
+    UNIQUE (interview_id, user_id)
+);
+
 CREATE TABLE IF NOT EXISTS referrals (
     id SERIAL PRIMARY KEY,
     org_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
@@ -305,6 +339,7 @@ CREATE INDEX IF NOT EXISTS idx_referral_org ON referrals(org_id);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_application_candidate_posting
     ON applications (posting_id, candidate_user_id) WHERE withdrawn_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_campaign_org ON campaigns(org_id);
+CREATE INDEX IF NOT EXISTS idx_campaign_member_user ON campaign_members(user_id);
 CREATE INDEX IF NOT EXISTS idx_posting_org ON job_postings(org_id);
 CREATE INDEX IF NOT EXISTS idx_posting_campaign ON job_postings(campaign_id);
 CREATE INDEX IF NOT EXISTS idx_posting_status ON job_postings(status);
@@ -312,6 +347,9 @@ CREATE INDEX IF NOT EXISTS idx_application_org ON applications(org_id);
 CREATE INDEX IF NOT EXISTS idx_application_posting ON applications(posting_id);
 CREATE INDEX IF NOT EXISTS idx_application_candidate ON applications(candidate_user_id);
 CREATE INDEX IF NOT EXISTS idx_appevent_application ON application_events(application_id);
+CREATE INDEX IF NOT EXISTS idx_interviews_org_start ON interviews(org_id, scheduled_start);
+CREATE INDEX IF NOT EXISTS idx_interviews_application ON interviews(application_id);
+CREATE INDEX IF NOT EXISTS idx_interview_participant_user ON interview_participants(user_id);
 """
 
 _HIRING_SQLITE = """
@@ -325,6 +363,15 @@ CREATE TABLE IF NOT EXISTS campaigns (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     deleted_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS campaign_members (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    member_role TEXT NOT NULL DEFAULT 'RECRUITER',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (campaign_id, user_id)
 );
 
 CREATE TABLE IF NOT EXISTS job_postings (
@@ -390,6 +437,31 @@ CREATE TABLE IF NOT EXISTS application_events (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS interviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    application_id INTEGER NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+    title TEXT NOT NULL DEFAULT 'Interview',
+    scheduled_start TEXT NOT NULL,
+    scheduled_end TEXT NOT NULL,
+    timezone TEXT NOT NULL DEFAULT 'UTC',
+    meeting_url TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'SCHEDULED',
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    CHECK (scheduled_end > scheduled_start),
+    CHECK (status IN ('SCHEDULED', 'CANCELLED', 'COMPLETED'))
+);
+
+CREATE TABLE IF NOT EXISTS interview_participants (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    interview_id INTEGER NOT NULL REFERENCES interviews(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    participant_role TEXT NOT NULL,
+    UNIQUE (interview_id, user_id)
+);
+
 CREATE TABLE IF NOT EXISTS referrals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     org_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
@@ -412,6 +484,7 @@ CREATE INDEX IF NOT EXISTS idx_referral_org ON referrals(org_id);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_application_candidate_posting
     ON applications (posting_id, candidate_user_id) WHERE withdrawn_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_campaign_org ON campaigns(org_id);
+CREATE INDEX IF NOT EXISTS idx_campaign_member_user ON campaign_members(user_id);
 CREATE INDEX IF NOT EXISTS idx_posting_org ON job_postings(org_id);
 CREATE INDEX IF NOT EXISTS idx_posting_campaign ON job_postings(campaign_id);
 CREATE INDEX IF NOT EXISTS idx_posting_status ON job_postings(status);
@@ -419,6 +492,9 @@ CREATE INDEX IF NOT EXISTS idx_application_org ON applications(org_id);
 CREATE INDEX IF NOT EXISTS idx_application_posting ON applications(posting_id);
 CREATE INDEX IF NOT EXISTS idx_application_candidate ON applications(candidate_user_id);
 CREATE INDEX IF NOT EXISTS idx_appevent_application ON application_events(application_id);
+CREATE INDEX IF NOT EXISTS idx_interviews_org_start ON interviews(org_id, scheduled_start);
+CREATE INDEX IF NOT EXISTS idx_interviews_application ON interviews(application_id);
+CREATE INDEX IF NOT EXISTS idx_interview_participant_user ON interview_participants(user_id);
 """
 
 

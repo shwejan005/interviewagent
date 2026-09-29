@@ -101,6 +101,16 @@ def create_access_token(user_id: int, *, ttl: Optional[timedelta] = None) -> str
     The token intentionally carries no org or capability claims — those are
     resolved per-request so that revocation is immediate.
     """
+    return create_access_token_with_provenance(user_id, ttl=ttl)
+
+
+def create_access_token_with_provenance(
+    user_id: int,
+    *,
+    ttl: Optional[timedelta] = None,
+    impersonated_by: Optional[int] = None,
+) -> str:
+    """Issue a token and optionally preserve the real actor behind impersonation."""
     now = datetime.now(timezone.utc)
     payload = {
         "sub": str(user_id),
@@ -108,11 +118,13 @@ def create_access_token(user_id: int, *, ttl: Optional[timedelta] = None) -> str
         "exp": int((now + (ttl or ACCESS_TOKEN_TTL)).timestamp()),
         "jti": secrets.token_urlsafe(16),
     }
+    if impersonated_by is not None:
+        payload["impersonated_by"] = str(impersonated_by)
     return jwt.encode(payload, _jwt_secret(), algorithm=_JWT_ALGORITHM)
 
 
-def decode_access_token(token: str) -> int:
-    """Return the user ID carried by a valid token, or raise TokenError."""
+def decode_access_token_details(token: str) -> tuple[int, Optional[int]]:
+    """Return the user and optional impersonating admin IDs from a token."""
     try:
         payload = jwt.decode(token, _jwt_secret(), algorithms=[_JWT_ALGORITHM])
     except jwt.ExpiredSignatureError as exc:
@@ -124,9 +136,22 @@ def decode_access_token(token: str) -> int:
     if subject is None:
         raise TokenError("Token is missing a subject claim.")
     try:
-        return int(subject)
+        user_id = int(subject)
     except (TypeError, ValueError) as exc:
         raise TokenError("Token subject is not a valid user ID.") from exc
+
+    impersonated_by = payload.get("impersonated_by")
+    if impersonated_by is not None:
+        try:
+            impersonated_by = int(impersonated_by)
+        except (TypeError, ValueError) as exc:
+            raise TokenError("Token impersonation claim is invalid.") from exc
+    return user_id, impersonated_by
+
+
+def decode_access_token(token: str) -> int:
+    """Return the user ID carried by a valid token, or raise TokenError."""
+    return decode_access_token_details(token)[0]
 
 
 def generate_invite_token() -> str:
@@ -136,4 +161,14 @@ def generate_invite_token() -> str:
 
 def hash_invite_token(token: str) -> str:
     """Store invitation tokens hashed, so a database leak does not grant access."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def generate_evaluation_access_token() -> str:
+    """Create the opaque bearer token used by the anonymous sandbox."""
+    return secrets.token_urlsafe(32)
+
+
+def hash_evaluation_access_token(token: str) -> str:
+    """Hash a sandbox token before it is persisted or compared."""
     return hashlib.sha256(token.encode("utf-8")).hexdigest()

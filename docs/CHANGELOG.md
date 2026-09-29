@@ -10,6 +10,30 @@ Entries are in **reverse chronological order** (most recent session first).
 
 ---
 
+## Session 13 — Harden platform boundaries and complete marketplace flows
+
+- Scoped legacy evaluation reads and mutations to the authenticated owner or
+  organization, while preserving the public sandbox through a hashed,
+  HttpOnly per-evaluation token. Added `POST /final-decision` alongside the
+  backward-compatible GET.
+- Narrowed recruiter candidate search projections so resumes, phone numbers,
+  work authorization, and consent/retention metadata are not returned in
+  search results. Added persisted campaign assignments and assignment-aware
+  recruiter access.
+- Fixed minimum-only experience matching and zero-selection bias-rate
+  calculations; serialized application transitions; added profile mutation
+  audit events and impersonation provenance.
+- Added hashed organization invitations with expiry/acceptance, scheduled
+  interviews and participant agendas, application screening attachment, and
+  human-review routing for adverse screening recommendations.
+- Added frontend invitation, interview agenda, recruiter screening/scheduling,
+  and resume-evidence controls. Full backend suite: 211 passed; frontend
+  TypeScript check passed.
+
+RLS, real-Postgres concurrency validation, full notification preferences,
+resume file parsing, distributed tracing, and semantic/learned matching remain
+open by design.
+
 ## Session 12 — Add health checks and structured worker observability
 
 - Added `/healthz` process liveness and `/readyz` startup/database readiness

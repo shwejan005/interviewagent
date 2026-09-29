@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
-import { Briefcase, Building2, Plus, Users } from "lucide-react";
+import { Briefcase, Building2, Mail, Plus, Users } from "lucide-react";
 
 import Navbar from "../components/Navbar";
 import {
@@ -83,6 +83,50 @@ function CreateOrgForm({ onCreated }: Readonly<{ onCreated: () => void }>) {
         </Button>
       </form>
     </GlassCard>
+  );
+}
+
+function InviteMemberModal({
+  open,
+  onClose,
+  orgId,
+}: Readonly<{ open: boolean; onClose: () => void; orgId: number }>) {
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState("recruiter");
+  const [saving, setSaving] = useState(false);
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setSaving(true);
+    try {
+      const result = await api.post<{ email_delivery: string }>(`/orgs/${orgId}/invitations`, { email, role });
+      notify.success(result.email_delivery === "sent" ? "Invitation sent." : "Invitation created. Email delivery is not configured.");
+      setEmail("");
+      onClose();
+    } catch (error) {
+      notify.error(error instanceof ApiError ? error.detail : "Failed to create invitation.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal open={open} onClose={onClose} titleId="invite-member-title" maxWidthClassName="max-w-[520px]">
+      <GlassCard elevation="high" padding="lg">
+        <p className="eyebrow">INVITE TEAM MEMBER</p>
+        <p id="invite-member-title" className="mt-2 text-[17px] font-semibold text-ink-heading">Add someone to this workspace</p>
+        <form onSubmit={handleSubmit} className="mt-5 flex flex-col gap-4">
+          <Input label="EMAIL" type="email" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="teammate@example.com" />
+          <Select label="ROLE" value={role} onChange={(event) => setRole(event.target.value)}>
+            <option value="recruiter">Recruiter</option>
+            <option value="hiring_manager">Hiring manager</option>
+            <option value="interviewer">Interviewer</option>
+            <option value="org_admin">Organization admin</option>
+          </Select>
+          <Button type="submit" className="self-start" loading={saving}>Create invitation</Button>
+        </form>
+      </GlassCard>
+    </Modal>
   );
 }
 
@@ -291,6 +335,7 @@ export default function OrgHomePage() {
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<"ACTIVE" | "CLOSED">("ACTIVE");
   const [createOpen, setCreateOpen] = useState(false);
+  const [inviteOpen, setInviteOpen] = useState(false);
 
   useEffect(() => {
     if (authLoading) return;
@@ -298,7 +343,7 @@ export default function OrgHomePage() {
       router.push("/login?next=/org");
       return;
     }
-    if (activeOrgId) loadCampaigns();
+    if (activeOrgId) void loadCampaigns();
     else setLoading(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, actor, activeOrgId]);
@@ -372,9 +417,14 @@ export default function OrgHomePage() {
           title="Hiring operations"
           description="Every campaign, role, and applicant across your organization, in one place."
           actions={
-            <Button size="sm" onClick={() => setCreateOpen(true)}>
-              <Plus size={15} /> Create a campaign
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" variant="secondary" onClick={() => setInviteOpen(true)}>
+                <Mail size={15} /> Invite member
+              </Button>
+              <Button size="sm" onClick={() => setCreateOpen(true)}>
+                <Plus size={15} /> Create a campaign
+              </Button>
+            </div>
           }
         />
 
@@ -427,7 +477,7 @@ export default function OrgHomePage() {
           )}
         </div>
 
-        {activeOrgId && (
+        {activeOrgId !== null && (
           <CreateCampaignModal
             open={createOpen}
             onClose={() => setCreateOpen(false)}
@@ -435,6 +485,7 @@ export default function OrgHomePage() {
             onCreated={loadCampaigns}
           />
         )}
+        {activeOrgId !== null && <InviteMemberModal open={inviteOpen} onClose={() => setInviteOpen(false)} orgId={activeOrgId} />}
       </PageShell>
     </div>
   );

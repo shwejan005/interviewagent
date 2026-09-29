@@ -22,8 +22,9 @@ flowchart LR
     Worker --> CrewRunner
 ```
 
-  There is no authentication or multi-tenancy in the legacy pipeline. Final
-  recommendation and committee work can be admitted to the durable
+  The legacy pipeline supports authenticated owner/org scope plus a token-gated
+  anonymous sandbox; it is not the application workflow. Final recommendation
+  and committee work can be admitted to the durable
   `background_jobs` table and resumed from persisted round-4/5 checkpoints;
   `job_worker.py` claims those jobs with leases and bounded retry policy;
   cancellation requests are persisted and checked before and after handler
@@ -32,8 +33,10 @@ flowchart LR
   timestamps, and deployment provenance.
   Screening, technical, and behavioral calls still run in the HTTP request
   path, and the final-decision route may execute its claimed job inline for
-  backward compatibility. See [GAP_ANALYSIS.md](GAP_ANALYSIS.md) for the
-  remaining P2 gaps.
+  backward compatibility. Hiring applications can invoke screening as a
+  human-reviewed recommendation, while invitation and scheduled-interview
+  records live in the hiring domain. See [GAP_ANALYSIS.md](GAP_ANALYSIS.md)
+  for the remaining P2 gaps.
 
 ## The five-agent pipeline
 
@@ -240,8 +243,10 @@ versions or normalized stage-attempt history.
 
 Documented explicitly here so it is not confused with an oversight:
 
-- No authentication/authorization of any kind (see [SECURITY.md](SECURITY.md)).
-- No multi-tenancy — every evaluation is visible to every API caller.
+- No PostgreSQL row-level security; tenant and campaign-assignment checks are
+  application-layer controls (see [SECURITY.md](SECURITY.md)).
+- The public sandbox is intentionally anonymous but token-scoped; authenticated
+  legacy evaluations require owner or active organization scope.
 - Durable jobs are currently limited to finalization — a crashed backend
   process during screening, technical, behavioral, or inline finalization
   work still requires client retry. Finalization checkpoints and lease

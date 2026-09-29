@@ -89,6 +89,11 @@ class CampaignRequest(BaseModel):
     target_close_date: Optional[str] = Field(default=None, max_length=10)
 
 
+class CampaignMemberRequest(BaseModel):
+    user_id: int = Field(ge=1)
+    member_role: str = Field(default="RECRUITER", min_length=1, max_length=80)
+
+
 class ScreeningQuestion(BaseModel):
     """A posting-specific question.
 
@@ -163,6 +168,15 @@ class TransitionRequest(BaseModel):
         pattern="^(SCREENING|PENDING_REVIEW|TECHNICAL|BEHAVIORAL|INTERVIEW|OFFER|HIRED|REJECTED)$"
     )
     note: str = Field(default="", max_length=2_000)
+
+
+class InterviewCreateRequest(BaseModel):
+    title: str = Field(default="Interview", min_length=1, max_length=200)
+    scheduled_start: str = Field(min_length=10, max_length=40)
+    scheduled_end: str = Field(min_length=10, max_length=40)
+    timezone: str = Field(default="UTC", min_length=1, max_length=80)
+    meeting_url: str = Field(default="", max_length=2_000)
+    interviewer_user_ids: list[int] = Field(default_factory=list, max_length=20)
 
 
 # ── Referrals ────────────────────────────────────────────────────────

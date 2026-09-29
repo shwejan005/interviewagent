@@ -85,6 +85,8 @@ def _score_experience(years: Optional[float], min_exp: Optional[float],
     lo = min_exp if min_exp is not None else 0.0
     hi = max_exp
 
+    if hi is None and years >= lo:
+        return 1.0, f"{years} years meets the {lo}-year minimum"
     if hi is not None and lo <= years <= hi:
         return 1.0, f"{years} years is within the {lo}-{hi} year requirement"
     if years < lo:
@@ -93,6 +95,8 @@ def _score_experience(years: Optional[float], min_exp: Optional[float],
         return component, f"{deficit:.1f} years short of the {lo}-year minimum"
     # Over-qualified: penalized more gently than under-qualified, and floored
     # rather than driven to zero — too senior is a softer signal than too junior.
+    if hi is None:
+        return _NEUTRAL, "candidate has not stated years of experience"
     excess = years - hi
     component = max(0.3, 1 - excess / 10)
     return component, f"{excess:.1f} years above the {hi}-year maximum"

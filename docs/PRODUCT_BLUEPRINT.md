@@ -8,7 +8,7 @@
 
 ## 1. The core reframe
 
-The original Evalia baseline was **one linear pipeline**: paste a resume → three agent-evaluated rounds → a committee verdict. Since then, an authenticated candidate/recruiter marketplace and deterministic matching have been added alongside the legacy pipeline. The implementation is still partial: in particular, legacy evaluations remain globally accessible, the agent pipeline is not attached to applications, and key scheduling/invitation flows are absent. See the [implementation audit](PHASE_0_2_IMPLEMENTATION_AUDIT.md) for source and test evidence.
+The original Evalia baseline was **one linear pipeline**: paste a resume → three agent-evaluated rounds → a committee verdict. Since then, an authenticated candidate/recruiter marketplace, deterministic matching, invitations, scheduled interviews, and a human-reviewed application screening stage have been added alongside the legacy pipeline. The implementation is still partial: RLS, calendar integrations, resume parsing/upload, full durable stage execution, and the Phase 3 prep suite remain open. See the [implementation audit](PHASE_0_2_IMPLEMENTATION_AUDIT.md) for source and test evidence.
 
 The product being described is fundamentally different in shape. It is a **two-sided talent platform** where the agent pipeline is one feature among many, not the product itself:
 
@@ -634,7 +634,7 @@ Deliberately deferred. Recorded now so the architecture does not preclude it:
 | Current | Becomes |
 |---|---|
 | `evaluations` table as root entity | `applications` is the root; `evaluations` becomes an artifact of an automated pipeline stage |
-| Authenticated candidate/recruiter platform plus legacy anonymous interview endpoints | Tenant-and-actor-scoped platform routes; legacy evaluation endpoints still need isolation |
+| Authenticated candidate/recruiter platform plus token-gated public sandbox | Tenant-and-actor-scoped platform routes; authenticated legacy evaluations require owner/org scope |
 | Hardcoded 5-stage pipeline | One configurable pipeline *template*, selectable per posting |
 | `AVAILABLE_ROLES` string list | `job_postings` with structured, versioned requirements |
 | Resume text pasted per evaluation | Profile Vault, referenced by application |
@@ -664,4 +664,4 @@ A few things worth stating plainly rather than burying:
 
 ## 15. Next step
 
-Review [PHASE_0_2_IMPLEMENTATION_AUDIT.md](PHASE_0_2_IMPLEMENTATION_AUDIT.md) and [DECISIONS.md](DECISIONS.md). Phase 0–2 implementation has begun but remains incomplete; address the audit's legacy evaluation isolation and candidate-data projection findings before treating the platform as launch-ready. Phase 3 scope can then be planned, with code execution gated on the sandbox decision in D-03.
+Review [PHASE_0_2_IMPLEMENTATION_AUDIT.md](PHASE_0_2_IMPLEMENTATION_AUDIT.md) and [DECISIONS.md](DECISIONS.md). Phase 0–2 implementation has begun but remains incomplete; the next hardening gates are RLS/real-Postgres proof, explicit consent/retention enforcement, calendar integrations, and full durable stage execution. Phase 3 scope can then be planned, with code execution gated on the sandbox decision in D-03.

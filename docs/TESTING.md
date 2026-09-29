@@ -4,7 +4,7 @@
 
 | Suite | Location | What it covers | Live LLM calls? | Last verified run |
 |---|---|---|---|---|
-| Backend automated tests | `backend/tests/` (pytest) | Output parsing/validation, database PII/uniqueness/batching, full route pipeline (mocked agents), rate-limit middleware, health/readiness, durable worker retries/cancellation/shutdown, structured event redaction | No | 202 passed, 0 failed, ~8m33s (2026-09-29) |
+| Backend automated tests | `backend/tests/` (pytest) | Output parsing/validation, database PII/uniqueness/batching, full route pipeline (mocked agents), identity/RBAC, marketplace, matching, invitations, scheduling, application screening, health/readiness, durable worker retries/cancellation/shutdown, structured event redaction | No | 211 passed, 0 failed, ~2m26s (2026-09-29) |
 | Frontend type-check | `frontend/` (`npm run typecheck`) | TypeScript type safety across the whole `app/`/`components/` tree | N/A | 0 errors (2026-09-29) |
 | Live agent smoke test | Ad hoc, not checked in (see below) | The actual CrewAI agents against a real LLM endpoint, end-to-end | **Yes** | Full happy path (PASS→PASS→PASS→HIRE) + reject path, verified manually 2026-09-27; not automated/repeatable as a checked-in test |
 
@@ -85,6 +85,12 @@ means:
   a currently claimed job before exiting.
 - `tests/test_observability.py` — stable JSON execution-event fields and the
   guarantee that job payloads such as resumes and answers are not logged.
+- `tests/test_hardening.py` — scoped legacy evaluations, recruiter-search
+  projection, assignment boundaries, minimum-only matching, and zero-rate
+  bias monitoring.
+- `tests/test_invitations_and_interviews.py` — invitation acceptance, email
+  matching, scheduled interview participants, candidate agenda, duplicate
+  scheduling, and cancellation.
 
 ### Disabling the rate limiter in tests
 

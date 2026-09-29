@@ -33,10 +33,12 @@ materially change behavior:
 This list is deliberately blunt — it is the honest complement to
 [GAP_ANALYSIS.md](GAP_ANALYSIS.md)'s P6 section:
 
-1. **No authentication/authorization** — do not deploy this to a publicly
-   reachable address without putting a separate access-control layer in
-   front of it (VPN, reverse-proxy basic auth, IP allowlist, or an actual
-   auth integration).
+1. **Authentication exists, but the public sandbox remains intentionally
+   anonymous** — authenticated hiring and evaluation routes enforce owner,
+   organization, and campaign scope; anonymous sandbox evaluations are
+   protected by a per-run token. Do not expose production hiring data through
+   the sandbox, and complete the remaining RLS/real-Postgres review before an
+   unrestricted deployment.
 2. **No containerization of the backend** — you would need to write a
    Dockerfile (or equivalent) and test it; none exists.
 3. **No production-grade database validation** — the automated test suite

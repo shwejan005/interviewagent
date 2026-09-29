@@ -61,6 +61,7 @@ export default function ProfilePage() {
   // Form state
   const [headline, setHeadline] = useState("");
   const [summary, setSummary] = useState("");
+  const [resumeText, setResumeText] = useState("");
   const [location, setLocation] = useState("");
   const [yearsExperience, setYearsExperience] = useState("");
   const [openToWork, setOpenToWork] = useState(true);
@@ -82,7 +83,7 @@ export default function ProfilePage() {
       router.push("/login?next=/profile");
       return;
     }
-    loadProfile();
+    void loadProfile();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, actor]);
 
@@ -106,6 +107,7 @@ export default function ProfilePage() {
     setProfile(data);
     setHeadline(data.headline);
     setSummary(data.summary);
+    setResumeText(data.resume_text || "");
     setLocation(data.location);
     setYearsExperience(data.years_experience?.toString() ?? "");
     setOpenToWork(Boolean(data.open_to_work));
@@ -120,6 +122,7 @@ export default function ProfilePage() {
       const data = await api.put<CandidateProfile>("/me/profile", {
         headline,
         summary,
+        resume_text: resumeText,
         location,
         years_experience: yearsExperience ? Number(yearsExperience) : null,
         open_to_work: openToWork,
@@ -259,6 +262,14 @@ export default function ProfilePage() {
                   rows={4}
                   value={summary}
                   onChange={(e) => setSummary(e.target.value)}
+                />
+                <Textarea
+                  id="resume-text"
+                  label="RESUME / CV CONTENT"
+                  rows={7}
+                  value={resumeText}
+                  onChange={(e) => setResumeText(e.target.value)}
+                  hint="Used as evidence when a recruiter runs the screening stage for an application."
                 />
                 <div className="grid gap-5 sm:grid-cols-2">
                   <Input

@@ -15,18 +15,21 @@ Deliberate behaviours worth knowing about:
 
 import asyncio
 import logging
+import os
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 import audit
 import database as db
 import security
+import notifications
 from authz import Actor, assert_tenant, current_actor, requires
 from models import (
     ActorResponse,
     AddMemberRequest,
     CreateOrganizationRequest,
     LoginRequest,
+    AcceptInvitationRequest,
     MembershipSummary,
     OrganizationResponse,
     RegisterRequest,
@@ -255,6 +258,83 @@ async def add_member(
         detail={"target_user_id": user["id"], "role": req.role},
     )
     return {"membership_id": membership_id, "user_id": user["id"], "role": req.role}
+
+
+@org_router.post("/{org_id}/invitations", status_code=201)
+async def invite_member(
+    org_id: int,
+    req: AddMemberRequest,
+    request: Request,
+    actor: Actor = Depends(requires(Capability.ORG_MEMBER_INVITE)),
+):
+    """Invite an unregistered or existing user with a single-use token."""
+    assert_tenant(actor, org_id)
+    _validate_org_role(req.role)
+    try:
+        invitation = await _db(
+            db.create_invitation, org_id, str(req.email), req.role, actor.user_id
+        )
+    except db.DuplicateInvitationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    organization = await _db(db.get_organization, org_id)
+    frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000").rstrip("/")
+    invite_url = f"{frontend_url}/invite?token={invitation['token']}"
+    delivery = await asyncio.to_thread(
+        notifications.send_organization_invitation_email,
+        str(req.email), organization["name"], req.role, invite_url,
+    )
+    audit.record_from_actor(
+        actor,
+        audit.Action.ORG_MEMBER_INVITED,
+        tier=audit.AuditTier.SECURITY,
+        actor_ip=_client_ip(request),
+        resource_type="organization_invitation",
+        resource_id=invitation["id"],
+        resource_org_id=org_id,
+        detail={"email": str(req.email), "role": req.role},
+    )
+    return {
+        **{key: invitation[key] for key in ("id", "org_id", "email_normalized", "role_name", "expires_at", "created_at")},
+        "invite_url": invite_url,
+        "email_delivery": delivery,
+    }
+
+
+@org_router.get("/{org_id}/invitations")
+async def get_invitations(
+    org_id: int,
+    include_completed: bool = False,
+    actor: Actor = Depends(requires(Capability.ORG_SETTINGS_READ)),
+):
+    assert_tenant(actor, org_id)
+    return {"invitations": await _db(db.list_invitations, org_id, include_completed=include_completed)}
+
+
+@router.post("/invitations/accept")
+async def accept_invitation(
+    req: AcceptInvitationRequest,
+    request: Request,
+    actor: Actor = Depends(current_actor),
+):
+    try:
+        result = await _db(db.accept_invitation, req.token, actor.user_id)
+    except db.InvalidInvitationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except db.InvitationEmailMismatchError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    audit.record_from_actor(
+        actor,
+        "org.member.invitation_accepted",
+        tier=audit.AuditTier.SECURITY,
+        actor_ip=_client_ip(request),
+        resource_type="organization",
+        resource_id=result["org_id"],
+        resource_org_id=result["org_id"],
+        detail={"invitation_id": result["invitation_id"], "role": result["role"]},
+    )
+    return result
 
 
 @org_router.patch("/{org_id}/members/{user_id}")

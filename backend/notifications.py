@@ -37,3 +37,39 @@ def send_referral_email(candidate_email: str, recruiter_name: str, posting_title
     except (OSError, smtplib.SMTPException):
         logger.exception("Referral email delivery failed")
         return "failed"
+
+
+def send_organization_invitation_email(
+    email: str,
+    organization_name: str,
+    role_name: str,
+    invite_url: str,
+) -> str:
+    """Send an organization invitation without making admission depend on SMTP."""
+    host = os.getenv("SMTP_HOST", "").strip()
+    sender = os.getenv("SMTP_FROM", "").strip()
+    if not host or not sender:
+        return "not_configured"
+
+    message = EmailMessage()
+    message["Subject"] = f"Invitation to join {organization_name} on Evalia"
+    message["From"] = sender
+    message["To"] = email
+    message.set_content(
+        f"You have been invited to join {organization_name} as {role_name}.\n\n"
+        f"Accept the invitation: {invite_url}\n"
+    )
+
+    try:
+        with smtplib.SMTP(host, int(os.getenv("SMTP_PORT", "587")), timeout=10) as client:
+            if os.getenv("SMTP_USE_TLS", "true").strip().lower() != "false":
+                client.starttls()
+            username = os.getenv("SMTP_USERNAME", "").strip()
+            password = os.getenv("SMTP_PASSWORD", "")
+            if username:
+                client.login(username, password)
+            client.send_message(message)
+        return "sent"
+    except (OSError, smtplib.SMTPException):
+        logger.exception("Organization invitation email delivery failed")
+        return "failed"

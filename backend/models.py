@@ -215,6 +215,10 @@ class SetMemberRoleRequest(BaseModel):
     role: str = Field(description="One of the org-scoped system role names")
 
 
+class AcceptInvitationRequest(BaseModel):
+    token: str = Field(min_length=20, max_length=200)
+
+
 
 # ── API Response Models ────────────────────────────────────────────
 

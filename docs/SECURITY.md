@@ -9,10 +9,10 @@ assumption that anything not listed as "fixed" below has been addressed.
 
 Authentication, role-based authorization, tenant isolation, and an audited
 trail of security-relevant actions now exist (added in the platform
-foundation phase). The interview-pipeline endpoints (`/start`, `/round/*`,
-`/final-decision`, `/evaluations*`) remain **deliberately unauthenticated**
-for backwards compatibility — they attribute ownership when credentials are
-present and work anonymously when they are not.
+foundation phase). Authenticated legacy evaluations require owner or active
+organization scope. The public sandbox remains available, but each anonymous
+run receives an opaque, hashed evaluation token in an HttpOnly cookie and
+responses are limited to that token's evaluation.
 
 So: the identity foundation is in place and tested, but **the product is not
 yet fully locked down**, because the original pipeline endpoints are still
@@ -26,7 +26,7 @@ What exists now:
 | Password authentication | bcrypt over SHA-256 pre-hash, cost factor 12 |
 | Session tokens | Signed JWTs; no capabilities in the token, so revocation is immediate |
 | Capability-based authorization | `rbac.Capability`, enforced via `authz.requires(...)` |
-| Tenant isolation | `authz.assert_tenant`, returns 404 (not 403) to prevent ID enumeration |
+| Tenant isolation | `authz.assert_tenant`, owner/org-scoped legacy evaluations, campaign assignments, and 404/non-disclosure behavior |
 | Audit trail | Tiered, hash-chained, with integrity verification endpoint |
 | Account enumeration resistance | Login returns identical errors and comparable timing for unknown email vs. wrong password |
 | Rate limiting | Basic in-memory per-IP (single-process only) |
@@ -40,7 +40,7 @@ What is still missing is listed under "Explicitly open gaps" below.
 | B01 | Reset creates two different state objects — a reset/start could lose the evaluation linkage used by later persistence | **Fixed** | `state.py` no longer holds any mutable session dictionary; the database is the sole source of truth per `evaluation_id`. Structurally impossible to reintroduce this specific bug without reintroducing a global mutable object. |
 | B02 | Shared state and verdict files mix unrelated interviews | **Fixed** | Every evaluation's verdict files live under `backend/verdicts/{evaluation_id}/`, keyed by the DB-assigned ID (`state.eval_verdicts_dir`). |
 | B03 | Model failures become candidate judgments (invalid JSON → fabricated FAIL; missing fields → fabricated defaults) | **Fixed** | `crew_runner._parse_json_output`/`_validate_verdict` raise `AgentOutputError` for any parse/schema failure; callers persist `decision="INVALID_OUTPUT"` and return HTTP 502 — never a business decision. Regression-tested in `backend/tests/test_crew_runner_parsing.py` and `test_routes.py::TestInvalidAgentOutputNeverBecomesADecision`. |
-| B04 | Public access to sensitive records (raw resume text returned by list/detail endpoints); no request authentication at all | **Substantially fixed.** Resume-text exposure fixed. Authentication, RBAC, and tenant isolation now exist — but the legacy pipeline endpoints remain intentionally open. | `database._EVALUATION_SUMMARY_COLUMNS` excludes `resume_text`. Identity layer: `security.py`, `rbac.py`, `authz.py`, `auth_routes.py`. Tenant isolation verified by `tests/test_identity.py::TestTenantIsolation` (a CI gate). Remaining gap: `/start`, `/round/*`, `/final-decision`, `/evaluations*` still accept unauthenticated calls for backwards compatibility. |
+| B04 | Public access to sensitive records (raw resume text returned by list/detail endpoints); no request authentication at all | **Fixed for scoped evaluation access; public sandbox intentionally remains token-gated.** | `database._EVALUATION_SUMMARY_COLUMNS` excludes `resume_text`; legacy evaluation reads require owner/org scope or the per-run sandbox token. Recruiter candidate search returns an explicit summary projection rather than `candidate_profiles.*`. |
 | B05 | Workflow transitions and commits are not protected (no idempotency key, no expected-round check, duplicate/out-of-order requests can corrupt history) | **Fixed** (for the single-writer-per-round case). | `routes.py` checks expected `current_round` (409 if wrong) and canonical-verdict existence (409 if already evaluated) before running any agent; `database.uq_verdicts_canonical` (a partial unique index) makes a second canonical verdict for the same evaluation/round a rejected `DuplicateVerdictError`, not a silent overwrite. `/final-decision` is idempotent by design (replays the persisted result). Verified in `test_routes.py::TestGuardsAndErrorHandling` and `test_database.py::TestCanonicalVerdictUniqueness`. |
 | B06 | Long-running work is tied to HTTP lifetime; synchronous DB calls block the event loop; no durable queue/recovery | **Partially fixed.** Event-loop blocking is fixed, and finalization now has durable queue/recovery support with persisted cancellation. | Every `database.py` call from `routes.py` is wrapped in `asyncio.to_thread` via the `_db()` helper. `background_jobs` adds atomic claims, leases, bounded retries, dead-letter status, tenant keys, and cancellation state for finalization; `job_worker.py` checks cancellation before and after handlers and can resume persisted round-4/5 checkpoints. Screening, technical, behavioral, and inline final-decision execution can still be lost with the HTTP process and require retry. |
 | Q01 | Committee is not truly independent verification (same model config, sees prior judgments, no evidence re-derivation) | **Unchanged / open.** | Bias isolation via explicit context passing (no resume/raw answers reach rounds 4–5) is real and unchanged — see [ARCHITECTURE.md](ARCHITECTURE.md). No evidence-grounded re-verification or baseline-vs-committee benchmark exists. |
@@ -86,15 +86,13 @@ of 2026-09-27:
 In priority order for anyone planning to expose this beyond a local/trusted
 environment:
 
-1. **Authentication on the legacy pipeline endpoints.** `/start`,
-   `/round/*`, `/final-decision`, and `/evaluations*` still accept
-   unauthenticated requests. This is a deliberate backwards-compatibility
-   choice during the platform transition, not an oversight — but it means
-   the API must not be publicly exposed until those endpoints require
-   credentials and scope their queries by tenant.
-2. **Invitation flow.** The `invitations` table exists and tokens are
-   hashed, but the accept-an-invite flow is not implemented; only
-   already-registered users can be added to an organization.
+1. **Public sandbox scope.** Anonymous `/start` remains intentionally
+   available for the labeled demo. Its opaque evaluation token is scoped to
+   one run, but the sandbox is not an authenticated candidate/recruiter
+   workflow and should not be used for production hiring data.
+2. **PostgreSQL RLS and production database proof.** Application-layer tenant
+   and campaign assignment checks exist, but RLS and automated real-Postgres
+   concurrency tests remain open.
 3. **Spend/abuse budgets beyond the basic rate limiter.** No
    per-tenant or global LLM spend cap exists; the rate limiter only bounds
    *request count*, not cost. The in-memory limiter is also single-process

@@ -37,10 +37,12 @@ function candidateName(app: ApplicationSummary): string {
 function PipelineList({
   applications,
   onTransition,
+  onScreen,
   onView,
 }: Readonly<{
   applications: ApplicationSummary[];
   onTransition: (applicationId: number, toStage: string) => Promise<void>;
+  onScreen: (applicationId: number) => Promise<void>;
   onView: (applicationId: number) => void;
 }>) {
   if (applications.length === 0) {
@@ -74,7 +76,7 @@ function PipelineList({
               <td className="px-5 py-4 text-[12px] text-ink-muted">{new Date(app.created_at).toLocaleDateString()}</td>
               <td className="px-5 py-3">
                 <Select aria-label={`Move ${candidateName(app)} to stage`} wrapperClassName="w-[145px]" defaultValue="" onChange={(e) => {
-                  if (e.target.value) onTransition(app.id, e.target.value);
+                  if (e.target.value) void onTransition(app.id, e.target.value);
                   e.target.value = "";
                 }}>
                   <option value="">Select stage</option>
@@ -82,6 +84,9 @@ function PipelineList({
                 </Select>
               </td>
               <td className="px-5 py-3 text-right whitespace-nowrap">
+                {app.current_stage === "APPLIED" && (
+                  <Button size="sm" variant="ghost" onClick={() => onScreen(app.id)}>Screen</Button>
+                )}
                 <Button size="sm" variant="ghost" onClick={() => onView(app.id)}>View</Button>
                 <Button size="sm" variant="ghost" onClick={() => onTransition(app.id, "REJECTED")}>Reject</Button>
               </td>
@@ -149,6 +154,9 @@ export default function PostingDetailPage() {
   const [referOpen, setReferOpen] = useState(false);
   const [selectedApplication, setSelectedApplication] = useState<{ application: ApplicationDetail; answers: unknown[]; timeline: ApplicationEvent[] } | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [scheduleStart, setScheduleStart] = useState("");
+  const [scheduleEnd, setScheduleEnd] = useState("");
+  const [scheduling, setScheduling] = useState(false);
 
   useEffect(() => {
     if (authLoading) return;
@@ -157,7 +165,7 @@ export default function PostingDetailPage() {
       return;
     }
     if (!activeOrgId) return;
-    load();
+    void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, actor, activeOrgId, postingId]);
 
@@ -204,6 +212,16 @@ export default function PostingDetailPage() {
     }
   };
 
+  const handleScreen = async (applicationId: number) => {
+    try {
+      await api.post(`/orgs/${activeOrgId}/applications/${applicationId}/screen`);
+      await load();
+      notify.success("Screening recommendation recorded for human review.");
+    } catch (err) {
+      notify.error(err instanceof ApiError ? err.detail : "Failed to screen application.");
+    }
+  };
+
   const loadApplication = async (applicationId: number) => {
     setDetailLoading(true);
     try {
@@ -232,6 +250,29 @@ export default function PostingDetailPage() {
       notify.error(err instanceof ApiError ? err.detail : "Failed to send referral.");
     } finally {
       setReferring(false);
+    }
+  };
+
+  const handleSchedule = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!selectedApplication || !scheduleStart || !scheduleEnd || !actor) return;
+    setScheduling(true);
+    try {
+      await api.post(`/orgs/${activeOrgId}/applications/${selectedApplication.application.id}/interviews`, {
+        title: "Interview",
+        scheduled_start: new Date(scheduleStart).toISOString(),
+        scheduled_end: new Date(scheduleEnd).toISOString(),
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        interviewer_user_ids: [actor.user_id],
+      });
+      notify.success("Interview scheduled.");
+      setScheduleStart("");
+      setScheduleEnd("");
+      await loadApplication(selectedApplication.application.id);
+    } catch (err) {
+      notify.error(err instanceof ApiError ? err.detail : "Failed to schedule interview.");
+    } finally {
+      setScheduling(false);
     }
   };
 
@@ -303,7 +344,7 @@ export default function PostingDetailPage() {
             variant={tab === "recommended" ? "primary" : "secondary"}
             onClick={() => {
               setTab("recommended");
-              if (recommended.length === 0) loadRecommended();
+              if (recommended.length === 0) void loadRecommended();
             }}
           >
             Recommended candidates
@@ -312,7 +353,7 @@ export default function PostingDetailPage() {
 
         <div className="mt-6">
           {tab === "pipeline" ? (
-            <PipelineList applications={applications} onTransition={handleTransition} onView={loadApplication} />
+            <PipelineList applications={applications} onTransition={handleTransition} onScreen={handleScreen} onView={loadApplication} />
           ) : (
             <RecommendedList candidates={recommended} />
           )}
@@ -337,6 +378,14 @@ export default function PostingDetailPage() {
                   <DetailCell label="APPLIED" value={new Date(selectedApplication.application.created_at).toLocaleString()} />
                 </motion.div>
                 <section className="mt-7"><p className="eyebrow">PIPELINE ACTIVITY</p><PipelineLifecycle events={selectedApplication.timeline} /></section>
+                <section className="mt-7 border-t border-subtle pt-6">
+                  <p className="eyebrow">SCHEDULE INTERVIEW</p>
+                  <form onSubmit={handleSchedule} className="mt-4 flex flex-col gap-3">
+                    <Input type="datetime-local" label="START" value={scheduleStart} onChange={(event) => setScheduleStart(event.target.value)} required />
+                    <Input type="datetime-local" label="END" value={scheduleEnd} onChange={(event) => setScheduleEnd(event.target.value)} required />
+                    <Button type="submit" size="sm" className="self-start" loading={scheduling}>Schedule interview</Button>
+                  </form>
+                </section>
               </div>}
             </motion.aside>
           </motion.dialog>

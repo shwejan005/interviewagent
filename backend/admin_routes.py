@@ -130,7 +130,9 @@ async def impersonate(
         detail={"reason": req.reason, "target_email": target["email"]},
     )
 
-    token = security.create_access_token(target["id"], ttl=IMPERSONATION_TTL)
+    token = security.create_access_token_with_provenance(
+        target["id"], ttl=IMPERSONATION_TTL, impersonated_by=actor.user_id
+    )
     logger.warning(
         "IMPERSONATION user=%s acting_as=%s reason=%s",
         actor.user_id, target["id"], req.reason,

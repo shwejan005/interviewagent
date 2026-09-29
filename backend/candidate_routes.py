@@ -96,6 +96,10 @@ async def upsert_my_profile(
 async def add_experience(req: ExperienceRequest, actor: Actor = Depends(current_actor)):
     profile = await _require_profile(actor)
     experience_id = await _db(cdb.add_experience, profile["id"], **req.model_dump())
+    audit.record_from_actor(
+        actor, "profile.experience.created", resource_type="work_experience",
+        resource_id=experience_id,
+    )
     return {"id": experience_id}
 
 
@@ -105,12 +109,20 @@ async def delete_experience(experience_id: int, actor: Actor = Depends(current_a
     # Scoped by profile_id, so a crafted ID cannot delete another user's row.
     if not await _db(cdb.delete_experience, profile["id"], experience_id):
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    audit.record_from_actor(
+        actor, "profile.experience.deleted", resource_type="work_experience",
+        resource_id=experience_id,
+    )
 
 
 @router.post("/profile/education", status_code=201)
 async def add_education(req: EducationRequest, actor: Actor = Depends(current_actor)):
     profile = await _require_profile(actor)
     education_id = await _db(cdb.add_education, profile["id"], **req.model_dump())
+    audit.record_from_actor(
+        actor, "profile.education.created", resource_type="education_entry",
+        resource_id=education_id,
+    )
     return {"id": education_id}
 
 
@@ -123,6 +135,7 @@ async def set_skills(req: SkillsRequest, actor: Actor = Depends(current_actor)):
     """
     profile = await _require_profile(actor)
     await _db(cdb.set_skills, profile["id"], [s.model_dump() for s in req.skills])
+    audit.record_from_actor(actor, "profile.skills.updated", resource_type="candidate_profile", resource_id=profile["id"])
     return {"skills": await _db(cdb.list_skills, profile["id"])}
 
 
@@ -132,6 +145,7 @@ async def set_preferences(req: PreferencesRequest, actor: Actor = Depends(curren
     if req.min_salary is not None and req.max_salary is not None and req.min_salary > req.max_salary:
         raise HTTPException(status_code=400, detail="min_salary cannot exceed max_salary.")
     await _db(cdb.set_preferences, profile["id"], **req.model_dump())
+    audit.record_from_actor(actor, "profile.preferences.updated", resource_type="candidate_profile", resource_id=profile["id"])
     return await _db(cdb.get_preferences, profile["id"])
 
 
@@ -142,6 +156,10 @@ async def upsert_vault_answer(req: VaultAnswerRequest, actor: Actor = Depends(cu
     await _db(
         cdb.upsert_vault_answer,
         profile["id"], req.question_key, req.answer_text, req.question_text,
+    )
+    audit.record_from_actor(
+        actor, "profile.answer_vault.updated", resource_type="answer_vault_entry",
+        resource_id=req.question_key,
     )
     return {"question_key": req.question_key}
 
@@ -307,6 +325,20 @@ async def list_my_applications(
         hdb.list_applications_for_candidate, actor.user_id, limit, offset
     )
     return {"applications": applications, "limit": limit, "offset": offset}
+
+
+@router.get("/interviews")
+async def list_my_interviews(
+    actor: Actor = Depends(current_actor),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+):
+    """Candidate and interviewer agenda, scoped by participant identity."""
+    return {
+        "interviews": await _db(hdb.list_interviews_for_user, actor.user_id, limit, offset),
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.get("/applications/{application_id}")

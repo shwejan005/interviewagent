@@ -106,7 +106,8 @@ The root record for one candidate's run through the pipeline.
 |---|---|---|
 | `id` | serial/autoincrement PK | Referred to as `evaluation_id` everywhere else. |
 | `candidate_name` | text, default `''` | Optional, free text. |
-| `resume_text` | text, not null | **Sensitive.** Only read via `get_evaluation` (internal). Never selected by any public-facing query — see `_EVALUATION_SUMMARY_COLUMNS`. |
+| `resume_text` | text, not null | **Sensitive.** Read only after owner/org authorization or matching the anonymous sandbox token; never selected by public-facing projections. |
+| `access_token_hash` | text, nullable | Hash of the opaque token issued to an anonymous sandbox evaluation. The raw token is returned only at creation and stored in an HttpOnly cookie by the API. |
 | `role` | text, not null | Must be one of `state.AVAILABLE_ROLES` at creation time (enforced in `routes.py`, not a DB constraint/enum). |
 | `status` | text, default `'IN_PROGRESS'` | One of `IN_PROGRESS`, `COMPLETE`, `REJECTED` — enforced only in application code (`models.EvaluationStatus` enum exists but is not wired as a DB-level check constraint). |
 | `current_round` | int, default `1` | 1–5. Advances only on a PASS/BORDERLINE canonical verdict for the current round. |
@@ -115,12 +116,22 @@ The root record for one candidate's run through the pipeline.
 | `created_at` / `updated_at` | timestamp | `updated_at` is set explicitly by `update_evaluation()` on every write — not a DB trigger. |
 
 **Public projection.** `_EVALUATION_SUMMARY_COLUMNS` is a hardcoded column
-list (everything except `resume_text`) used by every list/detail query
-reachable from the API. `get_evaluation()` (internal, includes
-`resume_text`) is used only inside `routes.py` handlers that need to build
-agent context — never returned directly to a client. This split is the
+list (everything except `resume_text` and `access_token_hash`) used by every
+public list/detail query. Internal loading performs owner/org/token
+authorization before the public projection is returned. This split is the
 concrete fix for `CODEBASE_REVIEW.md` finding B04 (public exposure of raw
 resumes).
+
+## Hiring additions
+
+`campaign_members` scopes plain recruiter access to assigned campaigns;
+organization-wide roles can read the organization's campaigns. `invitations`
+stores hashed, expiring one-time tokens. `interviews` and
+`interview_participants` provide the initial scheduled-interview model with
+organization, application, candidate, and interviewer links. Applications can
+reference an evaluation created by the human-reviewed screening route;
+borderline/failed screening recommendations move to `PENDING_REVIEW` rather
+than automatically rejecting a candidate.
 
 ## `agent_verdicts`
 
@@ -206,7 +217,7 @@ independently.
 | `roles` | Named capability bundles | Seeded from `rbac.SYSTEM_ROLES` on every startup |
 | `role_capabilities` | Role → capability mapping | Re-synced on startup, so a code change takes effect without a manual migration |
 | `org_memberships` | (user, org, role) | Partial unique index on `(org_id, user_id) WHERE deleted_at IS NULL` prevents duplicate active memberships |
-| `invitations` | Tokenised org invites | Table exists; the accept flow is Phase 1. Tokens stored hashed |
+| `invitations` | Tokenised org invites | Hashed, expiring create/list/accept flow; email delivery is best-effort |
 | `audit_events` | Append-only audit log | Hash-chained via `prev_hash`/`hash` |
 
 ### Dual-persona identity

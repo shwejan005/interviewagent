@@ -9,6 +9,7 @@ structurally safe.
 """
 
 import asyncio
+import json
 import logging
 from typing import Optional
 
@@ -16,19 +17,23 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 import audit
 import candidate_db as cdb
+import database as db
 import hiring_db as hdb
 import matching
 import notifications
 from authz import Actor, assert_tenant, requires
+from crew_runner import AgentOutputError, run_screening
 from hiring_models import (
     CampaignRequest,
+    CampaignMemberRequest,
     PostingRequest,
     PostingStatusRequest,
     PostingUpdateRequest,
     ReferralRequest,
+    InterviewCreateRequest,
     TransitionRequest,
 )
-from rbac import Capability
+from rbac import Capability, SystemRole
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/orgs/{org_id}", tags=["recruiting"])
@@ -54,6 +59,23 @@ def _require_org(actor: Actor, org_id: int) -> None:
         )
 
 
+async def _require_campaign_access(actor: Actor, org_id: int, campaign_id: int) -> None:
+    """Enforce tenant plus campaign assignment for non-org-wide roles."""
+    _require_org(actor, org_id)
+    if actor.has(Capability.CAMPAIGN_READ_ORG):
+        return
+    if not await _db(hdb.is_campaign_member, campaign_id, actor.user_id, org_id):
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+
+
+async def _campaign_id_for_posting(actor: Actor, org_id: int, posting_id: int) -> int:
+    posting = await _db(hdb.get_posting, posting_id, org_id)
+    if posting is None:
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    await _require_campaign_access(actor, org_id, posting["campaign_id"])
+    return posting["campaign_id"]
+
+
 # ── Campaigns ────────────────────────────────────────────────────────
 
 
@@ -71,6 +93,7 @@ async def create_campaign(
         priority=req.priority, target_hires=req.target_hires,
         target_close_date=req.target_close_date,
     )
+    await _db(hdb.assign_campaign_member, campaign_id, actor.user_id, actor.role or "RECRUITER")
     audit.record_from_actor(
         actor, "campaign.created",
         actor_ip=_client_ip(request),
@@ -88,7 +111,12 @@ async def list_campaigns(
     offset: int = Query(default=0, ge=0),
 ):
     _require_org(actor, org_id)
-    return {"campaigns": await _db(hdb.list_campaigns, org_id, limit, offset)}
+    assigned_user_id = None if actor.has(Capability.CAMPAIGN_READ_ORG) else actor.user_id
+    return {
+        "campaigns": await _db(
+            hdb.list_campaigns, org_id, limit, offset, assigned_user_id
+        )
+    }
 
 
 @router.get("/campaigns/{campaign_id}")
@@ -97,7 +125,7 @@ async def get_campaign(
     campaign_id: int,
     actor: Actor = Depends(requires(Capability.CAMPAIGN_READ_ASSIGNED)),
 ):
-    _require_org(actor, org_id)
+    await _require_campaign_access(actor, org_id, campaign_id)
     campaign = await _db(hdb.get_campaign, campaign_id, org_id)
     if campaign is None:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
@@ -112,7 +140,7 @@ async def update_campaign(
     request: Request,
     actor: Actor = Depends(requires(Capability.CAMPAIGN_UPDATE)),
 ):
-    _require_org(actor, org_id)
+    await _require_campaign_access(actor, org_id, campaign_id)
     if not await _db(hdb.update_campaign, campaign_id, org_id, **req.model_dump()):
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
     audit.record_from_actor(
@@ -121,6 +149,31 @@ async def update_campaign(
         resource_type="campaign", resource_id=campaign_id, resource_org_id=org_id,
     )
     return await _db(hdb.get_campaign, campaign_id, org_id)
+
+
+@router.post("/campaigns/{campaign_id}/members", status_code=204)
+async def assign_campaign_member(
+    org_id: int,
+    campaign_id: int,
+    req: CampaignMemberRequest,
+    request: Request,
+    actor: Actor = Depends(requires(Capability.CAMPAIGN_UPDATE)),
+):
+    """Grant a tenant member access to one campaign."""
+    await _require_campaign_access(actor, org_id, campaign_id)
+    member = await _db(db.get_membership, req.user_id, org_id)
+    if member is None:
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    await _db(hdb.assign_campaign_member, campaign_id, req.user_id, req.member_role)
+    audit.record_from_actor(
+        actor,
+        "campaign.member.assigned",
+        actor_ip=_client_ip(request),
+        resource_type="campaign",
+        resource_id=campaign_id,
+        resource_org_id=org_id,
+        detail={"user_id": req.user_id, "member_role": req.member_role},
+    )
 
 
 # ── Job postings ─────────────────────────────────────────────────────
@@ -134,7 +187,7 @@ async def create_posting(
     actor: Actor = Depends(requires(Capability.CAMPAIGN_CREATE)),
 ):
     """Create a posting in DRAFT. Publishing is a separate, audited action."""
-    _require_org(actor, org_id)
+    await _require_campaign_access(actor, org_id, req.campaign_id)
 
     # Verified org-scoped, so a posting cannot be attached to another tenant's campaign.
     if await _db(hdb.get_campaign, req.campaign_id, org_id) is None:
@@ -171,9 +224,12 @@ async def list_postings(
     offset: int = Query(default=0, ge=0),
 ):
     _require_org(actor, org_id)
+    if campaign_id is not None:
+        await _require_campaign_access(actor, org_id, campaign_id)
+    assigned_user_id = None if actor.has(Capability.CAMPAIGN_READ_ORG) else actor.user_id
     return {
         "postings": await _db(
-            hdb.list_postings, org_id, campaign_id, status, limit, offset
+            hdb.list_postings, org_id, campaign_id, status, limit, offset, assigned_user_id
         )
     }
 
@@ -184,10 +240,8 @@ async def get_posting(
     posting_id: int,
     actor: Actor = Depends(requires(Capability.CAMPAIGN_READ_ASSIGNED)),
 ):
-    _require_org(actor, org_id)
+    await _campaign_id_for_posting(actor, org_id, posting_id)
     posting = await _db(hdb.get_posting, posting_id, org_id)
-    if posting is None:
-        raise HTTPException(status_code=404, detail=_NOT_FOUND)
     return posting
 
 
@@ -199,7 +253,7 @@ async def update_posting(
     request: Request,
     actor: Actor = Depends(requires(Capability.CAMPAIGN_UPDATE)),
 ):
-    _require_org(actor, org_id)
+    await _campaign_id_for_posting(actor, org_id, posting_id)
     payload = req.model_dump(exclude_none=True)
     if req.screening_questions is not None:
         payload["screening_questions"] = [q.model_dump() for q in req.screening_questions]
@@ -229,7 +283,7 @@ async def set_posting_status(
     Publishing makes the posting visible on the public job board, so it is
     gated on its own capability and audited separately from editing.
     """
-    _require_org(actor, org_id)
+    await _campaign_id_for_posting(actor, org_id, posting_id)
     if not await _db(hdb.set_posting_status, posting_id, org_id, req.status):
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
 
@@ -254,9 +308,9 @@ async def list_applications(
     offset: int = Query(default=0, ge=0),
 ):
     """Applicant pipeline for one posting, with per-stage funnel counts."""
-    _require_org(actor, org_id)
-    if await _db(hdb.get_posting, posting_id, org_id) is None:
-        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    await _campaign_id_for_posting(actor, org_id, posting_id)
+    if actor.role == str(SystemRole.INTERVIEWER):
+        raise HTTPException(status_code=403, detail="Interviewers can only view assigned interviews.")
 
     applications = await _db(
         hdb.list_applications_for_posting, posting_id, org_id, stage, limit, offset
@@ -272,9 +326,16 @@ async def get_application(
     actor: Actor = Depends(requires(Capability.APPLICATION_READ)),
 ):
     """Full application detail. Reading a candidate's data is audited."""
-    _require_org(actor, org_id)
     application = await _db(hdb.get_application, application_id, org_id)
     if application is None:
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    await _campaign_id_for_posting(actor, org_id, application["posting_id"])
+    if (
+        actor.role == str(SystemRole.INTERVIEWER)
+        and not await _db(
+            hdb.is_user_assigned_to_application, application_id, org_id, actor.user_id
+        )
+    ):
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
 
     # Tier 3: a recruiter reading candidate data is exactly what an
@@ -306,7 +367,10 @@ async def transition_application(
     advancing someone and ending their candidacy are different acts and are
     deliberately not granted by the same capability.
     """
-    _require_org(actor, org_id)
+    application = await _db(hdb.get_application, application_id, org_id)
+    if application is None:
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    await _campaign_id_for_posting(actor, org_id, application["posting_id"])
 
     if req.to_stage == str(hdb.ApplicationStage.REJECTED) and not actor.has(Capability.APPLICATION_REJECT):
         raise HTTPException(
@@ -336,6 +400,186 @@ async def transition_application(
         detail={"from": result["from_stage"], "to": result["to_stage"], "note": req.note},
     )
     return result
+
+
+@router.post("/applications/{application_id}/screen")
+async def screen_application(
+    org_id: int,
+    application_id: int,
+    request: Request,
+    actor: Actor = Depends(
+        requires(Capability.EVALUATION_CREATE, Capability.APPLICATION_ADVANCE)
+    ),
+):
+    """Run the existing screening agent as an application-stage recommendation.
+
+    This is intentionally human-reviewed: PASS moves to SCREENING, while
+    BORDERLINE/FAIL moves to PENDING_REVIEW. No candidate is auto-rejected.
+    """
+    application = await _db(hdb.get_application, application_id, org_id)
+    if application is None:
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    await _campaign_id_for_posting(actor, org_id, application["posting_id"])
+    if application.get("evaluation_id") is not None:
+        raise HTTPException(status_code=409, detail="This application has already been screened.")
+    if application["current_stage"] != str(hdb.ApplicationStage.APPLIED):
+        raise HTTPException(status_code=409, detail="Only newly applied candidates can be screened.")
+
+    profile = await _db(cdb.get_profile, application["profile_id"]) if application.get("profile_id") else None
+    resume = (profile or {}).get("resume_text", "")
+    if not resume:
+        snapshot = application.get("profile_snapshot") or {}
+        resume = json.dumps(snapshot, sort_keys=True)
+    if not resume.strip():
+        raise HTTPException(status_code=400, detail="Candidate has no resume or profile evidence to screen.")
+
+    posting = await _db(hdb.get_posting, application["posting_id"], org_id)
+    evaluation_id = await _db(
+        db.create_evaluation,
+        resume_text=resume,
+        role=posting["title"],
+        candidate_name=application.get("candidate_name", ""),
+        org_id=org_id,
+        owner_user_id=application["candidate_user_id"],
+    )
+    try:
+        result = await run_screening(evaluation_id, resume, posting["title"])
+    except AgentOutputError as exc:
+        await _db(
+            db.save_verdict,
+            evaluation_id=evaluation_id,
+            agent_type="screening",
+            round_number=1,
+            verdict_json={"error": str(exc)},
+            verdict_text=exc.raw_output,
+            decision="INVALID_OUTPUT",
+            error_type=type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="The screening agent returned an invalid response. Retry the screening.",
+        ) from exc
+
+    await _db(
+        db.save_verdict,
+        evaluation_id=evaluation_id,
+        agent_type="screening",
+        round_number=1,
+        verdict_json=result["verdict"],
+        verdict_text=result["verdict_text"],
+        score=result["score"],
+        decision=result["decision"],
+        confidence=result["confidence"],
+    )
+    if not await _db(hdb.attach_evaluation, application_id, org_id, evaluation_id):
+        raise HTTPException(status_code=409, detail="Application changed while screening.")
+    next_stage = (
+        hdb.ApplicationStage.PENDING_REVIEW
+        if result["decision"] in ("FAIL", "BORDERLINE")
+        else hdb.ApplicationStage.TECHNICAL
+    )
+    await _db(
+        hdb.transition_application,
+        application_id,
+        org_id,
+        str(next_stage),
+        actor.user_id,
+        "Automated screening recommendation recorded.",
+        True,
+    )
+
+    audit.record_from_actor(
+        actor,
+        "application.screened",
+        actor_ip=_client_ip(request),
+        resource_type="application",
+        resource_id=application_id,
+        resource_org_id=org_id,
+        detail={"evaluation_id": evaluation_id, "decision": result["decision"]},
+    )
+    return {
+        "application_id": application_id,
+        "evaluation_id": evaluation_id,
+        "decision": result["decision"],
+        "recommendation": result["verdict"],
+        "current_stage": str(next_stage),
+        "human_review_required": result["decision"] in ("FAIL", "BORDERLINE"),
+    }
+
+
+@router.post("/applications/{application_id}/interviews", status_code=201)
+async def schedule_interview(
+    org_id: int,
+    application_id: int,
+    req: InterviewCreateRequest,
+    request: Request,
+    actor: Actor = Depends(requires(Capability.INTERVIEW_SCHEDULE)),
+):
+    """Schedule a candidate interview with explicit organization participants."""
+    _require_org(actor, org_id)
+    try:
+        interview = await _db(
+            hdb.create_interview,
+            org_id,
+            application_id,
+            req.title,
+            req.scheduled_start,
+            req.scheduled_end,
+            req.timezone,
+            req.meeting_url,
+            actor.user_id,
+            req.interviewer_user_ids,
+        )
+    except hdb.DuplicateInterviewError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (LookupError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    audit.record_from_actor(
+        actor,
+        "interview.scheduled",
+        actor_ip=_client_ip(request),
+        resource_type="interview",
+        resource_id=interview["id"],
+        resource_org_id=org_id,
+        detail={"application_id": application_id, "participant_count": len(interview["participants"])},
+    )
+    return interview
+
+
+@router.get("/applications/{application_id}/interviews")
+async def list_application_interviews(
+    org_id: int,
+    application_id: int,
+    actor: Actor = Depends(requires(Capability.INTERVIEW_READ_ASSIGNED)),
+):
+    _require_org(actor, org_id)
+    return {
+        "interviews": await _db(
+            hdb.list_interviews_for_application, application_id, org_id
+        )
+    }
+
+
+@router.post("/interviews/{interview_id}/cancel")
+async def cancel_scheduled_interview(
+    org_id: int,
+    interview_id: int,
+    request: Request,
+    actor: Actor = Depends(requires(Capability.INTERVIEW_SCHEDULE)),
+):
+    _require_org(actor, org_id)
+    if not await _db(hdb.cancel_interview, interview_id, org_id):
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    audit.record_from_actor(
+        actor,
+        "interview.cancelled",
+        actor_ip=_client_ip(request),
+        resource_type="interview",
+        resource_id=interview_id,
+        resource_org_id=org_id,
+    )
+    return {"interview_id": interview_id, "status": "CANCELLED"}
 
 
 # ── Candidate sourcing ───────────────────────────────────────────────

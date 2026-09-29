@@ -347,7 +347,10 @@ def search_discoverable_profiles(
         )
         total = cur.fetchone()["c"]
         cur.execute(
-            f"SELECT DISTINCT cp.*, u.full_name, u.email FROM candidate_profiles cp "
+            f"SELECT DISTINCT cp.id, cp.user_id, cp.headline, cp.summary, cp.location, "
+            f"cp.years_experience, cp.open_to_work, cp.is_discoverable, "
+            f"cp.created_at, cp.updated_at, u.full_name, u.email "
+            f"FROM candidate_profiles cp "
             f"{joins} JOIN users u ON u.id = cp.user_id WHERE {where} "
             f"ORDER BY cp.updated_at DESC LIMIT {p} OFFSET {p}",
             (*params, limit, offset),
