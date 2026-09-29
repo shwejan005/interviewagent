@@ -54,6 +54,19 @@ cd backend
 ../.venv/Scripts/python.exe -m uvicorn main:app --reload --port 8000
 ```
 
+The durable command API is available under `/v1` when a worker is running.
+Start a worker in a second backend terminal:
+
+```powershell
+cd backend
+../.venv/Scripts/python.exe job_worker.py
+```
+
+The legacy interview routes remain available for compatibility. New clients
+that need process-loss recovery should use `POST /v1/evaluations`,
+`POST /v1/evaluations/{id}/answers`, and
+`POST /v1/evaluations/{id}/finalize`.
+
 Use the venv's `python.exe` explicitly (`-m uvicorn`) rather than a bare
 `uvicorn` command. If another Python install on `PATH` also has `uvicorn`
 installed (e.g. a prior `pip install --user uvicorn`), a bare `uvicorn`
@@ -77,6 +90,10 @@ npm run dev
 Open `http://localhost:3000`. The dev server proxies `/api/*` to
 `http://127.0.0.1:8000` by default (override with the `BACKEND_URL`
 environment variable — see `next.config.js`).
+
+Candidate preparation is available at `/prep`. It currently provides a
+curated text-first topic/problem catalog, deterministic roadmaps, progress,
+and unverified practice submissions. It does not execute submitted code.
 
 ### Known environment issue: `next build` and Google Fonts
 
@@ -115,11 +132,21 @@ instead.
 ## Verifying your setup
 
 ```powershell
-# Backend — should show 38 passed, 0 failed (see docs/TESTING.md)
+# Backend — should show the current passing count (see docs/TESTING.md)
 cd backend
-pytest -v
+../.venv/Scripts/python.exe -m pytest -v
 
 # Frontend — should produce no output (success)
 cd frontend
 npm run typecheck
 ```
+
+## Local Docker stack
+
+```powershell
+docker compose up --build
+```
+
+This starts PostgreSQL and the backend on `http://localhost:8000`. The
+frontend remains a separate Next.js process; set `BACKEND_URL` if it is not
+using the default local backend address.

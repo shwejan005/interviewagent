@@ -4,7 +4,7 @@
 
 | Suite | Location | What it covers | Live LLM calls? | Last verified run |
 |---|---|---|---|---|
-| Backend automated tests | `backend/tests/` (pytest) | Output parsing/validation, database PII/uniqueness/batching, full route pipeline (mocked agents), identity/RBAC, marketplace, matching, invitations, scheduling, application screening, health/readiness, durable worker retries/cancellation/shutdown, structured event redaction | No | 211 passed, 0 failed, ~2m26s (2026-09-29) |
+| Backend automated tests | `backend/tests/` (pytest) | Output parsing/validation, database PII/uniqueness/batching, full route pipeline (mocked agents), identity/RBAC, marketplace, matching, invitations, scheduling, application screening, durable v1 admission/worker execution, prep suite, data export/deletion, contract harness, health/readiness, durable worker retries/cancellation/shutdown, structured event redaction | No | 221 passed, 0 failed, ~1m49s (2026-09-29) |
 | Frontend type-check | `frontend/` (`npm run typecheck`) | TypeScript type safety across the whole `app/`/`components/` tree | N/A | 0 errors (2026-09-29) |
 | Live agent smoke test | Ad hoc, not checked in (see below) | The actual CrewAI agents against a real LLM endpoint, end-to-end | **Yes** | Full happy path (PASS→PASS→PASS→HIRE) + reject path, verified manually 2026-09-27; not automated/repeatable as a checked-in test |
 
@@ -91,6 +91,14 @@ means:
 - `tests/test_invitations_and_interviews.py` — invitation acceptance, email
   matching, scheduled interview participants, candidate agenda, duplicate
   scheduling, and cancellation.
+- `tests/test_durable_pipeline.py` — 202 responses, durable screening
+  admission, worker advancement, and scoped status access.
+- `tests/test_prep.py` — topic catalog, roadmap ownership, progress XP, and
+  explicit unverified submission behavior.
+- `tests/test_data_subject.py` — authenticated export, last-owner protection,
+  and account anonymization.
+- `tests/test_evaluation_harness.py` — versioned deterministic contract rules
+  and replayable starter fixtures.
 
 ### Disabling the rate limiter in tests
 

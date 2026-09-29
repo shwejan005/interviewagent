@@ -31,7 +31,7 @@ current state of the code, with concrete evidence for each verdict.
 
 | Task | Status | Evidence |
 |---|---|---|
-| T011 — Separate admission from execution; durable worker/job repository; atomic claims/leases | 🟡 Partial | `database.py` now persists `background_jobs` with idempotency keys, atomic SQLite/PostgreSQL claims, leases, retries, and dead-letter status; `job_worker.py` provides `run_once`/`run_forever`; finalization is resumable through round-4/5 checkpoints. The final-decision route can still execute the claimed job inline for backward compatibility, and screening/technical/behavioral stages are not yet admitted to jobs. Heartbeats remain open; the standalone worker now has cooperative signal-driven shutdown. |
+| T011 — Separate admission from execution; durable worker/job repository; atomic claims/leases | 🟡 Partial | Durable `/v1` command admission now covers screening, technical, behavioral, and finalization jobs; `job_worker.py` reuses the existing pipeline functions and returns persisted stage progress. Legacy routes remain synchronous for compatibility. Heartbeats, production worker deployment, and full frontend migration to `/v1` remain open. |
 | T012 — Per-stage deadlines, typed transient errors, bounded backoff+jitter, tenant concurrency, cancellation, dead-letter | 🟡 Partial | `crew_runner.py` now labels stages, classifies provider/rate-limit/timeout failures, applies capped exponential jitter, and enforces a configurable stage deadline. `job_worker.py` applies bounded retry jitter, persists cancellation requests, releases cancelled claims, and dead-letters `AgentOutputError` failures. Tenant-aware scheduling, lease heartbeats, cooperative in-flight cancellation tokens, and manual dead-letter recovery are still open. |
 | T013 — Persist attempt IDs, model/prompt/rubric versions, usage, errors, deployment provenance | 🟡 Partial | `agent_verdicts` rows now persist generated attempt IDs, model name, prompt/rubric labels, optional usage JSON, typed error classification, start/completion timestamps, and deployment provenance. Automatic provider usage extraction/cost accounting and a normalized stage-attempt history remain open. |
 | T014 — Instrument request→queue→worker→model→validator→DB spans; connect an observability destination | 🟡 Partial | `observability.py` configures single-line JSON logs and durable worker events include safe job/evaluation/trace IDs, stage, attempt, status, duration, cancellation, and typed error metadata. Payload contents are excluded. Distributed spans, request/model/validator/DB coverage, automatic usage/cost fields, and an external observability platform remain open. |
@@ -46,14 +46,14 @@ alerts/runbooks, and crash/restart evidence. The phase is not production-certifi
 
 | Task | Status | Evidence |
 |---|---|---|
-| T016 — Versioned, anchored role rubric; replace vague scoring | ⬜ Not started | `state.AVAILABLE_ROLES` is still a flat list of ten role-name strings, not a versioned rubric with anchors/forbidden-inference rules. `tasks.py`'s prompts are unchanged. |
+| T016 — Versioned, anchored role rubric; replace vague scoring | 🟡 Partial | The prep suite has a versioned curated topic/problem catalog, but the hiring-agent role rubric and forbidden-inference policy remain open; `state.AVAILABLE_ROLES` and existing prompts are unchanged. |
 | T017 — Evidence-span/reference validation; deterministic aggregation rule | 🟡 Partial | The overall-score double-counting bug (roadmap's Q04) is fixed (aggregation now explicitly excludes round 4's own score — see [SECURITY.md](SECURITY.md) Q04 row). Evidence-span/citation validation (verifying a claimed quote actually appears in the source answer) does not exist. |
-| T018 — Provider-neutral evaluation adapter + TypeScript deterministic grader/runner package | ⬜ Not started | No such package exists in `frontend/` or elsewhere. |
-| T019 — Curate/version first benchmark cases; multi-reviewer labeling; dev/validation/holdout splits | ⬜ Not started | No benchmark dataset of any size exists in this repository. |
+| T018 — Provider-neutral evaluation adapter + TypeScript deterministic grader/runner package | 🟡 Partial | `backend/evaluation_harness.py` provides versioned deterministic contract checks and replayable starter fixtures. A provider-neutral TypeScript runner and budget-capped CLI remain open. |
+| T019 — Curate/version first benchmark cases; multi-reviewer labeling; dev/validation/holdout splits | 🟡 Partial | `backend/evals/starter_cases.json` is a small contract-fixture dataset, explicitly not a quality/fairness benchmark. Human-reviewed cases, holdout splits, and semantic labels remain open. |
 | T020 — Validate semantic judges against adjudicated labels; baseline/no-committee comparison | ⬜ Not started | No judge-validation or baseline-comparison experiment exists. |
 | T021 — Protected live-provider release-gate runs alongside deterministic PR tests | ⬜ Not started | CI (`ci.yml`, added this pass) runs only the free, mocked-agent test suite — intentionally, so it needs no API key/secret and can't rack up LLM spend on every PR. A separate, budget-capped, secret-gated live-provider workflow does not exist. |
 
-**P3 assessment:** unstarted. This is explicitly called out in
+**P3 assessment:** partially started. This is explicitly called out in
 `PRODUCTION_ROADMAP.md` itself as "the primary differentiator" and the
 single largest, most valuable remaining body of work — and also the one
 most dependent on product decisions (which rubric, which judge model, how
@@ -86,9 +86,9 @@ existing first, per the roadmap's own stated dependency.
 
 | Task | Status | Evidence |
 |---|---|---|
-| T031 — Reproducible builds, one IaC/deployment definition, isolated envs, managed secrets | 🟡 Partial | `.github/workflows/ci.yml` is the first CI definition in this repository (test/type-check only — no build/deploy job). `docker-compose.yml` (local Postgres only) and `frontend/vercel.json` predate this pass and remain the only deployment-adjacent artifacts; no backend deployment IaC (Dockerfile, ECS/Fargate/etc. definition) exists — see [DEPLOYMENT.md](DEPLOYMENT.md). |
+| T031 — Reproducible builds, one IaC/deployment definition, isolated envs, managed secrets | 🟡 Partial | CI remains test/type-check only, but `backend/Dockerfile`, `.dockerignore`, and a health-checked Postgres/backend `docker-compose.yml` now provide a reproducible local build. Cloud deployment, managed secrets, and isolated hosted environments remain open. |
 | T032 — Real-Postgres contract/concurrency tests, scans, load/fault tests, migration rehearsal | ⬜ Not started | The entire automated suite runs against SQLite only (see [TESTING.md](TESTING.md)). No dependency/secret scanning job exists in CI. |
-| T033 — Retention/deletion, audit integrity, backup restore verification | ⬜ Not started | No retention/deletion policy is implemented or enforced anywhere in the code. |
+| T033 — Retention/deletion, audit integrity, backup restore verification | 🟡 Partial | Authenticated export and account anonymization now exist, with last-owner protection and audit events. Retention scheduling, object/telemetry deletion, backup restore, and external audit anchoring remain open. |
 | T034 — Consented pilot; track reliability/cost/quality; publish limitations | ⬜ Not started | No pilot has been run; this documentation set itself is the closest artifact to "published limitations" that exists (see [SECURITY.md](SECURITY.md)). |
 
 ## P7 — Optional voice extension

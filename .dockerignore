@@ -1,0 +1,12 @@
+.git
+.gitignore
+.env
+.venv
+backend/evalia.db
+backend/__pycache__
+backend/.pytest_cache
+backend/tests
+frontend
+node_modules
+.next
+*.pyc

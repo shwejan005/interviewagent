@@ -10,7 +10,7 @@
 - **Phase 0 — Foundation: Partially implemented; exit criterion not met.** In-house registration/login, organization membership, capability checks, application-layer tenant filters, persisted campaign assignments, hash-chained audit events, and a small migration ledger exist. Legacy evaluations now require owner/org scope or a per-run sandbox token. PostgreSQL RLS and full real-Postgres proof remain open; the former was deliberately deferred by D-01.
 - **Phase 1 — Marketplace: Core candidate/recruiter flows exist, but the phase is incomplete.** Profile and answer-vault APIs, job discovery, applications, recruiter campaigns/postings, applicant transitions, referrals, invitations, scheduled interviews, participant agendas, application screening, and corresponding pages are present. Resume file upload/parsing, configurable per-posting stages, full notification preferences, and calendar-provider integration remain open.
 - **Phase 2 — Intelligence: Stage 1 exists, with the audited correctness defects fixed.** Deterministic candidate/job matching is called by candidate and recruiter routes and displayed in the UI; recruiter funnel, overview, and selection-rate analytics also have routes and a page. There is no benchmark showing recommendation quality or fairness. Semantic and learned ranking remain intentionally deferred.
-- **End-to-end validation is API-level, not browser-level.** The HTTP tests exercise mocked agent flow and marketplace routes against isolated SQLite. The relevant Phase 0–2 suites passed **187 tests** in this audit. A prior full-suite run on the audited revision passed **202 tests** with one Starlette/httpx deprecation warning. Frontend type-check passed. There are no browser/E2E tests, no automated real-Postgres test, and no live-provider test in CI. A manual live-agent smoke test is recorded in [TESTING.md](TESTING.md), but it was not repeated during this audit.
+- **End-to-end validation is API-level, not browser-level.** The HTTP tests exercise mocked agent flow and marketplace routes against isolated SQLite. The expanded suite passed **221 tests** with one Starlette/httpx deprecation warning. Frontend type-check passed. There are no browser/E2E tests, no automated real-Postgres test, and no live-provider test in CI. A manual live-agent smoke test is recorded in [TESTING.md](TESTING.md), but it was not repeated during this audit.
 
 ## Evidence and method
 
@@ -75,18 +75,18 @@ The backend test fixture intentionally uses a fresh SQLite database; it is not e
 | Recruiter workflow | Org/campaign/posting creation, publish, applicant listing/detail, manual transition, referral, matching, analytics. See [test_hiring.py](../backend/tests/test_hiring.py#L180-L240), [test_matching.py](../backend/tests/test_matching.py#L260-L510). | No assignment-level authorization or AI evaluation attached to application. No browser/E2E tests. |
 | Persistence/deployment | Isolated SQLite and schema/migration tests. | No automated PostgreSQL, concurrent race, deployed worker, migration rehearsal, restore, or browser E2E evidence. |
 
-The relevant Phase 0–2 suites passed **187/187** in this audit. The full suite has a recorded **202/202** passing run on the audited revision, and the frontend type-check passed on 2026-09-29. These results establish that the current tests pass; they do not override the untested/reproduced gaps above.
+The expanded backend suite passed **221/221** after the hardening, durable API, prep, and data-subject additions, and the frontend type-check passed on 2026-09-29. These results establish that the current tests pass; they do not override the untested/reproduced gaps above.
 
 ## Readiness recommendation for Phase 3
 
-The Phase 3 prep suite itself is **not present**: no curated topic graph/problem bank, submission model, execution runner, roadmap generator, gamification records, or prep-suite UI were found. `mark_skill_verified` is a repository helper, not an end-to-end assessment path.
+The Phase 3 prep suite now has a safe text-first foundation: curated topic/problem catalog, deterministic roadmaps, progress/XP, unverified written submissions, API routes, and a candidate UI. It deliberately does not execute submitted code or grant verified skills. The isolated execution provider and deterministic code grader remain open.
 
 Before Phase 3 handles user submissions or feeds verified skills into matching:
 
 1. Decide whether to keep the token-gated anonymous sandbox or require authenticated evaluation creation for production deployments.
-2. Add explicit consent/version acceptance and retention/deletion enforcement; the current profile consent stamp is metadata, not a full consent workflow.
+2. Add explicit consent/version acceptance and retention/deletion enforcement; export/anonymization now exists, but the current profile consent stamp is not a full jurisdiction-specific consent workflow.
 3. Add real-Postgres concurrent tests and calendar/notification integrations around the new scheduling model.
 4. Decide the isolated execution provider and threat model from [DECISIONS.md](DECISIONS.md#d-03-code-execution-sandbox). Never execute submitted code in the API/worker process or with production credentials.
 5. Add browser journey coverage before asserting marketplace/E2E readiness.
 
-Low-risk work such as a curated topic DAG, problem metadata, and non-executing roadmap planning can be designed separately. Do not claim Phase 0–2 complete or launch a user-code runner based only on the current SQLite/mock suite.
+Do not claim Phase 0–2 production-certified or launch a user-code runner based only on the current SQLite/mock suite.

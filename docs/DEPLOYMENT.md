@@ -5,15 +5,17 @@
 | Artifact | Purpose | Status |
 |---|---|---|
 | `dev.sh` | Local launcher — starts backend (`uvicorn`) and frontend (`next dev`) together | POSIX-only (assumes a `venv`/`.venv` at a specific relative path and a `source ... /activate` shell). Not verified on Windows in this pass. |
-| `docker-compose.yml` | Local PostgreSQL container for development | Provides Postgres only — does not containerize the backend or frontend themselves. |
+| `docker-compose.yml` | Local PostgreSQL + backend development stack | Starts Postgres and the backend container; frontend remains a separate Next.js process. |
 | `frontend/vercel.json` | Vercel hosting configuration for the Next.js app | Frontend-only; assumes the backend is reachable at whatever `BACKEND_URL` Vercel's environment is configured with. |
 | `.github/workflows/ci.yml` (added this pass) | Runs backend pytest + frontend `tsc --noEmit` on every push/PR | **Test/type-check only.** Does not build a deployable artifact, does not deploy anything, does not run against real PostgreSQL. |
 
-There is **no backend deployment definition** (no Dockerfile, no ECS/Fargate
-task definition, no Kubernetes manifest, no other IaC) anywhere in this
-repository. `PRODUCTION_ROADMAP.md` section 4 recommends "Next.js on
+There is now a reproducible local backend container definition at
+`backend/Dockerfile` and a Postgres-backed backend service in
+`docker-compose.yml`. There is still no cloud-specific ECS/Fargate task
+definition, Kubernetes manifest, managed secrets integration, or restore
+exercise. `PRODUCTION_ROADMAP.md` section 4 recommends "Next.js on
 Vercel, API + worker on AWS ECS/Fargate, managed Postgres" as a pragmatic
-first shape — none of that AWS-side infrastructure has been created.
+first production shape; only the local container/compose foundation exists.
 
 ## Environment variables that affect runtime behavior
 
@@ -39,8 +41,9 @@ This list is deliberately blunt — it is the honest complement to
    protected by a per-run token. Do not expose production hiring data through
    the sandbox, and complete the remaining RLS/real-Postgres review before an
    unrestricted deployment.
-2. **No containerization of the backend** — you would need to write a
-   Dockerfile (or equivalent) and test it; none exists.
+2. **Local containerization exists; cloud deployment does not** —
+   `backend/Dockerfile` and the compose backend service are present, but the
+   image has not been published or deployed to a cloud target.
 3. **No production-grade database validation** — the automated test suite
    runs against SQLite only; PostgreSQL concurrency/contract behavior has
    only been exercised manually, not continuously tested (see

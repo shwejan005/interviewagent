@@ -10,6 +10,24 @@ Entries are in **reverse chronological order** (most recent session first).
 
 ---
 
+## Session 14 — Close local reliability and prep-suite gaps
+
+- Added durable `/v1` interview commands for screening, technical,
+  behavioral, and finalization jobs while preserving the existing synchronous
+  routes. Worker handlers reuse the existing agent and persistence logic.
+- Added the text-first prep suite: curated topic/problem catalog, deterministic
+  roadmaps, progress XP, user-owned submissions, API routes, and candidate UI.
+  Submissions are explicitly unverified and no code is executed.
+- Added a versioned deterministic contract harness with replayable starter
+  fixtures, authenticated data export/anonymization, and local backend Docker
+  Compose support with Postgres health checks.
+- Added focused durable, prep, harness, and data-subject tests. Final backend
+  suite: 221 passed; frontend type-check passed.
+
+Cloud deployment, real-Postgres/RLS proof, external tracing/alerts, calendar
+providers, reviewed semantic benchmarks, and an isolated code-execution
+sandbox remain environment- or decision-dependent work.
+
 ## Session 13 — Harden platform boundaries and complete marketplace flows
 
 - Scoped legacy evaluation reads and mutations to the authenticated owner or

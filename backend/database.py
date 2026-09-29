@@ -652,12 +652,15 @@ def init_db() -> None:
     """Initialize database schema. Safe to call multiple times."""
     import hiring_schema
     import migrations
+    import prep_db
+    import prep_schema
 
     if USE_POSTGRES:
         with _get_conn() as (conn, cur):
             cur.execute(_PG_SCHEMA)
             cur.execute(_PG_IDENTITY_SCHEMA)
             cur.execute(hiring_schema.SCHEMA_PG)
+            cur.execute(prep_schema.SCHEMA_PG)
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS schema_migrations ("
                 "version INTEGER PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)"
@@ -666,6 +669,7 @@ def init_db() -> None:
             _apply_hiring_additive_columns(cur)
             migrations.apply_migrations(cur, use_postgres=True)
             _seed_roles(cur)
+        prep_db.seed_catalog()
         logger.info("PostgreSQL database initialized (DATABASE_URL detected).")
     else:
         conn = _sqlite_conn()
@@ -673,6 +677,7 @@ def init_db() -> None:
             conn.executescript(_SQLITE_SCHEMA)
             conn.executescript(_SQLITE_IDENTITY_SCHEMA)
             conn.executescript(hiring_schema.SCHEMA_SQLITE)
+            conn.executescript(prep_schema.SCHEMA_SQLITE)
             cur = conn.cursor()
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS schema_migrations ("
@@ -690,6 +695,7 @@ def init_db() -> None:
             )
         finally:
             conn.close()
+        prep_db.seed_catalog()
 
 
 
@@ -1551,6 +1557,92 @@ def get_user(user_id: int) -> Optional[dict]:
             (user_id,),
         )
         return _row_to_dict(cur.fetchone())
+
+
+def export_user_data(user_id: int) -> dict:
+    """Return a user-scoped export without password hashes or token secrets."""
+    import candidate_db
+
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"SELECT id, org_id, role_id, status, created_at, updated_at "
+            f"FROM org_memberships WHERE user_id = {p}",
+            (user_id,),
+        )
+        memberships = [_row_to_dict(row) for row in cur.fetchall()]
+        cur.execute(
+            f"SELECT id, posting_id, status, current_stage, source, created_at, updated_at, withdrawn_at "
+            f"FROM applications WHERE candidate_user_id = {p}",
+            (user_id,),
+        )
+        applications = [_row_to_dict(row) for row in cur.fetchall()]
+        cur.execute(
+            f"SELECT i.id, i.org_id, i.application_id, i.title, i.scheduled_start, "
+            f"i.scheduled_end, i.timezone, i.meeting_url, i.status "
+            f"FROM interviews i JOIN interview_participants ip ON ip.interview_id = i.id "
+            f"WHERE ip.user_id = {p}",
+            (user_id,),
+        )
+        interviews = [_row_to_dict(row) for row in cur.fetchall()]
+        cur.execute(
+            f"SELECT {_EVALUATION_SUMMARY_COLUMNS} FROM evaluations WHERE owner_user_id = {p}",
+            (user_id,),
+        )
+        evaluations = [_row_to_dict(row) for row in cur.fetchall()]
+
+    profile = candidate_db.get_full_profile(user_id)
+    return {
+        "export_version": "user-data-v1",
+        "user": get_user(user_id),
+        "profile": profile,
+        "memberships": memberships,
+        "applications": applications,
+        "interviews": interviews,
+        "evaluations": evaluations,
+    }
+
+
+def active_owner_memberships(user_id: int) -> list[dict]:
+    """Return active organization memberships where the user is an owner."""
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"SELECT m.org_id, r.name AS role_name FROM org_memberships m "
+            f"JOIN roles r ON r.id = m.role_id WHERE m.user_id = {p} "
+            f"AND m.status = 'ACTIVE' AND m.deleted_at IS NULL AND r.name = 'org_owner'",
+            (user_id,),
+        )
+        return [_row_to_dict(row) for row in cur.fetchall()]
+
+
+def anonymize_user_data(user_id: int) -> None:
+    """Remove candidate-owned data while retaining audit and referential history."""
+    p = _ph()
+    deleted_email = f"deleted-{user_id}@invalid.local"
+    with _get_conn() as (conn, cur):
+        statements = [
+            ("DELETE FROM prep_xp_events WHERE user_id = {p}", (user_id,)),
+            ("DELETE FROM prep_submissions WHERE user_id = {p}", (user_id,)),
+            ("DELETE FROM prep_roadmap_nodes WHERE roadmap_id IN (SELECT id FROM prep_roadmaps WHERE user_id = {p})", (user_id,)),
+            ("DELETE FROM prep_roadmaps WHERE user_id = {p}", (user_id,)),
+            ("DELETE FROM prep_gamification WHERE user_id = {p}", (user_id,)),
+            ("DELETE FROM interview_participants WHERE user_id = {p}", (user_id,)),
+            ("DELETE FROM applications WHERE candidate_user_id = {p}", (user_id,)),
+            ("DELETE FROM referrals WHERE candidate_user_id = {p}", (user_id,)),
+            ("DELETE FROM campaign_members WHERE user_id = {p}", (user_id,)),
+            ("DELETE FROM candidate_profiles WHERE user_id = {p}", (user_id,)),
+            ("DELETE FROM evaluations WHERE owner_user_id = {p}", (user_id,)),
+            ("UPDATE org_memberships SET deleted_at = {_now}, status = 'REMOVED' WHERE user_id = {p}", (user_id,)),
+        ]
+        for statement, params in statements:
+            cur.execute(statement.format(p=p, _now=_now_sql()), params)
+        cur.execute(
+            f"UPDATE users SET email = {p}, email_normalized = {p}, full_name = '', "
+            f"password_hash = {p}, status = 'DELETED', deleted_at = {_now_sql()}, "
+            f"email_verified_at = NULL WHERE id = {p}",
+            (deleted_email, deleted_email, "deleted", user_id),
+        )
 
 
 def touch_user_login(user_id: int) -> None:

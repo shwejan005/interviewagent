@@ -13,8 +13,31 @@ services:
       POSTGRES_USER: evalia
       POSTGRES_PASSWORD: evalia
       POSTGRES_DB: evalia
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U evalia -d evalia"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     volumes:
       - pgdata:/var/lib/postgresql/data
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      DATABASE_URL: postgresql://evalia:evalia@postgres:5432/evalia
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      JWT_SECRET: ${JWT_SECRET:-compose-development-secret-change-me}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      COPILOT_PROXY_API_KEY: ${COPILOT_PROXY_API_KEY:-not-needed}
+    depends_on:
+      postgres:
+        condition: service_healthy
 
 volumes:
   pgdata:

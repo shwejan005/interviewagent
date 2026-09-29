@@ -3,8 +3,9 @@
 Base URL: the FastAPI app root (`http://127.0.0.1:8000` in local dev, or
 whatever `BACKEND_URL` points the frontend's `/api/*` proxy at — see
 [ARCHITECTURE.md](ARCHITECTURE.md)). All request/response bodies are JSON
-unless noted. **No endpoint requires authentication** — see
-[SECURITY.md](SECURITY.md).
+unless noted. Hiring, prep, export, deletion, and authenticated evaluation
+endpoints require bearer authentication; the public sandbox is token-scoped.
+See [SECURITY.md](SECURITY.md).
 
 Every field and status code below was read directly from `routes.py` and
 `models.py`; response examples are illustrative, not literal captures,
@@ -93,6 +94,18 @@ memberships.
 render. That is a UX affordance only — every capability is re-checked
 server-side on each request.
 
+### `GET /auth/me/export`
+
+Returns the authenticated user's portable profile, memberships, applications,
+interviews, and owned evaluation summaries. Password hashes and token secrets
+are never included.
+
+### `DELETE /auth/me`
+
+Anonymizes the account and removes candidate-owned profile/application/prep
+data. The request is rejected with `409` while the user is an active owner of
+an organization.
+
 ---
 
 ## Organizations
@@ -102,7 +115,10 @@ server-side on each request.
 | `POST /orgs` | *(any authenticated user)* | Creator becomes `org_owner` in the same request — an org without an owner would be unadministrable |
 | `GET /orgs/{org_id}` | `org:settings:read` | 404 across tenants |
 | `GET /orgs/{org_id}/members` | `org:settings:read` | |
-| `POST /orgs/{org_id}/members` | `org:member:invite` | Only already-registered users; invitations are Phase 1 |
+| `POST /orgs/{org_id}/members` | `org:member:invite` | Adds an already-registered user directly |
+| `POST /orgs/{org_id}/invitations` | `org:member:invite` | Creates a hashed, expiring invitation; SMTP delivery is best-effort |
+| `GET /orgs/{org_id}/invitations` | `org:settings:read` | Lists invitation metadata without token secrets |
+| `POST /auth/invitations/accept` | authenticated | Accepts a token only for the invited email |
 | `PATCH /orgs/{org_id}/members/{user_id}` | `org:member:role:set` | 409 if it would demote the last owner |
 | `DELETE /orgs/{org_id}/members/{user_id}` | `org:member:remove` | 409 if it would remove the last owner |
 
@@ -110,6 +126,39 @@ Assignable org roles: `org_owner`, `org_admin`, `recruiter`,
 `hiring_manager`, `interviewer`. `candidate` is **not** assignable to an
 organization and is rejected with 400 — it is a platform-level persona, not
 an org role.
+
+---
+
+## Durable interview commands
+
+The `/v1` commands return `202` after durable admission. Run
+`python job_worker.py` separately to execute jobs. They reuse the existing
+agent functions and do not change the legacy synchronous route behavior.
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /v1/evaluations` | Queue screening; supports `Idempotency-Key` |
+| `POST /v1/evaluations/{id}/answers` | Persist an answer and queue technical/behavioral evaluation |
+| `POST /v1/evaluations/{id}/finalize` | Queue recommendation and committee finalization |
+| `GET /v1/evaluations/{id}` | Read scoped evaluation and durable job status |
+
+---
+
+## Preparation suite
+
+All require authentication and are user-scoped. The current suite is
+text-first: submissions are recorded for review, never executed, and never
+automatically marked as verified skills.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /prep/topics` | Curated topic graph nodes |
+| `GET /prep/problems` / `GET /prep/problems/{id}` | Starter problem catalog |
+| `POST /prep/roadmaps` | Create a deterministic roadmap |
+| `GET /prep/roadmaps` / `GET /prep/roadmaps/{id}` | Read owned roadmaps |
+| `POST /prep/roadmaps/{id}/nodes/{node_id}/complete` | Record progress and XP |
+| `POST /prep/problems/{id}/submissions` | Record an unverified written response |
+| `GET /prep/me/stats` | Read prep XP/streak state |
 
 ---
 

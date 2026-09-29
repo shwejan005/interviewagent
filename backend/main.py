@@ -44,6 +44,8 @@ from recruiter_routes import router as recruiter_router  # noqa: E402
 from database import check_database_connection, init_db  # noqa: E402
 from observability import configure_logging  # noqa: E402
 from rate_limit import InMemoryRateLimitMiddleware  # noqa: E402
+from prep_routes import router as prep_router  # noqa: E402
+from v1_routes import router as durable_router  # noqa: E402
 
 # Configure logging
 configure_logging()
@@ -190,6 +192,8 @@ app.include_router(jobs_router)
 # Registered before the legacy router because both define /orgs/* paths;
 # recruiter_router's are more specific and must match first.
 app.include_router(recruiter_router)
+app.include_router(prep_router)
+app.include_router(durable_router)
 app.include_router(router)
 
 

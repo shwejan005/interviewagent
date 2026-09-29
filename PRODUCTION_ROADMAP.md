@@ -325,7 +325,7 @@ Expect roughly **10–14 weeks for a narrow, evaluated pilot**, not a universall
 
 **Requirements:** REQ-002, REQ-006, REQ-010, REQ-011. **Dependencies:** P1.
 
-- [~] T011 [Plan:P2] Separate admission from execution in [backend/routes.py](backend/routes.py) and [backend/crew_runner.py](backend/crew_runner.py); add a durable worker/job repository and atomic claims/leases.
+- [~] T011 [Plan:P2] Separate admission from execution in [backend/routes.py](backend/routes.py) and [backend/crew_runner.py](backend/crew_runner.py); add a durable worker/job repository and atomic claims/leases. Additive `/v1` admission now covers screening, technical, behavioral, and finalization jobs; legacy routes remain synchronous for compatibility.
 - [~] T012 [Plan:P2] Implement per-stage/provider deadlines, typed transient errors, bounded exponential backoff with jitter, tenant-aware concurrency, cancellation and dead-letter/manual recovery.
 - [~] T013 [Plan:P2] Persist attempt IDs, model/prompt/rubric versions, usage, errors, timestamps and deployment provenance in the persistence layer. Verdict rows now retain this metadata and optional usage JSON; automatic provider usage extraction, normalized attempt history and cost accounting remain open.
 - [~] T014 [Plan:P2] Instrument request → queue → worker → model → validator → DB spans and structured logs; connect one reviewed observability destination. Durable worker lifecycle events now emit safe JSON metadata with job/evaluation/trace IDs, stage, attempt, status, duration, cancellation, and error type. Distributed spans, model/validator/DB coverage, usage/cost fields, and an external destination remain open.
@@ -339,8 +339,8 @@ Expect roughly **10–14 weeks for a narrow, evaluated pilot**, not a universall
 
 - [ ] T016 [Plan:P3] Define an approved, versioned role rubric with anchors, forbidden inferences and insufficient-evidence handling; replace vague scoring in [backend/tasks.py](backend/tasks.py) and [backend/models.py](backend/models.py).
 - [ ] T017 [Plan:P3] Build evidence-span/reference validation and explicit policy checks; aggregate only original competency scores under a versioned rule, not the recommendation's duplicate score.
-- [ ] T018 [Plan:P3] Add a provider-neutral evaluation adapter and TypeScript deterministic grader/runner package with strict contracts and a budget-capped CLI.
-- [ ] T019 [Plan:P3] Curate and version the first benchmark cases, label an ambiguous subset with multiple reviewers, and separate scenario families across development/validation/holdout splits.
+- [~] T018 [Plan:P3] Add a provider-neutral evaluation adapter and TypeScript deterministic grader/runner package with strict contracts and a budget-capped CLI. The backend contract harness and replayable starter fixtures exist; the TypeScript runner remains open.
+- [~] T019 [Plan:P3] Curate and version the first benchmark cases, label an ambiguous subset with multiple reviewers, and separate scenario families across development/validation/holdout splits. Starter contract fixtures exist; reviewed quality/fairness benchmark data remains open.
 - [ ] T020 [Plan:P3] Validate semantic judges against adjudicated labels; compare the existing pipeline, a simpler baseline, and no-committee variant with repeated-run and slice reporting.
 - [ ] T021 [Plan:P3] Add protected live-provider runs and release gate reports alongside deterministic PR tests; block critical policy regressions and report statistical uncertainty.
 
@@ -373,9 +373,9 @@ Expect roughly **10–14 weeks for a narrow, evaluated pilot**, not a universall
 
 **Requirements:** REQ-006, REQ-008, REQ-010, REQ-011, REQ-013. **Dependencies:** core P1–P5 gates; basic CI/deployment work starts earlier.
 
-- [ ] T031 [Plan:P6] Produce reproducible API/worker builds, one chosen infrastructure/deployment definition, isolated environments, managed secrets and a documented frontend/backend configuration based on [frontend/vercel.json](frontend/vercel.json) and [frontend/next.config.js](frontend/next.config.js).
+- [~] T031 [Plan:P6] Produce reproducible API/worker builds, one chosen infrastructure/deployment definition, isolated environments, managed secrets and a documented frontend/backend configuration based on [frontend/vercel.json](frontend/vercel.json) and [frontend/next.config.js](frontend/next.config.js). Local backend Docker/Compose and health-checked Postgres now exist; cloud deployment and managed secrets remain open.
 - [ ] T032 [Plan:P6] Run real-Postgres contract/concurrency tests, dependency and secret scans, production-like load/fault tests, migration rehearsal and rollback/canary checks.
-- [ ] T033 [Plan:P6] Implement and verify data retention/deletion across storage/telemetry, audit integrity, backup restore and operational access control.
+- [~] T033 [Plan:P6] Implement and verify data retention/deletion across storage/telemetry, audit integrity, backup restore and operational access control. Authenticated export/anonymization and last-owner protection exist; retention scheduling, backup restore, external audit anchoring, and telemetry deletion remain open.
 - [ ] T034 [Plan:P6] Run a small consented pilot, collect reviewer/user feedback, track actual reliability/cost/quality, resolve material findings and publish honest release limitations.
 
 **Exit:** restore and rollback have been exercised; operational ownership is assigned; access/privacy review is complete; benchmark and pilot evidence support the stated scope. Passing these gates does not imply certification or universal hiring validity.

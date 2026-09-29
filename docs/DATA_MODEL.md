@@ -133,6 +133,15 @@ reference an evaluation created by the human-reviewed screening route;
 borderline/failed screening recommendations move to `PENDING_REVIEW` rather
 than automatically rejecting a candidate.
 
+## Preparation additions
+
+The text-first preparation suite uses `prep_topics` and `prep_problems` as a
+small curated catalog, `prep_roadmaps`/`prep_roadmap_nodes` for deterministic
+user-owned plans, `prep_submissions` for unverified written practice, and
+`prep_gamification`/`prep_xp_events` for transparent progress points. No
+submitted code is executed by these tables or APIs; a provider-backed sandbox
+must be selected and isolated before code execution is enabled.
+
 ## `agent_verdicts`
 
 One row per agent execution attempt — including **failed** attempts.
