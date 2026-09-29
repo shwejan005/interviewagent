@@ -135,7 +135,7 @@ async def admit_finalization(
     evaluation_cookie: Optional[str] = Cookie(default=None, alias="evalia_evaluation_token"),
 ):
     token = _token_from_request(evaluation_token, evaluation_cookie)
-    evaluation = await _load_accessible_evaluation(evaluation_id, actor, token)
+    await _load_accessible_evaluation(evaluation_id, actor, token)
     if evaluation["status"] == "COMPLETE":
         return {"evaluation_id": evaluation_id, "status": "COMPLETE"}
     if evaluation["current_round"] < 4:
