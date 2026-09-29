@@ -210,6 +210,22 @@ Next.js 14 App Router. Pages relevant to the interview flow:
 authentication or authorization, and any client that can reach the FastAPI
 port directly bypasses it entirely.
 
+## Health and execution observability
+
+`GET /healthz` is a process liveness probe and deliberately does not depend on
+the database. `GET /readyz` returns `503` until application startup completes
+and while a trivial database connectivity query fails. These endpoints are
+safe for load-balancer and orchestrator checks; `GET /` remains an informational
+service description.
+
+The backend and standalone durable worker configure dependency-free JSON logs.
+Worker lifecycle events include `job_id`, `evaluation_id` when present,
+`trace_id` when present, stage, attempt, status, duration, cancellation state,
+and typed error metadata. Job payloads, resumes, and answers are not emitted.
+This is an initial operational boundary, not distributed tracing: request,
+model, validator, database spans, usage/cost extraction, alerts, and an
+external observability destination remain roadmap work.
+
 ## Schema evolution
 
 Fresh databases are bootstrapped from the dialect-specific DDL in
@@ -235,8 +251,9 @@ Documented explicitly here so it is not confused with an oversight:
   provenance and optional provider usage JSON, but normalized attempt history,
   automatic usage extraction/cost accounting, and question/answer versions are
   still open.
-- No observability/tracing platform integration (structured `logging` calls
-  only).
+- No distributed observability/tracing platform integration; JSON worker
+  lifecycle events exist, but request/model/validator/database spans,
+  usage/cost extraction, alerts, and an external destination are still open.
 - No evaluation harness / benchmark dataset for grading the agents
   themselves (only structural/schema validation of their output, via
   Pydantic).

@@ -133,6 +133,13 @@ def _now_sql() -> str:
     return "CURRENT_TIMESTAMP" if USE_POSTGRES else "datetime('now')"
 
 
+def check_database_connection() -> bool:
+    """Return whether the configured database accepts a trivial query."""
+    with _get_conn() as (conn, cur):
+        cur.execute("SELECT 1")
+        return cur.fetchone() is not None
+
+
 class DuplicateVerdictError(Exception):
     """Raised when a canonical verdict already exists for this evaluation/round.
 

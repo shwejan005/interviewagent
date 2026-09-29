@@ -6,7 +6,7 @@ import pytest
 
 import database as db
 from crew_runner import AgentOutputError
-from job_worker import _retry_delay, run_once
+from job_worker import _retry_delay, run_forever, run_once
 
 
 def test_retry_delay_is_capped_and_jittered(monkeypatch):
@@ -98,3 +98,25 @@ def test_cancellation_requested_during_handler_does_not_complete_job(isolated_db
 
     asyncio.run(run_once("worker-a", handlers={"test_cancel_during_run": handler}))
     assert isolated_db.get_job(job_id)["status"] == "CANCELLED"
+
+
+def test_worker_stop_event_drains_current_job_then_exits(isolated_db):
+    job_id = isolated_db.enqueue_job("test_stop", {})
+    stop_event = asyncio.Event()
+    seen = []
+
+    async def handler(payload):
+        seen.append(payload)
+        stop_event.set()
+
+    asyncio.run(
+        run_forever(
+            "worker-a",
+            handlers={"test_stop": handler},
+            stop_event=stop_event,
+            poll_seconds=0,
+        )
+    )
+
+    assert seen == [{}]
+    assert isolated_db.get_job(job_id)["status"] == "COMPLETED"

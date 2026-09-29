@@ -10,6 +10,21 @@ Entries are in **reverse chronological order** (most recent session first).
 
 ---
 
+## Session 12 — Add health checks and structured worker observability
+
+- Added `/healthz` process liveness and `/readyz` startup/database readiness
+  probes, with explicit `503` behavior before startup completion or when the
+  database probe fails.
+- Added cooperative durable-worker shutdown through an async stop event and
+  SIGINT/SIGTERM handling; the worker drains its current claimed job before
+  exiting.
+- Added dependency-free JSON logging and safe durable-job execution events
+  carrying IDs, stage, attempt, status, duration, cancellation, and typed
+  error metadata without logging job payloads, resumes, or answers.
+- Added focused health, shutdown, structured-log, and redaction regression
+  coverage. Distributed tracing, alerts/runbooks, and crash/restart proof
+  remain open roadmap work.
+
 ## Session 11 — Add schema migrations and execution provenance
 
 - Added an ordered `schema_migrations` ledger shared by SQLite and

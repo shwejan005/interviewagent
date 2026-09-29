@@ -435,7 +435,7 @@ async def final_decision(
     job_id = await _db(
         db.enqueue_job,
         "final_decision",
-        {"evaluation_id": evaluation_id},
+        {"evaluation_id": evaluation_id, "trace_id": uuid.uuid4().hex},
         idempotency_key=idempotency_key,
     )
     job = await _db(db.get_job, job_id)

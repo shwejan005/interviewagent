@@ -31,16 +31,16 @@ current state of the code, with concrete evidence for each verdict.
 
 | Task | Status | Evidence |
 |---|---|---|
-| T011 — Separate admission from execution; durable worker/job repository; atomic claims/leases | 🟡 Partial | `database.py` now persists `background_jobs` with idempotency keys, atomic SQLite/PostgreSQL claims, leases, retries, and dead-letter status; `job_worker.py` provides `run_once`/`run_forever`; finalization is resumable through round-4/5 checkpoints. The final-decision route can still execute the claimed job inline for backward compatibility, and screening/technical/behavioral stages are not yet admitted to jobs. Heartbeats and explicit graceful shutdown remain open. |
+| T011 — Separate admission from execution; durable worker/job repository; atomic claims/leases | 🟡 Partial | `database.py` now persists `background_jobs` with idempotency keys, atomic SQLite/PostgreSQL claims, leases, retries, and dead-letter status; `job_worker.py` provides `run_once`/`run_forever`; finalization is resumable through round-4/5 checkpoints. The final-decision route can still execute the claimed job inline for backward compatibility, and screening/technical/behavioral stages are not yet admitted to jobs. Heartbeats remain open; the standalone worker now has cooperative signal-driven shutdown. |
 | T012 — Per-stage deadlines, typed transient errors, bounded backoff+jitter, tenant concurrency, cancellation, dead-letter | 🟡 Partial | `crew_runner.py` now labels stages, classifies provider/rate-limit/timeout failures, applies capped exponential jitter, and enforces a configurable stage deadline. `job_worker.py` applies bounded retry jitter, persists cancellation requests, releases cancelled claims, and dead-letters `AgentOutputError` failures. Tenant-aware scheduling, lease heartbeats, cooperative in-flight cancellation tokens, and manual dead-letter recovery are still open. |
 | T013 — Persist attempt IDs, model/prompt/rubric versions, usage, errors, deployment provenance | 🟡 Partial | `agent_verdicts` rows now persist generated attempt IDs, model name, prompt/rubric labels, optional usage JSON, typed error classification, start/completion timestamps, and deployment provenance. Automatic provider usage extraction/cost accounting and a normalized stage-attempt history remain open. |
-| T014 — Instrument request→queue→worker→model→validator→DB spans; connect an observability destination | ⬜ Not started | Only Python `logging` calls exist; no distributed tracing (OpenTelemetry or similar), no external observability platform connected. |
-| T015 — Liveness/readiness, graceful worker shutdown, alerts+runbooks, crash/restart recovery proof | ⬜ Not started | No `/healthz`/`/readyz` endpoints exist beyond the informational `GET /`. No worker process exists to shut down gracefully (there is no separate worker — see T011). |
+| T014 — Instrument request→queue→worker→model→validator→DB spans; connect an observability destination | 🟡 Partial | `observability.py` configures single-line JSON logs and durable worker events include safe job/evaluation/trace IDs, stage, attempt, status, duration, cancellation, and typed error metadata. Payload contents are excluded. Distributed spans, request/model/validator/DB coverage, automatic usage/cost fields, and an external observability platform remain open. |
+| T015 — Liveness/readiness, graceful worker shutdown, alerts+runbooks, crash/restart recovery proof | 🟡 Partial | `/healthz` is process-only; `/readyz` requires completed startup and a successful `SELECT 1` probe. `job_worker.py` translates SIGINT/SIGTERM into cooperative shutdown and drains the current claimed job, with focused regression coverage. Operational alerts, runbooks, and model-stub crash/restart evidence remain open. |
 
 **P2 assessment:** partially implemented. Durable finalization and core retry
 controls now exist, but the first three rounds still run in HTTP requests and
-the worker lacks heartbeats, tenant concurrency controls, tracing, readiness,
-and graceful shutdown. The phase is not production-certified.
+the worker lacks heartbeats, tenant concurrency controls, distributed tracing,
+alerts/runbooks, and crash/restart evidence. The phase is not production-certified.
 
 ## P3 — Evidence, rubrics and evaluation harness
 

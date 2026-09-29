@@ -328,8 +328,8 @@ Expect roughly **10–14 weeks for a narrow, evaluated pilot**, not a universall
 - [~] T011 [Plan:P2] Separate admission from execution in [backend/routes.py](backend/routes.py) and [backend/crew_runner.py](backend/crew_runner.py); add a durable worker/job repository and atomic claims/leases.
 - [~] T012 [Plan:P2] Implement per-stage/provider deadlines, typed transient errors, bounded exponential backoff with jitter, tenant-aware concurrency, cancellation and dead-letter/manual recovery.
 - [~] T013 [Plan:P2] Persist attempt IDs, model/prompt/rubric versions, usage, errors, timestamps and deployment provenance in the persistence layer. Verdict rows now retain this metadata and optional usage JSON; automatic provider usage extraction, normalized attempt history and cost accounting remain open.
-- [ ] T014 [Plan:P2] Instrument request → queue → worker → model → validator → DB spans and structured logs; connect one reviewed observability destination.
-- [ ] T015 [Plan:P2] Add safe liveness/readiness, graceful worker shutdown and operational alerts with runbooks; prove crash/restart recovery with model stubs.
+- [~] T014 [Plan:P2] Instrument request → queue → worker → model → validator → DB spans and structured logs; connect one reviewed observability destination. Durable worker lifecycle events now emit safe JSON metadata with job/evaluation/trace IDs, stage, attempt, status, duration, cancellation, and error type. Distributed spans, model/validator/DB coverage, usage/cost fields, and an external destination remain open.
+- [~] T015 [Plan:P2] Add safe liveness/readiness, graceful worker shutdown and operational alerts with runbooks; prove crash/restart recovery with model stubs. `/healthz` and database-backed `/readyz` exist, and the worker drains its current claim after SIGINT/SIGTERM. Alerts, runbooks, and crash/restart evidence remain open.
 
 **Exit:** an accepted job survives process loss; late/duplicate attempts cannot overwrite canonical state; every run has attributable status/cost/error telemetry; retry storms are bounded.
 

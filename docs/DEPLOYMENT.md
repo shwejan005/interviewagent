@@ -46,9 +46,10 @@ This list is deliberately blunt — it is the honest complement to
 4. **No secrets management integration** — `.env`/environment variables
    only; no integration with a secrets manager (AWS Secrets Manager,
    Vault, etc.).
-5. **No health/readiness probes** — only `GET /` (informational) exists;
-   there's no `/healthz`/`/readyz` distinguishing "process is up" from
-   "database is reachable and the app is ready to serve traffic."
+5. **Health/readiness are now available but not a complete deployment gate** —
+   `/healthz` reports process liveness and `/readyz` verifies startup plus a
+   database `SELECT 1` probe. Alerts, runbooks, and crash/restart recovery
+   evidence are still missing.
 6. **No backup/restore procedure has been exercised** for whichever
    PostgreSQL provider is chosen.
 7. **The rate limiter is single-process only** — running more than one
@@ -58,6 +59,20 @@ This list is deliberately blunt — it is the honest complement to
 8. **`next build` requires outbound network access** (Google Fonts fetch at
    build time) — confirm your build environment/CI runner has it, or switch
    to a locally bundled font first (see [SETUP.md](SETUP.md)).
+
+## Runtime probes and worker shutdown
+
+Use `GET /healthz` for a process-only liveness check and `GET /readyz` for
+traffic admission. A `503` from readiness means the application has not
+finished startup or its database probe failed; it should remove the instance
+from service rather than restart it solely because the database is briefly
+unavailable.
+
+Run the durable worker as a separate process with `python job_worker.py`.
+SIGINT and SIGTERM request cooperative shutdown: the worker stops claiming new
+jobs, finishes the current handler, and then exits. This behavior is covered
+by deterministic tests, but deployment-specific signal delivery and
+crash/restart recovery have not yet been exercised.
 
 ## Recommended immediate next step
 

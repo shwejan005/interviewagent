@@ -21,6 +21,7 @@ Memory Architecture:
 """
 
 import os
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -40,15 +41,12 @@ from auth_routes import router as auth_router, org_router  # noqa: E402
 from admin_routes import router as admin_router  # noqa: E402
 from candidate_routes import router as candidate_router, jobs_router  # noqa: E402
 from recruiter_routes import router as recruiter_router  # noqa: E402
-from database import init_db  # noqa: E402
+from database import check_database_connection, init_db  # noqa: E402
+from observability import configure_logging  # noqa: E402
 from rate_limit import InMemoryRateLimitMiddleware  # noqa: E402
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+configure_logging()
 logger = logging.getLogger(__name__)
 
 
@@ -60,6 +58,7 @@ async def lifespan(app: FastAPI):
     """Application startup and shutdown events."""
     # Startup
     logger.info("Initializing Evalia backend...")
+    app.state.ready = False
     if not os.getenv("GEMINI_API_KEY"):
         logger.warning(
             "GEMINI_API_KEY is not set. Agent calls will fail until it is configured."
@@ -67,9 +66,12 @@ async def lifespan(app: FastAPI):
     _validate_startup_config()
     init_db()
     logger.info("Database initialized.")
-    yield
-    # Shutdown
-    logger.info("Shutting down Evalia backend.")
+    app.state.ready = True
+    try:
+        yield
+    finally:
+        app.state.ready = False
+        logger.info("Shutting down Evalia backend.")
 
 
 def _validate_startup_config() -> None:
@@ -218,3 +220,32 @@ async def root():
             "GET  /dashboard/stats",
         ],
     }
+
+
+@app.get("/healthz")
+async def healthz():
+    """Process liveness probe that does not depend on database availability."""
+    return {"status": "ok"}
+
+
+@app.get("/readyz")
+async def readyz(request: Request):
+    """Readiness probe for traffic that requires an initialized database."""
+    if not getattr(request.app.state, "ready", False):
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "detail": "Application startup is incomplete."},
+        )
+
+    try:
+        database_ready = await asyncio.to_thread(check_database_connection)
+    except Exception:
+        logger.exception("Readiness database check failed")
+        database_ready = False
+
+    if not database_ready:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "detail": "Database is unavailable."},
+        )
+    return {"status": "ready"}

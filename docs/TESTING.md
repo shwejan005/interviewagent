@@ -4,7 +4,7 @@
 
 | Suite | Location | What it covers | Live LLM calls? | Last verified run |
 |---|---|---|---|---|
-| Backend automated tests | `backend/tests/` (pytest) | Output parsing/validation, database PII/uniqueness/batching, full route pipeline (mocked agents), rate-limit middleware | No | 38 passed, 0 failed, ~44s (2026-09-27) |
+| Backend automated tests | `backend/tests/` (pytest) | Output parsing/validation, database PII/uniqueness/batching, full route pipeline (mocked agents), rate-limit middleware, health/readiness, durable worker retries/cancellation/shutdown, structured event redaction | No | 202 passed, 0 failed, ~8m33s (2026-09-27) |
 | Frontend type-check | `frontend/` (`npm run typecheck`) | TypeScript type safety across the whole `app/`/`components/` tree | N/A | 0 errors (2026-09-27) |
 | Live agent smoke test | Ad hoc, not checked in (see below) | The actual CrewAI agents against a real LLM endpoint, end-to-end | **Yes** | Full happy path (PASS→PASS→PASS→HIRE) + reject path, verified manually 2026-09-27; not automated/repeatable as a checked-in test |
 
@@ -77,6 +77,14 @@ means:
 - `tests/test_rate_limit.py` — the `InMemoryRateLimitMiddleware` in
   isolation, against a minimal Starlette app (no database, no agents, no
   crewai import — this file alone runs in ~2–3 seconds).
+- `tests/test_health.py` — process-only `/healthz`, database-backed `/readyz`,
+  and the `503` behavior before startup completion or when the database probe
+  fails.
+- `tests/test_job_worker.py` — durable claim/outcome behavior, retry and
+  cancellation transitions, and cooperative stop-event shutdown that drains
+  a currently claimed job before exiting.
+- `tests/test_observability.py` — stable JSON execution-event fields and the
+  guarantee that job payloads such as resumes and answers are not logged.
 
 ### Disabling the rate limiter in tests
 
@@ -162,3 +170,6 @@ Documented here so it isn't mistaken for an oversight during review:
 - **Security testing** — no automated authorization/tenant-isolation tests
   exist, because there is no authorization/tenant isolation implemented yet
   (see [SECURITY.md](SECURITY.md)).
+- **Distributed observability** — worker lifecycle JSON events are tested
+  locally, but there is no OpenTelemetry trace, external observability
+  destination, alert, or crash/restart integration test yet.
