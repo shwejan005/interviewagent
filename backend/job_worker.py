@@ -15,10 +15,18 @@ from crew_runner import AgentOutputError
 from crew_runner import run_hiring_committee, run_hiring_recommendation
 from finalization import finalize_evaluation
 from observability import configure_logging, log_execution_event
+from durable_pipeline import (
+    handle_behavioral,
+    handle_screening,
+    handle_technical,
+)
 
 logger = logging.getLogger(__name__)
 
 FINAL_DECISION_JOB = "final_decision"
+SCREENING_JOB = "screening"
+TECHNICAL_JOB = "technical_evaluation"
+BEHAVIORAL_JOB = "behavioral_evaluation"
 RETRY_BASE_DELAY_SECONDS = float(os.getenv("JOB_RETRY_BASE_DELAY_SECONDS", "5"))
 RETRY_MAX_DELAY_SECONDS = float(os.getenv("JOB_RETRY_MAX_DELAY_SECONDS", "900"))
 RETRY_JITTER_RATIO = float(os.getenv("JOB_RETRY_JITTER_RATIO", "0.2"))
@@ -36,6 +44,9 @@ async def _handle_final_decision(payload: dict) -> None:
 
 DEFAULT_HANDLERS: Mapping[str, JobHandler] = {
     FINAL_DECISION_JOB: _handle_final_decision,
+    SCREENING_JOB: handle_screening,
+    TECHNICAL_JOB: handle_technical,
+    BEHAVIORAL_JOB: handle_behavioral,
 }
 
 

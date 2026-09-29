@@ -16,6 +16,7 @@ const GUEST_LINKS = [
 
 const CANDIDATE_LINKS = [
   { href: "/jobs", label: "Jobs" },
+  { href: "/prep", label: "Prep" },
   { href: "/applications", label: "Applications" },
   { href: "/interviews", label: "Interviews" },
   { href: "/referrals", label: "Referrals" },

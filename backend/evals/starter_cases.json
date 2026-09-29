@@ -1,0 +1,20 @@
+{
+  "dataset_version": "starter-contract-v1",
+  "purpose": "Deterministic contract fixtures only; not a quality or fairness benchmark.",
+  "cases": [
+    {
+      "case_id": "invalid-json-screening",
+      "stage": "screening",
+      "raw_output": "not json",
+      "expected_passed": false,
+      "expected_rule": "contract.json_object"
+    },
+    {
+      "case_id": "missing-confidence-screening",
+      "stage": "screening",
+      "raw_output": "{\"decision\":\"PASS\",\"score\":8}",
+      "expected_passed": false,
+      "expected_rule": "contract.schema"
+    }
+  ]
+}

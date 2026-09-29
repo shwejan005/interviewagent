@@ -161,6 +161,33 @@ async def me(actor: Actor = Depends(current_actor)):
     )
 
 
+@router.get("/me/export")
+async def export_my_data(actor: Actor = Depends(current_actor)):
+    """Return the authenticated user's portable data export."""
+    return await _db(db.export_user_data, actor.user_id)
+
+
+@router.delete("/me", status_code=204)
+async def delete_my_account(request: Request, actor: Actor = Depends(current_actor)):
+    """Anonymize the account and remove candidate-owned data."""
+    owners = await _db(db.active_owner_memberships, actor.user_id)
+    if owners:
+        raise HTTPException(
+            status_code=409,
+            detail="Transfer organization ownership before deleting this account.",
+        )
+    audit.record_from_actor(
+        actor,
+        "user.data_deleted",
+        tier=audit.AuditTier.SECURITY,
+        actor_ip=_client_ip(request),
+        resource_type="user",
+        resource_id=actor.user_id,
+        detail={"organizations_owned": 0},
+    )
+    await _db(db.anonymize_user_data, actor.user_id)
+
+
 # ── Organizations ────────────────────────────────────────────────────
 
 
