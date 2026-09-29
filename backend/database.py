@@ -895,18 +895,20 @@ def fail_job(
     worker_id: str,
     error: str,
     *,
-    retry_delay_seconds: int = 60,
+    retry_delay_seconds: float = 60,
+    retryable: bool = True,
 ) -> Optional[str]:
-    """Record a failure and either retry later or move the job to DEAD."""
+    """Record a failure and retry later or move it to DEAD."""
     if retry_delay_seconds < 0:
         raise ValueError("retry_delay_seconds cannot be negative")
 
     p = _ph()
+    next_status = "'PENDING'" if retryable else "'DEAD'"
     with _get_conn() as (conn, cur):
         if USE_POSTGRES:
             cur.execute(
                 f"""UPDATE background_jobs
-                    SET status = CASE WHEN attempts >= max_attempts THEN 'DEAD' ELSE 'PENDING' END,
+                    SET status = CASE WHEN attempts >= max_attempts THEN 'DEAD' ELSE {next_status} END,
                         available_at = CURRENT_TIMESTAMP + ({p} * INTERVAL '1 second'),
                         last_error = {p}, updated_at = CURRENT_TIMESTAMP,
                         locked_at = NULL, locked_by = NULL
@@ -919,7 +921,7 @@ def fail_job(
 
         cur.execute(
             f"""UPDATE background_jobs
-                SET status = CASE WHEN attempts >= max_attempts THEN 'DEAD' ELSE 'PENDING' END,
+                SET status = CASE WHEN attempts >= max_attempts THEN 'DEAD' ELSE {next_status} END,
                     available_at = datetime('now', {p}), last_error = {p},
                     updated_at = datetime('now'), locked_at = NULL, locked_by = NULL
                 WHERE id = {p} AND status = 'RUNNING' AND locked_by = {p}""",

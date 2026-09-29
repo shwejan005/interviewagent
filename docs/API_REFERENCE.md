@@ -383,6 +383,7 @@ result instead of re-invoking (and re-billing) the agents.
 | Status | When |
 |---|---|
 | 200 | Success, replay, or early-rejected short-circuit (see below) |
+| 202 | Finalization is queued or owned by another worker; retry after the `Retry-After` header |
 | 400 | `current_round < 4` (rounds 1–3 not all finished yet) |
 | 404 | `evaluation_id` does not exist |
 | 409 | A round-4 or round-5 canonical verdict already exists but the evaluation isn't yet marked `COMPLETE` (a concurrent finalize is in flight) |

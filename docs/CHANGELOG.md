@@ -10,6 +10,21 @@ Entries are in **reverse chronological order** (most recent session first).
 
 ---
 
+## Session 10 — Add durable retry controls for agent jobs
+
+- Added typed provider, rate-limit, and stage-timeout errors in
+  `backend/crew_runner.py`, with explicit stage labels, configurable
+  deadlines, and capped exponential backoff with bounded jitter.
+- Added worker retry jitter, cancellation-safe lease release, and explicit
+  non-retryable dead-lettering for invalid model output.
+- Extended `database.fail_job` with a retryability decision while preserving
+  the existing attempt limit and SQLite/PostgreSQL behavior.
+- Added focused regression tests for retry bounds, cancellation recovery,
+  and immediate dead-lettering; updated roadmap and architecture status to
+  describe the partial P2 implementation accurately.
+
+---
+
 ## Session 9 — Fix: no persona distinction at onboarding (frontend only)
 
 **Trigger:** the landing page's primary call-to-action was still "Start

@@ -18,8 +18,9 @@ import asyncio
 import os
 import re
 import json
-import time
+import random
 import logging
+import time
 from typing import Type, TypeVar
 
 from crewai import Crew
@@ -28,7 +29,31 @@ from pydantic import BaseModel, ValidationError
 logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 3
-RETRY_DELAY = 60  # seconds to wait on rate-limit
+RETRY_BASE_DELAY_SECONDS = float(os.getenv("AGENT_RETRY_BASE_DELAY_SECONDS", "1"))
+RETRY_MAX_DELAY_SECONDS = float(os.getenv("AGENT_RETRY_MAX_DELAY_SECONDS", "60"))
+RETRY_JITTER_RATIO = float(os.getenv("AGENT_RETRY_JITTER_RATIO", "0.2"))
+STAGE_TIMEOUT_SECONDS = float(os.getenv("AGENT_STAGE_TIMEOUT_SECONDS", "180"))
+
+
+class TransientAgentError(Exception):
+    """A provider failure that may succeed when retried later."""
+
+    def __init__(self, message: str, *, stage: str, retry_after: float | None = None):
+        super().__init__(message)
+        self.stage = stage
+        self.retry_after = retry_after
+
+
+class AgentRateLimitError(TransientAgentError):
+    """The provider rejected work because of quota or rate limiting."""
+
+
+class AgentProviderError(TransientAgentError):
+    """A transient network or upstream provider failure."""
+
+
+class AgentTimeoutError(TransientAgentError):
+    """A stage exceeded its configured execution deadline."""
 
 
 class AgentOutputError(Exception):
@@ -44,29 +69,79 @@ class AgentOutputError(Exception):
         self.raw_output = raw_output
 
 
-def _run_crew_with_retry_sync(crew: Crew) -> str:
-    """Run a CrewAI Crew with retry logic for rate-limit errors (sync)."""
+def _is_rate_limit_error(error: Exception) -> bool:
+    text = str(error).lower()
+    return "429" in text or "quota" in text or "rate limit" in text
+
+
+def _is_provider_transient_error(error: Exception) -> bool:
+    text = str(error).lower()
+    return any(
+        marker in text
+        for marker in ("timeout", "timed out", "temporarily unavailable", "connection reset", "502", "503", "504")
+    )
+
+
+def _as_transient_error(error: Exception, *, stage: str) -> TransientAgentError | None:
+    if _is_rate_limit_error(error):
+        return AgentRateLimitError(str(error), stage=stage)
+    if _is_provider_transient_error(error):
+        return AgentProviderError(str(error), stage=stage)
+    return None
+
+
+def _retry_delay(attempt: int, *, random_value: float | None = None) -> float:
+    """Return a capped exponential delay with bounded multiplicative jitter."""
+    base = min(
+        RETRY_MAX_DELAY_SECONDS,
+        RETRY_BASE_DELAY_SECONDS * (2 ** max(attempt - 1, 0)),
+    )
+    jitter = random.uniform(1 - RETRY_JITTER_RATIO, 1 + RETRY_JITTER_RATIO)
+    if random_value is not None:
+        jitter = random_value
+    return min(RETRY_MAX_DELAY_SECONDS, max(0.0, base * jitter))
+
+
+def _run_crew_with_retry_sync(crew: Crew, *, stage: str) -> str:
+    """Run a CrewAI Crew with typed transient-error retries (sync)."""
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             result = crew.kickoff()
             return str(result)
-        except Exception as e:
-            err = str(e)
-            if "429" in err or "quota" in err.lower() or "rate" in err.lower():
-                if attempt < MAX_RETRIES:
-                    wait = RETRY_DELAY * attempt
-                    logger.warning(
-                        f"Rate limited (attempt {attempt}/{MAX_RETRIES}). "
-                        f"Retrying in {wait}s..."
-                    )
-                    time.sleep(wait)
-                    continue
-            raise
+        except Exception as error:
+            transient_error = _as_transient_error(error, stage=stage)
+            if transient_error is None or attempt >= MAX_RETRIES:
+                if transient_error is not None:
+                    raise transient_error from error
+                raise
+            wait = _retry_delay(attempt)
+            logger.warning(
+                "Transient agent error at stage %s (attempt %s/%s). Retrying in %.2fs.",
+                stage,
+                attempt,
+                MAX_RETRIES,
+                wait,
+            )
+            time.sleep(wait)
 
 
-async def _run_crew_with_retry(crew: Crew) -> str:
-    """Async wrapper — offloads sync crew.kickoff() to a thread."""
-    return await asyncio.to_thread(_run_crew_with_retry_sync, crew)
+async def _run_crew_with_retry(
+    crew: Crew,
+    *,
+    stage: str,
+    timeout_seconds: float = STAGE_TIMEOUT_SECONDS,
+) -> str:
+    """Run a stage off the event loop with a hard request-side deadline."""
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_run_crew_with_retry_sync, crew, stage=stage),
+            timeout=timeout_seconds,
+        )
+    except asyncio.TimeoutError as error:
+        raise AgentTimeoutError(
+            f"Agent stage {stage} exceeded its {timeout_seconds:.1f}s deadline.",
+            stage=stage,
+        ) from error
 
 
 from agents import (
@@ -175,7 +250,7 @@ async def run_screening(evaluation_id: int, resume: str, role: str) -> dict:
     task = create_screening_task(agent, resume, role)
 
     crew = Crew(agents=[agent], tasks=[task], verbose=True)
-    raw_output = await _run_crew_with_retry(crew)
+    raw_output = await _run_crew_with_retry(crew, stage="screening")
 
     verdict_data = _parse_json_output(raw_output)
     verdict = _validate_verdict(verdict_data, ScreeningVerdict, raw_output)
@@ -206,7 +281,7 @@ async def run_technical_questions(evaluation_id: int, resume: str) -> dict:
     task = create_technical_question_task(agent, resume, round1_verdict)
 
     crew = Crew(agents=[agent], tasks=[task], verbose=True)
-    questions = await _run_crew_with_retry(crew)
+    questions = await _run_crew_with_retry(crew, stage="technical_questions")
 
     return {
         "round": 2,
@@ -227,7 +302,7 @@ async def run_technical_evaluation(evaluation_id: int, resume: str, questions: s
     )
 
     crew = Crew(agents=[agent], tasks=[task], verbose=True)
-    raw_output = await _run_crew_with_retry(crew)
+    raw_output = await _run_crew_with_retry(crew, stage="technical_evaluation")
 
     verdict_data = _parse_json_output(raw_output)
     verdict = _validate_verdict(verdict_data, TechnicalVerdict, raw_output)
@@ -261,7 +336,7 @@ async def run_behavioral_question(evaluation_id: int, resume: str) -> dict:
     )
 
     crew = Crew(agents=[agent], tasks=[task], verbose=True)
-    question = await _run_crew_with_retry(crew)
+    question = await _run_crew_with_retry(crew, stage="behavioral_question")
 
     return {
         "round": 3,
@@ -283,7 +358,7 @@ async def run_behavioral_evaluation(evaluation_id: int, resume: str, question: s
     )
 
     crew = Crew(agents=[agent], tasks=[task], verbose=True)
-    raw_output = await _run_crew_with_retry(crew)
+    raw_output = await _run_crew_with_retry(crew, stage="behavioral_evaluation")
 
     verdict_data = _parse_json_output(raw_output)
     verdict = _validate_verdict(verdict_data, BehavioralVerdict, raw_output)
@@ -320,7 +395,7 @@ async def run_hiring_recommendation(evaluation_id: int) -> dict:
     )
 
     crew = Crew(agents=[agent], tasks=[task], verbose=True)
-    raw_output = await _run_crew_with_retry(crew)
+    raw_output = await _run_crew_with_retry(crew, stage="hiring_recommendation")
 
     verdict_data = _parse_json_output(raw_output)
     verdict = _validate_verdict(verdict_data, HiringRecommendation, raw_output)
@@ -358,7 +433,7 @@ async def run_hiring_committee(evaluation_id: int) -> dict:
     )
 
     crew = Crew(agents=[agent], tasks=[task], verbose=True)
-    raw_output = await _run_crew_with_retry(crew)
+    raw_output = await _run_crew_with_retry(crew, stage="hiring_committee")
 
     verdict_data = _parse_json_output(raw_output)
     verdict = _validate_verdict(verdict_data, CommitteeDecision, raw_output)

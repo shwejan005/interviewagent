@@ -31,17 +31,16 @@ current state of the code, with concrete evidence for each verdict.
 
 | Task | Status | Evidence |
 |---|---|---|
-| T011 — Separate admission from execution; durable worker/job repository; atomic claims/leases | ⬜ Not started | Agent calls still execute synchronously within the HTTP request (offloaded to a thread via `asyncio.to_thread`, but not queued, leased, or resumable). Building a real durable worker is a significant architectural addition (a job table with atomic claims, a worker process, lease/heartbeat logic) that was out of scope for this documentation/hardening pass. |
-| T012 — Per-stage deadlines, typed transient errors, bounded backoff+jitter, tenant concurrency, cancellation, dead-letter | ⬜ Not started | `crew_runner._run_crew_with_retry_sync` has fixed 60s/120s backoff on rate-limit-shaped error strings, no jitter, no per-stage deadline, no dead-letter queue. Unchanged from the reviewed state. |
+| T011 — Separate admission from execution; durable worker/job repository; atomic claims/leases | 🟡 Partial | `database.py` now persists `background_jobs` with idempotency keys, atomic SQLite/PostgreSQL claims, leases, retries, and dead-letter status; `job_worker.py` provides `run_once`/`run_forever`; finalization is resumable through round-4/5 checkpoints. The final-decision route can still execute the claimed job inline for backward compatibility, and screening/technical/behavioral stages are not yet admitted to jobs. Heartbeats and explicit graceful shutdown remain open. |
+| T012 — Per-stage deadlines, typed transient errors, bounded backoff+jitter, tenant concurrency, cancellation, dead-letter | 🟡 Partial | `crew_runner.py` now labels stages, classifies provider/rate-limit/timeout failures, applies capped exponential jitter, and enforces a configurable stage deadline. `job_worker.py` applies bounded retry jitter, releases cancelled claims, and dead-letters `AgentOutputError` failures. Tenant-aware concurrency, lease heartbeats, cancellation tokens, and manual dead-letter recovery are still open. |
 | T013 — Persist attempt IDs, model/prompt/rubric versions, usage, errors, deployment provenance | ⬜ Not started | `agent_verdicts` rows do not record which model/prompt version produced them, nor token usage. |
 | T014 — Instrument request→queue→worker→model→validator→DB spans; connect an observability destination | ⬜ Not started | Only Python `logging` calls exist; no distributed tracing (OpenTelemetry or similar), no external observability platform connected. |
 | T015 — Liveness/readiness, graceful worker shutdown, alerts+runbooks, crash/restart recovery proof | ⬜ Not started | No `/healthz`/`/readyz` endpoints exist beyond the informational `GET /`. No worker process exists to shut down gracefully (there is no separate worker — see T011). |
 
-**P2 assessment:** essentially unstarted. This is the largest, most
-infrastructure-heavy phase of the roadmap and requires architectural
-decisions (queue technology, observability vendor) beyond what a single
-documentation/hardening pass can responsibly implement without those
-decisions being made by the project owner first.
+**P2 assessment:** partially implemented. Durable finalization and core retry
+controls now exist, but the first three rounds still run in HTTP requests and
+the worker lacks heartbeats, tenant concurrency controls, tracing, readiness,
+and graceful shutdown. The phase is not production-certified.
 
 ## P3 — Evidence, rubrics and evaluation harness
 

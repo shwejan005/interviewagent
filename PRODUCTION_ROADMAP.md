@@ -293,7 +293,7 @@ Set voice latency and accuracy gates only after selecting the actual provider an
 
 ## 10. Phased implementation plan and task breakdown
 
-**Estimation assumptions:** one experienced full-time engineer, access to a reviewer/domain partner, a bounded model/cloud budget, one initial role/workflow, and no enterprise procurement delay. Tasks are unchecked because no implementation has been performed.
+**Estimation assumptions:** one experienced full-time engineer, access to a reviewer/domain partner, a bounded model/cloud budget, one initial role/workflow, and no enterprise procurement delay. Task checkboxes reflect the current implementation state; partial work is called out in the gap analysis.
 
 Expect roughly **10–14 weeks for a narrow, evaluated pilot**, not a universally production-ready hiring platform. An interview-ready vertical slice can be built earlier by reducing breadth. Voice and regulated-client readiness add time. Exit gates matter more than dates.
 
@@ -325,8 +325,8 @@ Expect roughly **10–14 weeks for a narrow, evaluated pilot**, not a universall
 
 **Requirements:** REQ-002, REQ-006, REQ-010, REQ-011. **Dependencies:** P1.
 
-- [ ] T011 [Plan:P2] Separate admission from execution in [backend/routes.py](backend/routes.py) and [backend/crew_runner.py](backend/crew_runner.py); add a durable worker/job repository and atomic claims/leases.
-- [ ] T012 [Plan:P2] Implement per-stage/provider deadlines, typed transient errors, bounded exponential backoff with jitter, tenant-aware concurrency, cancellation and dead-letter/manual recovery.
+- [~] T011 [Plan:P2] Separate admission from execution in [backend/routes.py](backend/routes.py) and [backend/crew_runner.py](backend/crew_runner.py); add a durable worker/job repository and atomic claims/leases.
+- [~] T012 [Plan:P2] Implement per-stage/provider deadlines, typed transient errors, bounded exponential backoff with jitter, tenant-aware concurrency, cancellation and dead-letter/manual recovery.
 - [ ] T013 [Plan:P2] Persist attempt IDs, model/prompt/rubric versions, usage, errors, timestamps and deployment provenance in the persistence layer.
 - [ ] T014 [Plan:P2] Instrument request → queue → worker → model → validator → DB spans and structured logs; connect one reviewed observability destination.
 - [ ] T015 [Plan:P2] Add safe liveness/readiness, graceful worker shutdown and operational alerts with runbooks; prove crash/restart recovery with model stubs.

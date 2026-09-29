@@ -3,17 +3,22 @@
 import asyncio
 import logging
 import os
+import random
 import socket
 import uuid
 from typing import Awaitable, Callable, Mapping
 
 import database as db
+from crew_runner import AgentOutputError
 from crew_runner import run_hiring_committee, run_hiring_recommendation
 from finalization import finalize_evaluation
 
 logger = logging.getLogger(__name__)
 
 FINAL_DECISION_JOB = "final_decision"
+RETRY_BASE_DELAY_SECONDS = float(os.getenv("JOB_RETRY_BASE_DELAY_SECONDS", "5"))
+RETRY_MAX_DELAY_SECONDS = float(os.getenv("JOB_RETRY_MAX_DELAY_SECONDS", "900"))
+RETRY_JITTER_RATIO = float(os.getenv("JOB_RETRY_JITTER_RATIO", "0.2"))
 JobHandler = Callable[[dict], Awaitable[None]]
 
 
@@ -31,12 +36,26 @@ DEFAULT_HANDLERS: Mapping[str, JobHandler] = {
 }
 
 
+def _retry_delay(
+    attempts: int,
+    *,
+    base_seconds: float = RETRY_BASE_DELAY_SECONDS,
+    max_seconds: float = RETRY_MAX_DELAY_SECONDS,
+) -> float:
+    """Return a capped exponential delay with bounded multiplicative jitter."""
+    base = min(max_seconds, base_seconds * (2 ** max(attempts - 1, 0)))
+    jitter = random.uniform(1 - RETRY_JITTER_RATIO, 1 + RETRY_JITTER_RATIO)
+    return min(max_seconds, max(0.0, base * jitter))
+
+
 async def run_once(
     worker_id: str | None = None,
     *,
     handlers: Mapping[str, JobHandler] = DEFAULT_HANDLERS,
     lease_seconds: int = 300,
-    retry_delay_seconds: int = 60,
+    retry_delay_seconds: float | None = None,
+    retry_base_delay_seconds: float = RETRY_BASE_DELAY_SECONDS,
+    retry_max_delay_seconds: float = RETRY_MAX_DELAY_SECONDS,
 ) -> bool:
     """Claim and execute at most one job; return whether work was found."""
     worker_id = worker_id or f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex}"
@@ -51,15 +70,36 @@ async def run_once(
         await handler(job["payload"])
     except Exception as exc:
         logger.exception("Job %s failed on worker %s", job["id"], worker_id)
+        delay = (
+            retry_delay_seconds
+            if retry_delay_seconds is not None
+            else _retry_delay(
+                job["attempts"],
+                base_seconds=retry_base_delay_seconds,
+                max_seconds=retry_max_delay_seconds,
+            )
+        )
         status = await asyncio.to_thread(
             db.fail_job,
             job["id"],
             worker_id,
             str(exc),
-            retry_delay_seconds=retry_delay_seconds,
+            retry_delay_seconds=delay,
+            retryable=not isinstance(exc, AgentOutputError),
         )
         logger.warning("Job %s failure recorded with status %s", job["id"], status)
         return True
+    except asyncio.CancelledError:
+        await asyncio.shield(
+            asyncio.to_thread(
+                db.fail_job,
+                job["id"],
+                worker_id,
+                "Worker task cancelled before job completion",
+                retry_delay_seconds=0,
+            )
+        )
+        raise
 
     if not await asyncio.to_thread(db.complete_job, job["id"], worker_id):
         logger.error("Job %s completion lost worker ownership", job["id"])

@@ -18,14 +18,18 @@ flowchart LR
     Agents --> LLM["LLM provider\n(Gemini or local OpenAI-compatible proxy)"]
     CrewRunner --> Verdicts["backend/verdicts/{evaluation_id}/\n(raw + parsed JSON per round)"]
     FastAPI --> DB[("PostgreSQL or SQLite\n(database.py)")]
+    DB --> Worker["job_worker.py\n(durable finalization worker)"]
+    Worker --> CrewRunner
 ```
 
-There is no authentication, no multi-tenancy, and no durable job queue.
-Every HTTP request that triggers an agent call blocks on that call inside
-the request/response cycle (offloaded to a worker thread so it doesn't block
-the event loop, but not queued or resumable — see
-[GAP_ANALYSIS.md](GAP_ANALYSIS.md) P2). This is an accurate description of
-the current implementation, not a simplification.
+  There is no authentication or multi-tenancy in the legacy pipeline. Final
+  recommendation and committee work can be admitted to the durable
+  `background_jobs` table and resumed from persisted round-4/5 checkpoints;
+  `job_worker.py` claims those jobs with leases and bounded retry policy.
+  Screening, technical, and behavioral calls still run in the HTTP request
+  path, and the final-decision route may execute its claimed job inline for
+  backward compatibility. See [GAP_ANALYSIS.md](GAP_ANALYSIS.md) for the
+  remaining P2 gaps.
 
 ## The five-agent pipeline
 
@@ -208,10 +212,11 @@ Documented explicitly here so it is not confused with an oversight:
 
 - No authentication/authorization of any kind (see [SECURITY.md](SECURITY.md)).
 - No multi-tenancy — every evaluation is visible to every API caller.
-- No durable job queue — a crashed backend process during an agent call
-  loses that in-flight request (the database row survives at whatever state
-  it was last updated to, but the request itself must be retried by the
-  client).
+- Durable jobs are currently limited to finalization — a crashed backend
+  process during screening, technical, behavioral, or inline finalization
+  work still requires client retry. Finalization checkpoints and lease
+  recovery prevent already-persisted recommendation/committee work from
+  being recomputed unnecessarily.
 - No schema migration framework — `database.py` uses `CREATE TABLE IF NOT
   EXISTS` executed at every startup, not versioned migrations.
 - No observability/tracing platform integration (structured `logging` calls

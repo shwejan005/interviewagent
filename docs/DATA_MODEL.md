@@ -17,6 +17,7 @@ erDiagram
     evaluations ||--o{ agent_verdicts : "has many"
     evaluations ||--o{ interview_questions : "has many"
     evaluations ||--o{ interview_answers : "has many"
+    evaluations ||--o{ background_jobs : "queues"
 
     evaluations {
         int id PK
@@ -56,7 +57,30 @@ erDiagram
         text answer_text
         timestamp created_at
     }
+    background_jobs {
+        int id PK
+        text job_type
+        text payload
+        text status
+        int attempts
+        int max_attempts
+        timestamp available_at
+        timestamp locked_at
+        text locked_by
+        text idempotency_key UK
+        text last_error
+        timestamp completed_at
+    }
 ```
+
+## `background_jobs`
+
+Durable work records currently back final recommendation and committee
+execution. `idempotency_key` prevents duplicate admission; atomic claims set
+`locked_by`/`locked_at` and increment `attempts`; an expired lease can be
+reclaimed until `max_attempts` is reached. Jobs end in `COMPLETED` or `DEAD`.
+The table is not yet an attempt-history or usage ledger, and the first three
+interview rounds are not admitted to it.
 
 ## `evaluations`
 
