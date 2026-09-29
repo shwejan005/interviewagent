@@ -10,6 +10,23 @@ Entries are in **reverse chronological order** (most recent session first).
 
 ---
 
+## Session 11 — Add schema migrations and execution provenance
+
+- Added an ordered `schema_migrations` ledger shared by SQLite and
+  PostgreSQL. Existing SQLite job rows are preserved through the cancellable
+  job-table rebuild; legacy PostgreSQL status checks are replaced safely so
+  `CANCELLED` is valid after upgrade.
+- Persisted agent execution metadata on `agent_verdicts`: attempt IDs,
+  model/prompt/rubric labels, optional usage JSON, typed error classification,
+  timestamps, and deployment provenance.
+- Added tenant keys and durable cancellation requests to `background_jobs`.
+  Pending jobs are terminally cancelled, while workers reject late completion
+  after cancellation. Full-round admission, cooperative provider-call
+  cancellation, lease heartbeats, normalized attempt history, and automatic
+  usage/cost extraction remain roadmap work.
+- Added focused migration, metadata, cancellation, retry, and dead-letter
+  regression coverage.
+
 ## Session 10 — Add durable retry controls for agent jobs
 
 - Added typed provider, rate-limit, and stage-timeout errors in

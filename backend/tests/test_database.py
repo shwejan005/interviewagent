@@ -11,6 +11,8 @@ Covers the fixes behind CODEBASE_REVIEW.md findings:
   INVALID_OUTPUT failure must still be allowed.
 """
 
+import sqlite3
+
 import pytest
 
 from database import DuplicateVerdictError
@@ -47,6 +49,67 @@ class TestPiiProjection:
         assert len(rows) == 2
         for row in rows:
             assert "resume_text" not in row
+
+
+class TestSchemaMigrations:
+    def test_schema_ledger_applies_current_version(self, isolated_db):
+        with isolated_db._get_conn() as (conn, cur):
+            cur.execute("SELECT version FROM schema_migrations ORDER BY version")
+            assert [row["version"] for row in cur.fetchall()] == [1, 2, 3]
+
+            cur.execute("PRAGMA table_info(agent_verdicts)")
+            verdict_columns = {row["name"] for row in cur.fetchall()}
+            assert {"attempt_id", "model_name", "usage_json", "completed_at"} <= verdict_columns
+
+    def test_init_db_is_idempotent_after_migrations(self, isolated_db):
+        isolated_db.init_db()
+        with isolated_db._get_conn() as (conn, cur):
+            cur.execute("SELECT COUNT(*) AS count FROM schema_migrations")
+            assert cur.fetchone()["count"] == 3
+
+    def test_legacy_sqlite_job_table_is_rebuilt_without_losing_rows(
+        self, isolated_db, tmp_path, monkeypatch
+    ):
+        legacy_path = tmp_path / "legacy_evalia.db"
+        monkeypatch.setattr(isolated_db, "_SQLITE_PATH", str(legacy_path))
+        conn = sqlite3.connect(legacy_path)
+        conn.execute(
+            """CREATE TABLE background_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_type TEXT NOT NULL,
+                payload TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'PENDING',
+                attempts INTEGER NOT NULL DEFAULT 0,
+                max_attempts INTEGER NOT NULL DEFAULT 3,
+                available_at TEXT NOT NULL DEFAULT (datetime('now')),
+                locked_at TEXT,
+                locked_by TEXT,
+                last_error TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                completed_at TEXT,
+                idempotency_key TEXT,
+                CHECK (status IN ('PENDING', 'RUNNING', 'COMPLETED', 'DEAD')),
+                CHECK (attempts >= 0 AND max_attempts > 0)
+            )"""
+        )
+        conn.execute(
+            "INSERT INTO background_jobs (job_type, payload, idempotency_key) "
+            "VALUES (?, ?, ?)",
+            ("legacy", '{"value":1}', "legacy-key"),
+        )
+        conn.commit()
+        conn.close()
+
+        isolated_db.init_db()
+
+        job = isolated_db.get_job(1)
+        assert job["job_type"] == "legacy"
+        assert job["payload"] == {"value": 1}
+        assert job["tenant_key"] is None
+        assert job["cancellation_requested"] == 0
+        assert isolated_db.request_job_cancellation(1) is True
+        assert isolated_db.get_job(1)["status"] == "CANCELLED"
 
 
 class TestVerdictSummaryBatching:
@@ -166,6 +229,40 @@ class TestCanonicalVerdictUniqueness:
             score=None, decision="INVALID_OUTPUT", confidence=None,
         )
         assert isolated_db.get_verdict_by_round(eval_id, 1) is None
+
+    def test_verdict_persists_execution_metadata(self, isolated_db):
+        eval_id = _make_evaluation(isolated_db)
+        isolated_db.save_verdict(
+            evaluation_id=eval_id,
+            agent_type="screening",
+            round_number=1,
+            verdict_json={"decision": "PASS"},
+            verdict_text="raw",
+            score=8.0,
+            decision="PASS",
+            confidence=0.9,
+            attempt_id="attempt-123",
+            model_name="test-model",
+            prompt_version="prompt-v2",
+            rubric_version="rubric-v1",
+            usage={"input_tokens": 10, "output_tokens": 5},
+            error_type=None,
+            deployment_provenance="test-suite",
+        )
+
+        verdict = isolated_db.get_verdict_by_round(eval_id, 1)
+        assert verdict["attempt_id"] == "attempt-123"
+        assert verdict["model_name"] == "test-model"
+        assert verdict["usage_json"] == {"input_tokens": 10, "output_tokens": 5}
+        assert verdict["deployment_provenance"] == "test-suite"
+        assert verdict["error_type"] is None
+
+    def test_pending_job_cancellation_is_terminal_without_claiming(self, isolated_db):
+        job_id = isolated_db.enqueue_job("cancel-before-run", {})
+        assert isolated_db.request_job_cancellation(job_id) is True
+        job = isolated_db.get_job(job_id)
+        assert job["status"] == "CANCELLED"
+        assert job["attempts"] == 0
 
 
 class TestEvaluationLifecycle:

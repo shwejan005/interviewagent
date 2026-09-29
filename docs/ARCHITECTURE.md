@@ -25,7 +25,11 @@ flowchart LR
   There is no authentication or multi-tenancy in the legacy pipeline. Final
   recommendation and committee work can be admitted to the durable
   `background_jobs` table and resumed from persisted round-4/5 checkpoints;
-  `job_worker.py` claims those jobs with leases and bounded retry policy.
+  `job_worker.py` claims those jobs with leases and bounded retry policy;
+  cancellation requests are persisted and checked before and after handler
+  execution. Execution metadata is persisted with each verdict, including an
+  attempt ID, model/prompt/rubric labels, optional usage JSON, error type,
+  timestamps, and deployment provenance.
   Screening, technical, and behavioral calls still run in the HTTP request
   path, and the final-decision route may execute its claimed job inline for
   backward compatibility. See [GAP_ANALYSIS.md](GAP_ANALYSIS.md) for the
@@ -206,6 +210,16 @@ Next.js 14 App Router. Pages relevant to the interview flow:
 authentication or authorization, and any client that can reach the FastAPI
 port directly bypasses it entirely.
 
+## Schema evolution
+
+Fresh databases are bootstrapped from the dialect-specific DDL in
+`database.py`. Existing databases then run the ordered ledger in
+`migrations.py`, recorded in `schema_migrations`. The current compatibility
+migrations add execution metadata and tenant job fields, and make the
+`CANCELLED` job state valid for both legacy SQLite and PostgreSQL tables while
+preserving existing job rows. This ledger does not yet model question/answer
+versions or normalized stage-attempt history.
+
 ## What this architecture deliberately does not include
 
 Documented explicitly here so it is not confused with an oversight:
@@ -217,8 +231,10 @@ Documented explicitly here so it is not confused with an oversight:
   work still requires client retry. Finalization checkpoints and lease
   recovery prevent already-persisted recommendation/committee work from
   being recomputed unnecessarily.
-- No schema migration framework — `database.py` uses `CREATE TABLE IF NOT
-  EXISTS` executed at every startup, not versioned migrations.
+- No complete stage-attempt/usage ledger — verdict rows retain execution
+  provenance and optional provider usage JSON, but normalized attempt history,
+  automatic usage extraction/cost accounting, and question/answer versions are
+  still open.
 - No observability/tracing platform integration (structured `logging` calls
   only).
 - No evaluation harness / benchmark dataset for grading the agents

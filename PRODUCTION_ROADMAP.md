@@ -313,7 +313,7 @@ Expect roughly **10–14 weeks for a narrow, evaluated pilot**, not a universall
 **Requirements:** REQ-001, REQ-002, REQ-003, REQ-008. **Dependencies:** P0.
 
 - [ ] T005 [Plan:P1] Replace runtime dictionary/files with evaluation-scoped persistence in [backend/state.py](backend/state.py), [backend/routes.py](backend/routes.py), and [backend/crew_runner.py](backend/crew_runner.py); keep constants separate from lifecycle state.
-- [ ] T006 [Plan:P1] Introduce versioned schema migrations for tenant/owner, questions/answer versions, stage attempts, canonical-result uniqueness and state versions around [backend/database.py](backend/database.py).
+- [~] T006 [Plan:P1] Introduce versioned schema migrations for tenant/owner, questions/answer versions, stage attempts, canonical-result uniqueness and state versions around [backend/database.py](backend/database.py). The ordered migration ledger and canonical uniqueness are implemented; tenant/owner, question/answer versioning, stage-attempt records and state versions remain open.
 - [ ] T007 [Plan:P1] Integrate managed identity and enforce object/tenant-level permissions at [backend/main.py](backend/main.py) and every relevant route; add negative authorization tests.
 - [ ] T008 [Plan:P1] Use strict verdict schemas/enums in [backend/models.py](backend/models.py) and validate outputs in [backend/crew_runner.py](backend/crew_runner.py); remove decision/score/confidence fallbacks and duplicate prompt schemas where possible.
 - [ ] T009 [Plan:P1] Add idempotency and expected-stage/version guards in [backend/routes.py](backend/routes.py); move finalization to a command and make all GET requests read-only.
@@ -327,7 +327,7 @@ Expect roughly **10–14 weeks for a narrow, evaluated pilot**, not a universall
 
 - [~] T011 [Plan:P2] Separate admission from execution in [backend/routes.py](backend/routes.py) and [backend/crew_runner.py](backend/crew_runner.py); add a durable worker/job repository and atomic claims/leases.
 - [~] T012 [Plan:P2] Implement per-stage/provider deadlines, typed transient errors, bounded exponential backoff with jitter, tenant-aware concurrency, cancellation and dead-letter/manual recovery.
-- [ ] T013 [Plan:P2] Persist attempt IDs, model/prompt/rubric versions, usage, errors, timestamps and deployment provenance in the persistence layer.
+- [~] T013 [Plan:P2] Persist attempt IDs, model/prompt/rubric versions, usage, errors, timestamps and deployment provenance in the persistence layer. Verdict rows now retain this metadata and optional usage JSON; automatic provider usage extraction, normalized attempt history and cost accounting remain open.
 - [ ] T014 [Plan:P2] Instrument request → queue → worker → model → validator → DB spans and structured logs; connect one reviewed observability destination.
 - [ ] T015 [Plan:P2] Add safe liveness/readiness, graceful worker shutdown and operational alerts with runbooks; prove crash/restart recovery with model stubs.
 

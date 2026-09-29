@@ -72,6 +72,7 @@ async def _record_agent_output_error(
             score=None,
             decision="INVALID_OUTPUT",
             confidence=None,
+            error_type=type(exc).__name__,
         )
     except db.DuplicateVerdictError:
         # A canonical verdict already exists for this round — nothing to record.

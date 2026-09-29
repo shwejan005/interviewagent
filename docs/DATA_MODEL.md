@@ -2,13 +2,24 @@
 
 Evalia supports two SQL dialects behind one code path (`database.py`):
 **PostgreSQL** when `DATABASE_URL` is set, otherwise a local **SQLite** file
-at `backend/evalia.db`. Both schemas are defined inline in `database.py`
-(`_PG_SCHEMA` / `_SQLITE_SCHEMA`) as `CREATE TABLE IF NOT EXISTS` statements
-executed by `init_db()` on every app startup — there is **no versioned
-migration framework** (see [GAP_ANALYSIS.md](GAP_ANALYSIS.md) P1/T006).
+at `backend/evalia.db`. The inline schemas in `database.py` bootstrap fresh
+databases, while `backend/migrations.py` applies ordered entries recorded in
+`schema_migrations` for existing databases. Migration 2 adds execution
+metadata and tenant job fields; migration 3 rebuilds legacy SQLite job tables
+or replaces legacy PostgreSQL status checks so cancellation is valid without
+losing existing rows. This is a deliberately small migration ledger, not yet
+a full Alembic-style migration package for every future domain change.
 Column names, types, and constraints are identical in intent between the
 two dialects; only SQL syntax differs (`SERIAL` vs `AUTOINCREMENT`,
 `TIMESTAMPTZ` vs `TEXT`, etc).
+
+## `schema_migrations`
+
+The ledger records each ordered migration exactly once. Version 1 marks the
+pre-ledger baseline, version 2 adds execution metadata and tenant-aware job
+fields, and version 3 makes `CANCELLED` a valid durable-job state while
+preserving legacy job rows and indexes. `init_db()` runs the ledger after the
+base schema and additive compatibility helpers, so a restart is idempotent.
 
 ## Entity-relationship overview
 
@@ -76,11 +87,16 @@ erDiagram
 ## `background_jobs`
 
 Durable work records currently back final recommendation and committee
-execution. `idempotency_key` prevents duplicate admission; atomic claims set
+execution. `idempotency_key` prevents duplicate admission; `tenant_key`
+provides a persistence hook for tenant-aware scheduling; atomic claims set
 `locked_by`/`locked_at` and increment `attempts`; an expired lease can be
-reclaimed until `max_attempts` is reached. Jobs end in `COMPLETED` or `DEAD`.
-The table is not yet an attempt-history or usage ledger, and the first three
-interview rounds are not admitted to it.
+reclaimed until `max_attempts` is reached. Jobs end in `COMPLETED`, `DEAD`, or
+`CANCELLED`. Cancellation is durable: pending work is transitioned to
+`CANCELLED`, and the worker checks the flag before and after handler execution
+so a late result cannot complete a cancelled job. Cooperative cancellation of
+an in-flight provider call, lease heartbeats, and manual dead-letter recovery
+remain open. The table is not yet an attempt-history or usage ledger, and the
+first three interview rounds are not admitted to it.
 
 ## `evaluations`
 
@@ -121,6 +137,13 @@ One row per agent execution attempt — including **failed** attempts.
 | `score` | float, nullable | Null for round 5 (committee) and for failed executions. |
 | `decision` | text, nullable | `PASS`/`FAIL`/`BORDERLINE`/`HIRE`/`HOLD`/`REJECT`, or the sentinel **`INVALID_OUTPUT`** for a failed agent execution. |
 | `confidence` | float, nullable | Self-reported by the agent — see [SECURITY.md](SECURITY.md)/[GAP_ANALYSIS.md](GAP_ANALYSIS.md) for why this is not a calibrated probability. |
+| `attempt_id` | text | Identifier generated for each persisted execution result or failure row. There is not yet a separate normalized attempt table. |
+| `model_name` | text | Model/provider label supplied by the caller or `AGENT_MODEL_NAME`; defaults to `unspecified`. |
+| `prompt_version` / `rubric_version` | text | Version labels supplied by the caller or environment; default to `unversioned` until explicitly configured. |
+| `usage_json` | text (JSON-encoded) | Optional provider usage payload, decoded by repository reads. Automatic extraction and cost calculation are not implemented. |
+| `error_type` | text, nullable | Typed failure classification such as `AgentOutputError`; null for successful verdicts. |
+| `started_at` / `completed_at` | timestamp | Execution timing metadata; defaults to the persistence timestamp when the caller does not provide it. |
+| `deployment_provenance` | text | Deployment/build label supplied by the caller or `DEPLOYMENT_PROVENANCE`; defaults to `local`. |
 | `created_at` | timestamp | |
 
 ### The canonical-verdict uniqueness constraint

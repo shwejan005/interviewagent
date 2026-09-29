@@ -75,3 +75,26 @@ def test_non_retryable_agent_output_is_dead_lettered(isolated_db):
     job = isolated_db.get_job(job_id)
     assert job["status"] == "DEAD"
     assert job["attempts"] == 1
+
+
+def test_cancelled_pending_job_is_not_executed(isolated_db):
+    job_id = isolated_db.enqueue_job("test_cancelled", {})
+    assert isolated_db.request_job_cancellation(job_id) is True
+    seen = []
+
+    async def handler(payload):
+        seen.append(payload)
+
+    assert asyncio.run(run_once("worker-a", handlers={"test_cancelled": handler})) is False
+    assert seen == []
+    assert isolated_db.get_job(job_id)["status"] == "CANCELLED"
+
+
+def test_cancellation_requested_during_handler_does_not_complete_job(isolated_db):
+    job_id = isolated_db.enqueue_job("test_cancel_during_run", {})
+
+    async def handler(payload):
+        assert isolated_db.request_job_cancellation(job_id) is True
+
+    asyncio.run(run_once("worker-a", handlers={"test_cancel_during_run": handler}))
+    assert isolated_db.get_job(job_id)["status"] == "CANCELLED"

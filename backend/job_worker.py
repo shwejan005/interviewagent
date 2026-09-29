@@ -63,6 +63,10 @@ async def run_once(
     if job is None:
         return False
 
+    if await asyncio.to_thread(db.is_job_cancellation_requested, job["id"]):
+        await asyncio.to_thread(db.cancel_job, job["id"], worker_id)
+        return True
+
     try:
         handler = handlers.get(job["job_type"])
         if handler is None:
@@ -100,6 +104,11 @@ async def run_once(
             )
         )
         raise
+
+    if await asyncio.to_thread(db.is_job_cancellation_requested, job["id"]):
+        if not await asyncio.to_thread(db.cancel_job, job["id"], worker_id):
+            logger.error("Job %s cancellation lost worker ownership", job["id"])
+        return True
 
     if not await asyncio.to_thread(db.complete_job, job["id"], worker_id):
         logger.error("Job %s completion lost worker ownership", job["id"])

@@ -12,6 +12,7 @@ continue to call the same API regardless of the active backend.
 import os
 import json
 import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
 from contextlib import contextmanager
@@ -222,7 +223,10 @@ CREATE TABLE IF NOT EXISTS background_jobs (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     completed_at TIMESTAMPTZ,
     idempotency_key TEXT,
-    CHECK (status IN ('PENDING', 'RUNNING', 'COMPLETED', 'DEAD')),
+    tenant_key TEXT,
+    cancellation_requested BOOLEAN NOT NULL DEFAULT FALSE,
+    CONSTRAINT background_jobs_status_check
+        CHECK (status IN ('PENDING', 'RUNNING', 'COMPLETED', 'DEAD', 'CANCELLED')),
     CHECK (attempts >= 0 AND max_attempts > 0)
 );
 
@@ -303,7 +307,9 @@ CREATE TABLE IF NOT EXISTS background_jobs (
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     completed_at TEXT,
     idempotency_key TEXT,
-    CHECK (status IN ('PENDING', 'RUNNING', 'COMPLETED', 'DEAD')),
+    tenant_key TEXT,
+    cancellation_requested INTEGER NOT NULL DEFAULT 0,
+    CHECK (status IN ('PENDING', 'RUNNING', 'COMPLETED', 'DEAD', 'CANCELLED')),
     CHECK (attempts >= 0 AND max_attempts > 0)
 );
 
@@ -613,14 +619,20 @@ def _seed_roles(cur) -> None:
 def init_db() -> None:
     """Initialize database schema. Safe to call multiple times."""
     import hiring_schema
+    import migrations
 
     if USE_POSTGRES:
         with _get_conn() as (conn, cur):
             cur.execute(_PG_SCHEMA)
             cur.execute(_PG_IDENTITY_SCHEMA)
             cur.execute(hiring_schema.SCHEMA_PG)
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS schema_migrations ("
+                "version INTEGER PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+            )
             _apply_additive_columns(cur)
             _apply_hiring_additive_columns(cur)
+            migrations.apply_migrations(cur, use_postgres=True)
             _seed_roles(cur)
         logger.info("PostgreSQL database initialized (DATABASE_URL detected).")
     else:
@@ -630,8 +642,13 @@ def init_db() -> None:
             conn.executescript(_SQLITE_IDENTITY_SCHEMA)
             conn.executescript(hiring_schema.SCHEMA_SQLITE)
             cur = conn.cursor()
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS schema_migrations ("
+                "version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))"
+            )
             _apply_additive_columns(cur)
             _apply_hiring_additive_columns(cur)
+            migrations.apply_migrations(cur, use_postgres=False)
             _seed_roles(cur)
             conn.commit()
             logger.info(
@@ -652,6 +669,7 @@ def enqueue_job(
     *,
     max_attempts: int = 3,
     idempotency_key: Optional[str] = None,
+    tenant_key: Optional[str] = None,
 ) -> int:
     """Persist a job and return its ID.
 
@@ -670,11 +688,11 @@ def enqueue_job(
         if USE_POSTGRES:
             cur.execute(
                 f"""INSERT INTO background_jobs
-                    (job_type, payload, max_attempts, idempotency_key)
-                    VALUES ({p}, {p}, {p}, {p})
+                    (job_type, payload, max_attempts, idempotency_key, tenant_key)
+                    VALUES ({p}, {p}, {p}, {p}, {p})
                     ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
                     DO NOTHING RETURNING id""",
-                (job_type.strip(), serialized_payload, max_attempts, idempotency_key),
+                (job_type.strip(), serialized_payload, max_attempts, idempotency_key, tenant_key),
             )
             row = cur.fetchone()
             if row is not None:
@@ -683,9 +701,9 @@ def enqueue_job(
             try:
                 cur.execute(
                     f"""INSERT INTO background_jobs
-                        (job_type, payload, max_attempts, idempotency_key)
-                        VALUES ({p}, {p}, {p}, {p})""",
-                    (job_type.strip(), serialized_payload, max_attempts, idempotency_key),
+                        (job_type, payload, max_attempts, idempotency_key, tenant_key)
+                        VALUES ({p}, {p}, {p}, {p}, {p})""",
+                    (job_type.strip(), serialized_payload, max_attempts, idempotency_key, tenant_key),
                 )
                 return int(cur.lastrowid)
             except _IntegrityError:
@@ -890,6 +908,47 @@ def complete_job(job_id: int, worker_id: str) -> bool:
         return cur.rowcount == 1
 
 
+def cancel_job(job_id: int, worker_id: str) -> bool:
+    """Cancel a claimed job only when cancellation was durably requested."""
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"""UPDATE background_jobs
+                SET status = 'CANCELLED', last_error = 'cancelled by request',
+                    updated_at = {_now_sql()}, locked_at = NULL, locked_by = NULL
+                WHERE id = {p} AND status = 'RUNNING' AND locked_by = {p}
+                  AND cancellation_requested = TRUE""",
+            (job_id, worker_id),
+        )
+        return cur.rowcount == 1
+
+
+def request_job_cancellation(job_id: int) -> bool:
+    """Mark a pending or running job for cooperative cancellation."""
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"""UPDATE background_jobs
+                SET status = CASE WHEN status = 'PENDING' THEN 'CANCELLED' ELSE status END,
+                    cancellation_requested = TRUE, updated_at = {_now_sql()}
+                WHERE id = {p} AND status IN ('PENDING', 'RUNNING')""",
+            (job_id,),
+        )
+        return cur.rowcount == 1
+
+
+def is_job_cancellation_requested(job_id: int) -> bool:
+    """Read the durable cancellation flag for a claimed job."""
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"SELECT cancellation_requested FROM background_jobs WHERE id = {p}",
+            (job_id,),
+        )
+        row = cur.fetchone()
+    return bool(row and row["cancellation_requested"])
+
+
 def fail_job(
     job_id: int,
     worker_id: str,
@@ -1066,6 +1125,15 @@ def save_verdict(
     score: Optional[float] = None,
     decision: Optional[str] = None,
     confidence: Optional[float] = None,
+    attempt_id: Optional[str] = None,
+    model_name: Optional[str] = None,
+    prompt_version: Optional[str] = None,
+    rubric_version: Optional[str] = None,
+    usage: Optional[dict] = None,
+    error_type: Optional[str] = None,
+    started_at: Optional[str] = None,
+    completed_at: Optional[str] = None,
+    deployment_provenance: Optional[str] = None,
 ) -> int:
     """Save an agent verdict.
 
@@ -1073,19 +1141,33 @@ def save_verdict(
     this evaluation/round (see uq_verdicts_canonical in the schema).
     """
     p = _ph()
+    attempt_id = attempt_id or uuid.uuid4().hex
+    timestamp = datetime.now(timezone.utc).isoformat()
+    started_at = started_at or timestamp
+    completed_at = completed_at or timestamp
+    model_name = model_name or os.getenv("AGENT_MODEL_NAME", "unspecified")
+    prompt_version = prompt_version or os.getenv("AGENT_PROMPT_VERSION", "unversioned")
+    rubric_version = rubric_version or os.getenv("AGENT_RUBRIC_VERSION", "unversioned")
+    deployment_provenance = deployment_provenance or os.getenv("DEPLOYMENT_PROVENANCE", "local")
+    usage_json = json.dumps(usage or {}, separators=(",", ":"))
     try:
         with _get_conn() as (conn, cur):
             if USE_POSTGRES:
                 cur.execute(
                     f"""INSERT INTO agent_verdicts
                        (evaluation_id, agent_type, round_number, verdict_json,
-                        verdict_text, score, decision, confidence)
-                       VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+                        verdict_text, score, decision, confidence, attempt_id,
+                        model_name, prompt_version, rubric_version, usage_json,
+                        error_type, started_at, completed_at, deployment_provenance)
+                       VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p},
+                               {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
                        RETURNING id""",
                     (
                         evaluation_id, agent_type, round_number,
                         json.dumps(verdict_json), verdict_text,
-                        score, decision, confidence,
+                        score, decision, confidence, attempt_id, model_name,
+                        prompt_version, rubric_version, usage_json, error_type,
+                        started_at, completed_at, deployment_provenance,
                     ),
                 )
                 return cur.fetchone()["id"]
@@ -1093,12 +1175,17 @@ def save_verdict(
                 cur.execute(
                     f"""INSERT INTO agent_verdicts
                        (evaluation_id, agent_type, round_number, verdict_json,
-                        verdict_text, score, decision, confidence)
-                       VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})""",
+                        verdict_text, score, decision, confidence, attempt_id,
+                        model_name, prompt_version, rubric_version, usage_json,
+                        error_type, started_at, completed_at, deployment_provenance)
+                       VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p},
+                               {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})""",
                     (
                         evaluation_id, agent_type, round_number,
                         json.dumps(verdict_json), verdict_text,
-                        score, decision, confidence,
+                        score, decision, confidence, attempt_id, model_name,
+                        prompt_version, rubric_version, usage_json, error_type,
+                        started_at, completed_at, deployment_provenance,
                     ),
                 )
                 return cur.lastrowid
@@ -1120,6 +1207,7 @@ def get_verdicts(evaluation_id: int) -> list[dict]:
         for r in cur.fetchall():
             d = _row_to_dict(r)
             d["verdict_json"] = json.loads(d["verdict_json"])
+            d["usage_json"] = json.loads(d["usage_json"] or "{}")
             result.append(d)
         return result
 
@@ -1160,6 +1248,7 @@ def get_verdict_by_round(evaluation_id: int, round_number: int) -> Optional[dict
         if row:
             d = _row_to_dict(row)
             d["verdict_json"] = json.loads(d["verdict_json"])
+            d["usage_json"] = json.loads(d["usage_json"] or "{}")
             return d
         return None
 
