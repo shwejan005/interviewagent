@@ -35,6 +35,26 @@ services:
       JWT_SECRET: ${JWT_SECRET:-compose-development-secret-change-me}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       COPILOT_PROXY_API_KEY: ${COPILOT_PROXY_API_KEY:-not-needed}
+      JUDGE0_URL: ${JUDGE0_URL:-}
+      JUDGE0_TOKEN: ${JUDGE0_TOKEN:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    command: ["python", "job_worker.py"]
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      DATABASE_URL: postgresql://evalia:evalia@postgres:5432/evalia
+      JWT_SECRET: ${JWT_SECRET:-compose-development-secret-change-me}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      COPILOT_PROXY_API_KEY: ${COPILOT_PROXY_API_KEY:-not-needed}
+      JUDGE0_URL: ${JUDGE0_URL:-}
+      JUDGE0_TOKEN: ${JUDGE0_TOKEN:-}
     depends_on:
       postgres:
         condition: service_healthy
