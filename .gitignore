@@ -41,6 +41,7 @@ node_modules
 .pytest_cache/
 .coverage
 htmlcov/
+frontend/test-results/
 
 # Personal files
 resume.tex
