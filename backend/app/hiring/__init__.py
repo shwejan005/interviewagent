@@ -1,0 +1,1 @@
+"""Campaign, posting, application, and recruiter domain."""

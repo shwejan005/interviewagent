@@ -10,7 +10,7 @@ from starlette.responses import PlainTextResponse
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
-from rate_limit import InMemoryRateLimitMiddleware
+from app.shared.rate_limit import InMemoryRateLimitMiddleware
 
 
 async def _ping(request):

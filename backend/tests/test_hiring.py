@@ -8,8 +8,8 @@ confirm the existence of another company's campaigns, postings, or applicants.
 
 import pytest
 
-import hiring_db as hdb
-from rbac import SystemRole
+from app.hiring import repository as hdb
+from app.shared.rbac import SystemRole
 from tests.test_identity import _auth, _create_org, _register
 
 
@@ -157,7 +157,7 @@ class TestProfileVault:
 
     def test_verified_skills_survive_a_profile_edit(self, client, candidate, isolated_db):
         """A profile edit must not be able to fabricate or erase a verified skill."""
-        import candidate_db as cdb
+        from app.candidate import repository as cdb
 
         token = candidate["token"]
         profile = client.get("/me/profile", headers=_auth(token)).json()
@@ -444,7 +444,7 @@ class TestApplicationScreening:
     def test_screening_attaches_evaluation_and_routes_adverse_result_to_review(
         self, client, recruiter, candidate, monkeypatch
     ):
-        import recruiter_routes
+        from app.hiring import controller as recruiter_routes
 
         client.put(
             "/me/profile",

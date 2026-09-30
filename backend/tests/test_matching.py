@@ -10,7 +10,7 @@ how the score responds to a factor has a test attached to it.
 
 import pytest
 
-import matching
+from app.candidate import service as matching
 from tests.test_hiring import _auth, _create_org, _make_posting, _register
 
 
@@ -292,7 +292,7 @@ class TestCandidateSourcing:
         assert resp.json()["candidates"] == []
 
     def test_interviewer_cannot_search_candidates(self, client, recruiter):
-        from rbac import SystemRole
+        from app.shared.rbac import SystemRole
 
         token = _register(client, "interviewer2@acme.com")
         client.post(
@@ -397,7 +397,7 @@ class TestReferrals:
         assert resp.status_code == 404
 
     def test_interviewer_cannot_create_referrals(self, client, recruiter, candidate):
-        from rbac import SystemRole
+        from app.shared.rbac import SystemRole
 
         token = _register(client, "interviewer3@acme.com")
         client.post(
@@ -437,7 +437,7 @@ class TestAnalytics:
 
     def test_plain_recruiter_cannot_read_analytics(self, client, recruiter):
         """Analytics is gated at org-wide read, one level above a plain recruiter."""
-        from rbac import SystemRole
+        from app.shared.rbac import SystemRole
 
         token = _register(client, "recruiter2@acme.com")
         client.post(
@@ -505,7 +505,7 @@ class TestAnalytics:
         assert overview["top_postings"][0]["posting_id"] == posting["id"]
 
     def test_overview_is_gated_same_as_funnel(self, client, recruiter):
-        from rbac import SystemRole
+        from app.shared.rbac import SystemRole
 
         token = _register(client, "recruiter3@acme.com")
         client.post(

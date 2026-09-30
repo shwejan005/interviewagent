@@ -2,9 +2,9 @@
 
 import asyncio
 
-import database as db
-import durable_pipeline
-from job_worker import run_once
+from app.config import database as db
+from app.evaluation import pipeline as durable_pipeline
+from app.worker.job_worker import run_once
 from tests.test_identity import _auth, _register
 
 

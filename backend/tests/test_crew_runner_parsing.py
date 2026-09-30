@@ -14,8 +14,8 @@ pure parsing/validation functions directly.
 
 import pytest
 
-from crew_runner import AgentOutputError, _parse_json_output, _validate_verdict
-from models import ScreeningVerdict
+from app.evaluation.dto import ScreeningVerdict
+from app.evaluation.runner import AgentOutputError, _parse_json_output, _validate_verdict
 
 
 VALID_SCREENING_JSON = {

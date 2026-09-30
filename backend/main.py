@@ -36,16 +36,19 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import JSONResponse  # noqa: E402
 from starlette.requests import Request  # noqa: E402
 
-from routes import router  # noqa: E402
-from auth_routes import router as auth_router, org_router  # noqa: E402
-from admin_routes import router as admin_router  # noqa: E402
-from candidate_routes import router as candidate_router, jobs_router  # noqa: E402
-from recruiter_routes import router as recruiter_router  # noqa: E402
-from database import check_database_connection, init_db  # noqa: E402
-from observability import configure_logging  # noqa: E402
-from rate_limit import InMemoryRateLimitMiddleware  # noqa: E402
-from prep_routes import router as prep_router  # noqa: E402
-from v1_routes import router as durable_router  # noqa: E402
+from app.evaluation.controller import router  # noqa: E402
+from app.auth.controller import router as auth_router, org_router  # noqa: E402
+from app.admin.controller import router as admin_router  # noqa: E402
+from app.candidate.controller import router as candidate_router, jobs_router  # noqa: E402
+from app.hiring.controller import router as recruiter_router  # noqa: E402
+from app.config.database import check_database_connection, clear_request_db_context, init_db  # noqa: E402
+from app.shared.observability import configure_logging  # noqa: E402
+from app.shared.rate_limit import InMemoryRateLimitMiddleware  # noqa: E402
+from app.prep.controller import router as prep_router  # noqa: E402
+from app.evaluation.controller_v1 import router as durable_router  # noqa: E402
+from app.review.controller import router as review_router  # noqa: E402
+from app.resume.controller import router as resume_router  # noqa: E402
+from app.interview_criteria.controller import router as interview_criteria_router  # noqa: E402
 
 # Configure logging
 configure_logging()
@@ -117,6 +120,15 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan,
 )
+
+
+@app.middleware("http")
+async def clear_database_request_context(request: Request, call_next):
+    """Prevent actor/RLS context from leaking across reused async tasks."""
+    try:
+        return await call_next(request)
+    finally:
+        clear_request_db_context()
 
 
 # ── Rate limiting ────────────────────────────────────────────────────
@@ -192,8 +204,11 @@ app.include_router(jobs_router)
 # Registered before the legacy router because both define /orgs/* paths;
 # recruiter_router's are more specific and must match first.
 app.include_router(recruiter_router)
+app.include_router(interview_criteria_router)
 app.include_router(prep_router)
 app.include_router(durable_router)
+app.include_router(review_router)
+app.include_router(resume_router)
 app.include_router(router)
 
 

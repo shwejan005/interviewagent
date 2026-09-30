@@ -9,9 +9,9 @@ CI gate — a failure here is a data breach, not a bug.
 
 import pytest
 
-import database as db
-import security
-from rbac import Capability, SystemRole, capabilities_for_role
+from app.config import database as db
+from app.shared import security
+from app.shared.rbac import Capability, SystemRole, capabilities_for_role
 
 
 def _register(client, email, password="correct-horse-battery", name="Test User"):
@@ -70,6 +70,9 @@ class TestPasswordHashing:
 
 
 class TestTokens:
+    def test_default_token_lifetime_is_at_least_one_hour(self):
+        assert security.ACCESS_TOKEN_TTL.total_seconds() >= 3600
+
     def test_roundtrip(self):
         token = security.create_access_token(4242)
         assert security.decode_access_token(token) == 4242
@@ -103,6 +106,25 @@ class TestRegistrationAndLogin:
         )
         assert resp.status_code == 200
         assert resp.json()["token_type"] == "bearer"
+
+    def test_refresh_issues_a_new_token(self, client):
+        token = _register(client, "refresh@example.com")
+        resp = client.post("/auth/refresh", headers=_auth(token))
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["token_type"] == "bearer"
+        assert body["expires_in"] >= 3600
+        assert body["access_token"] != token
+        assert client.get("/auth/me", headers=_auth(body["access_token"])).status_code == 200
+
+    def test_expired_token_cannot_be_refreshed(self, client):
+        from datetime import timedelta
+
+        token = security.create_access_token(4242, ttl=timedelta(seconds=-1))
+        resp = client.post("/auth/refresh", headers=_auth(token))
+
+        assert resp.status_code == 401
 
     def test_duplicate_email_rejected(self, client):
         _register(client, "dupe@example.com")
@@ -478,7 +500,7 @@ class TestEvaluationOwnership:
 
     @staticmethod
     def _patch_agents(monkeypatch):
-        import routes
+        from app.evaluation import controller as routes
         from tests.test_routes import (
             _behavioral_question, _screening, _technical_questions,
         )

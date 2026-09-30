@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from evaluation_harness import evaluate_stage_output
+from app.evaluation.harness import evaluate_stage_output
 
 
 def test_invalid_json_is_a_critical_contract_failure():

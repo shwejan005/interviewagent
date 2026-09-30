@@ -3,7 +3,7 @@
 import json
 import logging
 
-from observability import JsonLogFormatter, log_execution_event
+from app.shared.observability import JsonLogFormatter, log_execution_event
 
 
 def test_execution_event_formatter_emits_stable_metadata_without_payload():

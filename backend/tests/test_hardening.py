@@ -1,9 +1,9 @@
 """Regression tests for audit findings fixed in the platform hardening pass."""
 
 import pytest
-import database as db
-import hiring_db as hdb
-import matching
+from app.config import database as db
+from app.hiring import repository as hdb
+from app.candidate import service as matching
 from tests.test_hiring import _make_posting
 from tests.test_identity import _auth, _create_org, _register
 

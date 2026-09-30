@@ -15,7 +15,7 @@ import sqlite3
 
 import pytest
 
-from database import DuplicateVerdictError
+from app.config.database import DuplicateVerdictError
 
 
 SENSITIVE_MARKER = "UNIQUE_RESUME_MARKER_DO_NOT_LEAK_9f31"
@@ -55,7 +55,7 @@ class TestSchemaMigrations:
     def test_schema_ledger_applies_current_version(self, isolated_db):
         with isolated_db._get_conn() as (conn, cur):
             cur.execute("SELECT version FROM schema_migrations ORDER BY version")
-            assert [row["version"] for row in cur.fetchall()] == [1, 2, 3]
+            assert [row["version"] for row in cur.fetchall()] == [1, 2, 3, 4]
 
             cur.execute("PRAGMA table_info(agent_verdicts)")
             verdict_columns = {row["name"] for row in cur.fetchall()}
@@ -65,7 +65,7 @@ class TestSchemaMigrations:
         isolated_db.init_db()
         with isolated_db._get_conn() as (conn, cur):
             cur.execute("SELECT COUNT(*) AS count FROM schema_migrations")
-            assert cur.fetchone()["count"] == 3
+            assert cur.fetchone()["count"] == 4
 
     def test_legacy_sqlite_job_table_is_rebuilt_without_losing_rows(
         self, isolated_db, tmp_path, monkeypatch
@@ -317,6 +317,13 @@ class TestDurableBackgroundJobs:
         assert isolated_db.get_job(job_id)["status"] == "RUNNING"
         assert isolated_db.complete_job(job_id, "worker-a") is True
         assert isolated_db.get_job(job_id)["status"] == "COMPLETED"
+
+    def test_heartbeat_extends_only_the_current_workers_lease(self, isolated_db):
+        job_id = isolated_db.enqueue_job("heartbeat", {})
+        isolated_db.claim_next_job("worker-a", lease_seconds=60)
+
+        assert isolated_db.heartbeat_job(job_id, "worker-b") is False
+        assert isolated_db.heartbeat_job(job_id, "worker-a") is True
 
     def test_failed_job_retries_then_becomes_dead(self, isolated_db):
         job_id = isolated_db.enqueue_job("unstable", {}, max_attempts=2)

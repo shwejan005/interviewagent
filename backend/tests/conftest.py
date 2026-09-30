@@ -36,7 +36,7 @@ import pytest  # noqa: E402
 @pytest.fixture
 def isolated_db(tmp_path, monkeypatch):
     """Point database.py at a fresh, throwaway SQLite file for this test only."""
-    import database
+    from app.config import database
 
     db_path = tmp_path / "test_evalia.db"
     monkeypatch.setattr(database, "_SQLITE_PATH", str(db_path))
@@ -47,7 +47,7 @@ def isolated_db(tmp_path, monkeypatch):
 @pytest.fixture
 def isolated_verdicts_dir(tmp_path, monkeypatch):
     """Point state.py's verdict-file storage at a throwaway directory."""
-    import state
+    from app.evaluation import state
 
     verdicts_dir = tmp_path / "verdicts"
     monkeypatch.setattr(state, "VERDICTS_DIR", str(verdicts_dir))

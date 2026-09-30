@@ -3,7 +3,7 @@
 from urllib.parse import parse_qs, urlparse
 
 from tests.test_hiring import _auth, _create_org, _make_posting, _register
-from rbac import SystemRole
+from app.shared.rbac import SystemRole
 
 
 def test_invitation_acceptance_adds_matching_user_to_org(client):

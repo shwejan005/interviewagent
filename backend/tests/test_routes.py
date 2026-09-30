@@ -13,8 +13,8 @@ For a slower, opt-in suite that exercises the real agents against a live
 LLM endpoint, see docs/TESTING.md ("Live agent smoke test").
 """
 
-import routes
-from crew_runner import AgentOutputError
+from app.evaluation import controller as routes
+from app.evaluation.runner import AgentOutputError
 
 
 SENSITIVE_MARKER = "UNIQUE_RESUME_MARKER_DO_NOT_LEAK_9f31"
@@ -251,7 +251,7 @@ class TestGuardsAndErrorHandling:
 
         # Manually reset current_round to simulate a duplicate/replayed request
         # against a round whose canonical verdict already exists.
-        import database as db
+        from app.config import database as db
         db.update_evaluation(eval_id, current_round=2, status="IN_PROGRESS")
 
         second = client.post(f"/round/2/answer?evaluation_id={eval_id}", json={"answer": "a"})

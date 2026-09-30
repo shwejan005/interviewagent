@@ -4,13 +4,14 @@ import asyncio
 
 import pytest
 
-import database as db
-from crew_runner import AgentOutputError
-from job_worker import _retry_delay, run_forever, run_once
+from app.config import database as db
+from app.evaluation.runner import AgentOutputError
+from app.worker import job_worker
+from app.worker.job_worker import _retry_delay, run_forever, run_once
 
 
 def test_retry_delay_is_capped_and_jittered(monkeypatch):
-    monkeypatch.setattr("job_worker.random.uniform", lambda minimum, maximum: maximum)
+    monkeypatch.setattr(job_worker.random, "uniform", lambda minimum, maximum: maximum)
 
     assert _retry_delay(1, base_seconds=10, max_seconds=30) == pytest.approx(12)
     assert _retry_delay(4, base_seconds=10, max_seconds=30) == pytest.approx(30)

@@ -23,10 +23,10 @@ ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / ".env")
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import candidate_db as candidates  # noqa: E402
-import database as db  # noqa: E402
-import hiring_db as hiring  # noqa: E402
-from security import hash_password  # noqa: E402
+from app.candidate import repository as candidates  # noqa: E402
+from app.config import database as db  # noqa: E402
+from app.hiring import repository as hiring  # noqa: E402
+from app.shared.security import hash_password  # noqa: E402
 
 
 DEMO_LOGIN = "Evalia" + "Demo2026!"
