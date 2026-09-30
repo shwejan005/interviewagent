@@ -1,23 +1,10 @@
 import React from "react"
 import type { Metadata, Viewport } from 'next'
-import { Inter, JetBrains_Mono } from 'next/font/google'
 import { Toaster } from "sonner"
 
 import './globals.css'
 import { AuthProvider } from '../lib/auth-context'
 import { AmbientBackground } from './components/AmbientBackground'
-
-const inter = Inter({
-  subsets: ['latin'],
-  variable: '--font-inter',
-  display: 'swap',
-})
-
-const jetbrainsMono = JetBrains_Mono({
-  subsets: ['latin'],
-  variable: '--font-jetbrains-mono',
-  display: 'swap',
-})
 
 export const metadata: Metadata = {
   title: 'Evalia — Multi-Agent Interview Evaluation System',
@@ -43,7 +30,7 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="en" className={`${inter.variable} ${jetbrainsMono.variable}`}>
+    <html lang="en">
       <body>
         <AmbientBackground />
         <AuthProvider>{children}</AuthProvider>

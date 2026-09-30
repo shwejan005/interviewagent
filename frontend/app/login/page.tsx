@@ -26,8 +26,8 @@ function LoginForm() {
     e.preventDefault();
     setLoading(true);
     try {
-      await login(email, password);
-      router.push(next || "/jobs");
+      const signedInActor = await login(email, password);
+      router.push(next || (signedInActor.memberships.length > 0 ? "/org" : "/jobs"));
     } catch (err) {
       notify.error(err instanceof ApiError ? err.detail : "Something went wrong.");
     } finally {

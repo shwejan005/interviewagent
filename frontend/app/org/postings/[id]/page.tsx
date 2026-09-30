@@ -5,9 +5,12 @@ import { createPortal } from "react-dom";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { AnimatePresence, motion } from "framer-motion";
+import { Plus, Save, Trash2 } from "lucide-react";
 import Navbar from "../../../components/Navbar";
 import {
   Button,
+  DateTimePicker,
+  dateKey,
   EmptyState,
   GlassCard,
   Input,
@@ -20,7 +23,17 @@ import {
 import { useAuth } from "../../../../lib/auth-context";
 import { api, ApiError } from "../../../../lib/api";
 import { notify } from "../../../../lib/toast";
-import type { ApplicationDetail, ApplicationEvent, ApplicationSummary, CandidateRecommendation, JobPosting } from "../../../../lib/types";
+import type {
+  ApplicationDetail,
+  ApplicationEvent,
+  ApplicationReportResponse,
+  ApplicationSummary,
+  CandidateRecommendation,
+  CriteriaDraft,
+  CriteriaResponse,
+  JobPosting,
+  PostingCriterion,
+} from "../../../../lib/types";
 import { staggerContainer, staggerItem } from "../../../../lib/motion";
 
 const NEXT_STAGE_OPTIONS = ["SCREENING", "TECHNICAL", "BEHAVIORAL", "INTERVIEW", "OFFER", "HIRED"];
@@ -135,6 +148,102 @@ function RecommendedList({ candidates }: Readonly<{ candidates: CandidateRecomme
   );
 }
 
+function CriteriaEditor({
+  draft,
+  loading,
+  saving,
+  onSave,
+  onChange,
+}: Readonly<{
+  draft: CriteriaDraft | null;
+  loading: boolean;
+  saving: boolean;
+  onSave: () => Promise<void>;
+  onChange: (draft: CriteriaDraft) => void;
+}>) {
+  if (loading) return <SkeletonList count={3} />;
+  if (!draft) return <EmptyState title="Criteria unavailable" description="We couldn't load evaluation criteria for this posting." />;
+
+  const totalWeight = draft.competencies.reduce((total, competency) => total + Number(competency.weight || 0), 0);
+  const updateCompetency = (index: number, patch: Partial<PostingCriterion>) => {
+    onChange({
+      ...draft,
+      competencies: draft.competencies.map((competency, itemIndex) => itemIndex === index ? { ...competency, ...patch } : competency),
+    });
+  };
+
+  return (
+    <GlassCard padding="lg" className="max-w-[860px]">
+      <div className="flex flex-wrap items-start justify-between gap-4 border-b border-subtle pb-5">
+        <div>
+          <p className="eyebrow">INTERVIEW RUBRIC</p>
+          <h2 className="mt-2 text-[19px] font-semibold text-ink-heading">Evaluation criteria</h2>
+          <p className="mt-1 max-w-[600px] text-[12px] leading-relaxed text-ink-muted">Define what the interview should measure. Completed interviews generate a weighted report against this rubric.</p>
+        </div>
+        <span className={`mono rounded-full border px-3 py-1 text-[11px] ${Math.abs(totalWeight - 100) < 0.01 ? "border-[rgba(34,197,94,0.35)] text-[var(--color-success)]" : "border-[rgba(245,158,11,0.4)] text-[var(--color-warning)]"}`}>
+          {totalWeight.toFixed(0)}% total weight
+        </span>
+      </div>
+
+      <div className="mt-6 flex flex-col gap-4">
+        {draft.competencies.map((competency, index) => (
+          <div key={`${competency.key}-${index}`} className="border border-subtle bg-[rgba(255,255,255,0.025)] p-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <p className="mono text-[10px] tracking-[0.08em] text-ink-subtle">COMPETENCY {index + 1}</p>
+              <button type="button" aria-label={`Remove ${competency.label || "competency"}`} className="rounded-lg p-2 text-ink-subtle transition-colors hover:bg-[rgba(239,68,68,0.12)] hover:text-[var(--color-error)]" onClick={() => onChange({ ...draft, competencies: draft.competencies.filter((_, itemIndex) => itemIndex !== index) })}>
+                <Trash2 size={15} />
+              </button>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-[1fr_1fr_120px]">
+              <Input label="LABEL" value={competency.label} onChange={(event) => updateCompetency(index, { label: event.target.value })} />
+              <Input label="KEY" value={competency.key} onChange={(event) => updateCompetency(index, { key: event.target.value.toLowerCase().replace(/[^a-z0-9_]/g, "_") })} />
+              <Input label="WEIGHT %" type="number" min={0.1} max={100} step={1} value={competency.weight} onChange={(event) => updateCompetency(index, { weight: Number(event.target.value) })} />
+            </div>
+            <Textarea wrapperClassName="mt-3" label="DESCRIPTION" rows={2} value={competency.description} onChange={(event) => updateCompetency(index, { description: event.target.value })} />
+          </div>
+        ))}
+      </div>
+
+      <Button type="button" size="sm" variant="secondary" className="mt-4" onClick={() => onChange({ ...draft, competencies: [...draft.competencies, { key: `competency_${draft.competencies.length + 1}`, label: "New competency", weight: 10, description: "" }] })}>
+        <Plus size={14} /> Add competency
+      </Button>
+
+      <div className="mt-6 grid gap-4 border-t border-subtle pt-6 sm:grid-cols-[1fr_160px]">
+        <Textarea label="CUSTOM QUESTIONS" rows={5} value={draft.custom_questions.join("\n")} hint="One question per line." onChange={(event) => onChange({ ...draft, custom_questions: event.target.value.split("\n") })} />
+        <Input label="PASS THRESHOLD" type="number" min={0} max={10} step={0.1} value={draft.pass_threshold} onChange={(event) => onChange({ ...draft, pass_threshold: Number(event.target.value) })} />
+      </div>
+      <div className="mt-6 flex justify-end border-t border-subtle pt-5">
+        <Button size="sm" loading={saving} onClick={() => void onSave()}><Save size={14} /> Save criteria</Button>
+      </div>
+    </GlassCard>
+  );
+}
+
+function InterviewReport({
+  loading,
+  report,
+}: Readonly<{ loading: boolean; report: ApplicationReportResponse | null }>) {
+  if (loading) return <p className="mt-4 text-[13px] text-ink-muted">Loading report...</p>;
+  if (!report) return <p className="mt-4 text-[13px] leading-relaxed text-ink-muted">No report yet. It will appear automatically when the interview pipeline completes.</p>;
+
+  return (
+    <div className="mt-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-subtle pb-4">
+        <div><p className="text-[12px] text-ink-subtle">RECOMMENDATION</p><p className="mt-1 text-[17px] font-semibold text-ink-heading">{report.recommendation}</p></div>
+        <div className="text-right"><p className="text-[12px] text-ink-subtle">WEIGHTED SCORE</p><p className="mt-1 mono text-[17px] font-bold text-brand">{report.overall_weighted_score === null ? "—" : `${report.overall_weighted_score}/10`}</p></div>
+      </div>
+      <div className="mt-4 flex flex-col gap-3">
+        {report.competency_scores.map((score) => (
+          <div key={score.key} className="border-b border-subtle pb-3 last:border-0">
+            <div className="flex items-center justify-between gap-3"><p className="text-[12px] font-semibold text-ink-heading">{score.label}</p><span className="mono text-[12px] text-brand">{score.score === null ? "—" : `${score.score}/10`}</span></div>
+            <p className="mt-1 text-[11px] leading-relaxed text-ink-muted">{score.evidence}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function PostingDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -145,7 +254,7 @@ export default function PostingDetailPage() {
   const [applications, setApplications] = useState<ApplicationSummary[]>([]);
   const [funnel, setFunnel] = useState<Record<string, number>>({});
   const [recommended, setRecommended] = useState<CandidateRecommendation[]>([]);
-  const [tab, setTab] = useState<"pipeline" | "recommended">("pipeline");
+  const [tab, setTab] = useState<"pipeline" | "recommended" | "criteria">("pipeline");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [referEmail, setReferEmail] = useState("");
@@ -157,6 +266,11 @@ export default function PostingDetailPage() {
   const [scheduleStart, setScheduleStart] = useState("");
   const [scheduleEnd, setScheduleEnd] = useState("");
   const [scheduling, setScheduling] = useState(false);
+  const [criteriaDraft, setCriteriaDraft] = useState<CriteriaDraft | null>(null);
+  const [criteriaLoading, setCriteriaLoading] = useState(false);
+  const [criteriaSaving, setCriteriaSaving] = useState(false);
+  const [applicationReport, setApplicationReport] = useState<ApplicationReportResponse | null>(null);
+  const [reportLoading, setReportLoading] = useState(false);
 
   useEffect(() => {
     if (authLoading) return;
@@ -202,6 +316,50 @@ export default function PostingDetailPage() {
     }
   };
 
+  const loadCriteria = async () => {
+    if (!activeOrgId) return;
+    setCriteriaLoading(true);
+    try {
+      const data = await api.get<CriteriaResponse>(`/orgs/${activeOrgId}/postings/${postingId}/criteria`);
+      setCriteriaDraft({
+        competencies: data.competencies,
+        custom_questions: data.custom_questions,
+        pass_threshold: data.pass_threshold,
+      });
+    } catch (err) {
+      notify.error(err instanceof ApiError ? err.detail : "Failed to load evaluation criteria.");
+    } finally {
+      setCriteriaLoading(false);
+    }
+  };
+
+  const saveCriteria = async () => {
+    if (!activeOrgId || !criteriaDraft) return;
+    setCriteriaSaving(true);
+    try {
+      const data = await api.put<CriteriaResponse>(`/orgs/${activeOrgId}/postings/${postingId}/criteria`, {
+        ...criteriaDraft,
+        custom_questions: criteriaDraft.custom_questions.map((question) => question.trim()).filter(Boolean),
+      });
+      setCriteriaDraft({ competencies: data.competencies, custom_questions: data.custom_questions, pass_threshold: data.pass_threshold });
+      notify.success("Evaluation criteria saved.");
+    } catch (err) {
+      notify.error(err instanceof ApiError ? err.detail : "Failed to save evaluation criteria.");
+    } finally {
+      setCriteriaSaving(false);
+    }
+  };
+
+  const renderTabContent = () => {
+    if (tab === "criteria") {
+      return <CriteriaEditor draft={criteriaDraft} loading={criteriaLoading} saving={criteriaSaving} onChange={setCriteriaDraft} onSave={saveCriteria} />;
+    }
+    if (tab === "pipeline") {
+      return <PipelineList applications={applications} onTransition={handleTransition} onScreen={handleScreen} onView={loadApplication} />;
+    }
+    return <RecommendedList candidates={recommended} />;
+  };
+
   const handleTransition = async (applicationId: number, toStage: string) => {
     try {
       await api.post(`/orgs/${activeOrgId}/applications/${applicationId}/transition`, { to_stage: toStage });
@@ -224,13 +382,23 @@ export default function PostingDetailPage() {
 
   const loadApplication = async (applicationId: number) => {
     setDetailLoading(true);
+    setReportLoading(true);
+    setApplicationReport(null);
     try {
       const detail = await api.get<{ application: ApplicationDetail; answers: unknown[]; timeline: ApplicationEvent[] }>(`/orgs/${activeOrgId}/applications/${applicationId}`);
       setSelectedApplication(detail);
+      try {
+        setApplicationReport(await api.get<ApplicationReportResponse>(`/orgs/${activeOrgId}/applications/${applicationId}/report`));
+      } catch (reportError) {
+        if (!(reportError instanceof ApiError && reportError.status === 404)) {
+          notify.error(reportError instanceof ApiError ? reportError.detail : "Failed to load interview report.");
+        }
+      }
     } catch (err) {
       notify.error(err instanceof ApiError ? err.detail : "Failed to load candidate details.");
     } finally {
       setDetailLoading(false);
+      setReportLoading(false);
     }
   };
 
@@ -349,15 +517,19 @@ export default function PostingDetailPage() {
           >
             Recommended candidates
           </Button>
+          <Button
+            size="sm"
+            variant={tab === "criteria" ? "primary" : "secondary"}
+            onClick={() => {
+              setTab("criteria");
+              if (!criteriaDraft) void loadCriteria();
+            }}
+          >
+            Evaluation criteria
+          </Button>
         </div>
 
-        <div className="mt-6">
-          {tab === "pipeline" ? (
-            <PipelineList applications={applications} onTransition={handleTransition} onScreen={handleScreen} onView={loadApplication} />
-          ) : (
-            <RecommendedList candidates={recommended} />
-          )}
-        </div>
+        <div className="mt-6">{renderTabContent()}</div>
 
         {typeof document !== "undefined" && createPortal(
         <AnimatePresence>
@@ -379,10 +551,27 @@ export default function PostingDetailPage() {
                 </motion.div>
                 <section className="mt-7"><p className="eyebrow">PIPELINE ACTIVITY</p><PipelineLifecycle events={selectedApplication.timeline} /></section>
                 <section className="mt-7 border-t border-subtle pt-6">
+                  <p className="eyebrow">INTERVIEW REPORT</p>
+                  <InterviewReport loading={reportLoading} report={applicationReport} />
+                </section>
+                <section className="mt-7 border-t border-subtle pt-6">
                   <p className="eyebrow">SCHEDULE INTERVIEW</p>
                   <form onSubmit={handleSchedule} className="mt-4 flex flex-col gap-3">
-                    <Input type="datetime-local" label="START" value={scheduleStart} onChange={(event) => setScheduleStart(event.target.value)} required />
-                    <Input type="datetime-local" label="END" value={scheduleEnd} onChange={(event) => setScheduleEnd(event.target.value)} required />
+                    <DateTimePicker
+                      label="START"
+                      value={scheduleStart}
+                      onChange={setScheduleStart}
+                      placeholder="Select interview start"
+                      minDate={dateKey()}
+                    />
+                    <DateTimePicker
+                      label="END"
+                      value={scheduleEnd}
+                      onChange={setScheduleEnd}
+                      placeholder="Select interview end"
+                      minDatetime={scheduleStart || undefined}
+                      minDatetimeLabel={scheduleStart || undefined}
+                    />
                     <Button type="submit" size="sm" className="self-start" loading={scheduling}>Schedule interview</Button>
                   </form>
                 </section>

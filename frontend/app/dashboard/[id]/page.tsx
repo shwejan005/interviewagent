@@ -264,6 +264,9 @@ export default function EvaluationDetailPage() {
           description={`${report.role} • Created ${new Date(report.created_at).toLocaleDateString()}`}
           actions={
             <div className="flex items-center gap-4">
+              <Button variant="secondary" size="sm" onClick={() => router.push(`/review/${report.evaluation_id}`)}>
+                Review evidence
+              </Button>
               {report.overall_score !== null && (
                 <span className="mono text-[22px] font-bold text-ink-heading">
                   {report.overall_score.toFixed(1)}/10

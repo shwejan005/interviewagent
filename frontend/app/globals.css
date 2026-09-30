@@ -80,8 +80,8 @@
 
     --radius: 14px;
 
-    --font-sans: var(--font-inter), -apple-system, BlinkMacSystemFont, sans-serif;
-    --font-mono: var(--font-jetbrains-mono), 'JetBrains Mono', monospace;
+    --font-sans: 'Avenir Next', 'Segoe UI', sans-serif;
+    --font-mono: 'Cascadia Code', 'Segoe UI Mono', Consolas, monospace;
 
     --max-width: 1140px;
 

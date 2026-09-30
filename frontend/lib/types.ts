@@ -18,6 +18,7 @@ export type Actor = {
   email: string;
   full_name: string;
   is_platform_admin: boolean;
+  impersonated_by?: number | null;
   active_org_id: number | null;
   active_role: string | null;
   capabilities: string[];
@@ -82,6 +83,91 @@ export type CandidateProfile = {
   skills: Skill[];
   preferences: Preferences;
   vault_answers: Record<string, string>;
+};
+
+export type ResumeParsedSkill = {
+  skill: string;
+  years: number | null;
+};
+
+export type ResumeParsedWorkExperience = {
+  company: string;
+  title: string;
+  location: string;
+  start_date: string;
+  end_date: string | null;
+  is_current: boolean;
+  description: string;
+};
+
+export type ResumeParsedEducation = {
+  institution: string;
+  degree: string;
+  field: string;
+  start_year: number | null;
+  end_year: number | null;
+};
+
+export type ParsedProfile = {
+  headline: string;
+  summary: string;
+  location: string;
+  phone: string;
+  work_authorization: string;
+  years_experience: number | null;
+  skills: ResumeParsedSkill[];
+  work_experiences: ResumeParsedWorkExperience[];
+  education: ResumeParsedEducation[];
+};
+
+export type ResumeParseResponse = {
+  resume_document_id: number;
+  char_count: number;
+  parsed_by: "llm" | "heuristic";
+  raw_text: string;
+  parsed: ParsedProfile;
+  warnings: string[];
+};
+
+export type ResumeImportRequest = ParsedProfile & {
+  resume_text: string;
+};
+
+export type PostingCriterion = {
+  key: string;
+  label: string;
+  weight: number;
+  description: string;
+};
+
+export type CriteriaResponse = {
+  posting_id: number;
+  competencies: PostingCriterion[];
+  custom_questions: string[];
+  pass_threshold: number;
+  rubric_version: string;
+  updated_at: string;
+};
+
+export type CriteriaDraft = Pick<CriteriaResponse, "competencies" | "custom_questions" | "pass_threshold">;
+
+export type CompetencyScore = {
+  key: string;
+  label: string;
+  weight: number;
+  score: number | null;
+  evidence: string;
+};
+
+export type ApplicationReportResponse = {
+  application_id: number;
+  evaluation_id: number;
+  posting_id: number;
+  competency_scores: CompetencyScore[];
+  overall_weighted_score: number | null;
+  recommendation: string;
+  rubric_version: string;
+  generated_at: string;
 };
 
 export type ScreeningQuestion = {

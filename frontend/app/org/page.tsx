@@ -328,6 +328,42 @@ function CampaignCard({ campaign, onOpen }: Readonly<{ campaign: Campaign; onOpe
   );
 }
 
+function CampaignResults({
+  loading,
+  campaigns,
+  onCreate,
+  onOpen,
+}: Readonly<{
+  loading: boolean;
+  campaigns: Campaign[];
+  onCreate: () => void;
+  onOpen: (campaignId: number) => void;
+}>) {
+  if (loading) return <SkeletonList count={3} />;
+  if (campaigns.length === 0) {
+    return (
+      <EmptyState
+        title="No campaigns yet"
+        description="A campaign groups related roles under one hiring push — create one to get started."
+        action={<Button onClick={onCreate}>Create a campaign</Button>}
+      />
+    );
+  }
+
+  return (
+    <motion.div
+      initial="hidden"
+      animate="visible"
+      variants={staggerContainer(0.06)}
+      className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3"
+    >
+      {campaigns.map((campaign) => (
+        <CampaignCard key={campaign.id} campaign={campaign} onOpen={() => onOpen(campaign.id)} />
+      ))}
+    </motion.div>
+  );
+}
+
 export default function OrgHomePage() {
   const router = useRouter();
   const { actor, loading: authLoading, activeOrgId, refreshActor } = useAuth();
@@ -451,30 +487,7 @@ export default function OrgHomePage() {
         </div>
 
         <div className="mt-6">
-          {loading ? (
-            <SkeletonList count={3} />
-          ) : filtered.length === 0 ? (
-            <EmptyState
-              title="No campaigns yet"
-              description="A campaign groups related roles under one hiring push — create one to get started."
-              action={<Button onClick={() => setCreateOpen(true)}>Create a campaign</Button>}
-            />
-          ) : (
-            <motion.div
-              initial="hidden"
-              animate="visible"
-              variants={staggerContainer(0.06)}
-              className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3"
-            >
-              {filtered.map((campaign) => (
-                <CampaignCard
-                  key={campaign.id}
-                  campaign={campaign}
-                  onOpen={() => router.push(`/org/campaigns/${campaign.id}`)}
-                />
-              ))}
-            </motion.div>
-          )}
+          <CampaignResults loading={loading} campaigns={filtered} onCreate={() => setCreateOpen(true)} onOpen={(campaignId) => router.push(`/org/campaigns/${campaignId}`)} />
         </div>
 
         {activeOrgId !== null && (

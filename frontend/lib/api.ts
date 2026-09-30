@@ -11,6 +11,7 @@
 const API_BASE = "/api";
 
 const TOKEN_KEY = "evalia_token";
+const TOKEN_EXPIRES_AT_KEY = "evalia_token_expires_at";
 const ORG_KEY = "evalia_org_id";
 
 export function getToken(): string | null {
@@ -18,12 +19,51 @@ export function getToken(): string | null {
   return window.localStorage.getItem(TOKEN_KEY);
 }
 
-export function setToken(token: string): void {
+function decodeTokenExpiry(token: string): number | null {
+  if (typeof window === "undefined") return null;
+
+  const encodedPayload = token.split(".")[1];
+  if (!encodedPayload) return null;
+
+  try {
+    const normalizedPayload = encodedPayload.replace(/-/g, "+").replace(/_/g, "/");
+    const paddedPayload = normalizedPayload.padEnd(Math.ceil(normalizedPayload.length / 4) * 4, "=");
+    const payload = JSON.parse(window.atob(paddedPayload)) as { exp?: unknown };
+    return typeof payload.exp === "number" && Number.isFinite(payload.exp) ? payload.exp * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
+export function getTokenExpiresAt(): number | null {
+  if (typeof window === "undefined") return null;
+
+  const storedExpiry = Number(window.localStorage.getItem(TOKEN_EXPIRES_AT_KEY));
+  if (Number.isFinite(storedExpiry) && storedExpiry > 0) return storedExpiry;
+
+  const token = getToken();
+  const decodedExpiry = token ? decodeTokenExpiry(token) : null;
+  if (decodedExpiry) window.localStorage.setItem(TOKEN_EXPIRES_AT_KEY, String(decodedExpiry));
+  return decodedExpiry;
+}
+
+export function setToken(token: string, expiresIn?: number): void {
   window.localStorage.setItem(TOKEN_KEY, token);
+  const expiresAt =
+    typeof expiresIn === "number" && Number.isFinite(expiresIn)
+      ? Date.now() + Math.max(0, expiresIn) * 1000
+      : decodeTokenExpiry(token);
+
+  if (expiresAt) {
+    window.localStorage.setItem(TOKEN_EXPIRES_AT_KEY, String(expiresAt));
+  } else {
+    window.localStorage.removeItem(TOKEN_EXPIRES_AT_KEY);
+  }
 }
 
 export function clearToken(): void {
   window.localStorage.removeItem(TOKEN_KEY);
+  window.localStorage.removeItem(TOKEN_EXPIRES_AT_KEY);
 }
 
 export function getActiveOrgId(): number | null {
@@ -129,6 +169,37 @@ export async function apiFetch<T = unknown>(path: string, options: FetchOptions 
   return data as T;
 }
 
+export async function apiUpload<T = unknown>(path: string, file: File, options: Pick<FetchOptions, "orgId" | "skipAuth"> = {}): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (!options.skipAuth) {
+    const token = getToken();
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+  }
+
+  const orgId = options.orgId !== undefined ? options.orgId : getActiveOrgId();
+  if (orgId !== null) headers["X-Org-Id"] = String(orgId);
+
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`${API_BASE}${path}`, { method: "POST", headers, body: form });
+
+  if (res.status === 204) return undefined as T;
+  let data: unknown = null;
+  try {
+    data = await res.json();
+  } catch {
+    // Preserve the same normalized error behavior as JSON requests.
+  }
+  if (!res.ok) {
+    const detail =
+      (data && typeof data === "object" && "detail" in data
+        ? formatApiDetail((data as { detail: unknown }).detail)
+        : null) || `Request failed (${res.status}).`;
+    throw new ApiError(res.status, detail);
+  }
+  return data as T;
+}
+
 export const api = {
   get: <T = unknown>(path: string, options?: FetchOptions) =>
     apiFetch<T>(path, { ...options, method: "GET" }),
@@ -140,4 +211,6 @@ export const api = {
     apiFetch<T>(path, { ...options, method: "PATCH", body: body ?? {} }),
   delete: <T = unknown>(path: string, options?: FetchOptions) =>
     apiFetch<T>(path, { ...options, method: "DELETE" }),
+  upload: <T = unknown>(path: string, file: File, options?: Pick<FetchOptions, "orgId" | "skipAuth">) =>
+    apiUpload<T>(path, file, options),
 };

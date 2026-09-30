@@ -36,3 +36,6 @@ export type { ModalProps } from "./Modal"
 
 export { SidePanel } from "./SidePanel"
 export type { SidePanelProps } from "./SidePanel"
+
+export { DateTimePicker, dateKey } from "./DateTimePicker"
+export type { DateTimePickerProps } from "./DateTimePicker"
