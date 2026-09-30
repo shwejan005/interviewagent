@@ -4,14 +4,15 @@
 
 | Suite | Location | What it covers | Live LLM calls? | Last verified run |
 |---|---|---|---|---|
-| Backend automated tests | `backend/tests/` (pytest) | Output parsing/validation, database PII/uniqueness/batching, full route pipeline (mocked agents), identity/RBAC, marketplace, matching, invitations, scheduling, application screening, durable v1 admission/worker execution, prep suite, data export/deletion, contract harness, health/readiness, durable worker retries/cancellation/shutdown, structured event redaction | No | 221 passed, 0 failed, ~1m49s (2026-09-29) |
-| Frontend type-check | `frontend/` (`npm run typecheck`) | TypeScript type safety across the whole `app/`/`components/` tree | N/A | 0 errors (2026-09-29) |
+| Backend automated tests | `backend/tests/` (pytest) | Output parsing/validation, database PII/uniqueness/batching, full route pipeline (mocked agents), identity/RBAC, marketplace, matching, invitations, scheduling, application screening, durable v1 admission/worker execution, prep suite, reviewer actions, data export/deletion, contract harness, health/readiness, durable worker retries/cancellation/shutdown, structured event redaction | No | 229 passed, 0 failed (2026-09-30) |
+| Frontend type-check | `frontend/` (`npm run typecheck`) | TypeScript type safety across the whole `app/`/`components/` tree | N/A | 0 errors (2026-09-30) |
+| PostgreSQL contract | `backend/scripts/verify_postgres.py` | RLS tenant isolation, policy coverage, atomic concurrent job claims | No | PASS against local PostgreSQL 17.4 (2026-09-30) |
+| Browser recovery | `frontend/tests/prep-recovery.spec.ts` (`npm run test:e2e`) | Problem selection, refresh recovery, persistent Prep sidebar navigation | No | 2 passed (2026-09-30) |
 | Live agent smoke test | Ad hoc, not checked in (see below) | The actual CrewAI agents against a real LLM endpoint, end-to-end | **Yes** | Full happy path (PASS→PASS→PASS→HIRE) + reject path, verified manually 2026-09-27; not automated/repeatable as a checked-in test |
 
-There is **no frontend browser/E2E test suite** (no Playwright/Cypress
-config exists in this repository) and **no live-agent test in CI** (by
-design — see below). Both are open items; see
-[GAP_ANALYSIS.md](GAP_ANALYSIS.md).
+There is still no live-agent test in CI (by design — see below), and the
+browser suite currently covers the prep recovery journey rather than the full
+marketplace/interview workflow.
 
 ## Running the backend suite
 
@@ -26,6 +27,21 @@ Or with coverage:
 ```powershell
 pytest -v --cov=. --cov-report=term-missing
 ```
+
+### PostgreSQL contract and concurrency proof
+
+The SQLite suite is not a substitute for PostgreSQL behavior. With a local
+PostgreSQL database configured, run:
+
+```powershell
+$env:DATABASE_URL="postgresql://user:password@localhost:5432/interviewtest"
+python backend/scripts/verify_postgres.py
+```
+
+The verifier initializes the schema, checks tenant RLS visibility using a
+temporary non-owner role, and races two workers against one durable job to
+prove that exactly one claim wins. It creates synthetic rows and removes them
+before exiting. CI runs the same contract against a PostgreSQL service.
 
 ### Why the suite never calls a live LLM
 

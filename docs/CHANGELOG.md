@@ -10,6 +10,29 @@ Entries are in **reverse chronological order** (most recent session first).
 
 ---
 
+## Session 15 — Plan application-linked AI interviews
+
+- Added a research-grounded architecture and delivery plan for an
+  application-scoped AI interviewer, including current integration gaps,
+  voice/text experience, bounded agent roles, data/API design, recruiter
+  reports, privacy/accessibility safeguards, tests, and phased exit gates.
+- Refined the operating flow to require profile readiness before applying,
+  atomically admit screening on application submission, automatically create
+  an interview-ready session and notify clear-pass candidates, and eliminate
+  recruiter screen/invite/schedule clicks per applicant. Added job-level and
+  difficulty-adaptive technical/behavioral interview guidance.
+- Reviewed the user-linked multi-agent-interviewer GitHub sample. Added its
+  turn-flow ideas and its in-memory/session-state, free-text parsing, and
+  framework-boundary limitations to the research notes. Clarified that CrewAI
+  is reused selectively for background tasks, while the live turn loop uses a
+  deterministic session controller and a provider adapter.
+- Reviewed the user-supplied SSRN PDF and documented its reported metrics
+  separately from its evidence limitations; cited OPM, NIST, EEOC, NYC DCWP,
+  EU AI Act, MDN, and FastAPI sources.
+- No application code, schema, or runtime behavior changed. The plan is
+  proposed and requires product, provider, rubric, and legal decisions before
+  implementation.
+
 ## Session 14 — Close local reliability and prep-suite gaps
 
 - Added durable `/v1` interview commands for screening, technical,

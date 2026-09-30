@@ -60,13 +60,25 @@ most dependent on product decisions (which rubric, which judge model, how
 many cases, who labels them) that cannot be made unilaterally by an
 automated pass over the code.
 
+### Prep suite implementation update — 2026-09-30
+
+The prep suite has moved beyond the earlier text-first foundation described in
+this document. It now has database-owned problem metadata, visible/hidden test
+cases, language harnesses, Judge0 execution for local development, persisted
+code submissions, solved-progress aggregation, learner goals, LLM-assisted
+roadmaps with deterministic fallback, generated-problem persistence, a shared
+Problem Set/Insights/Roadmap UI, and browser recovery coverage. Private
+sandbox deployment remains intentionally parked. The reviewed benchmark and
+quality evidence below still apply to the hiring-agent evaluation system and
+have not been replaced by the prep catalog.
+
 ## P4 — Candidate recovery and human review
 
 | Task | Status | Evidence |
 |---|---|---|
 | T022 — Server-owned flow, evaluation-scoped URLs, typed contracts, draft recovery | 🟡 Partial | `evaluation_id` is now passed explicitly on every mutating request (prior pass fixed the frontend to do this via `sessionStorage`-held IDs) instead of relying on a shared session. **Still missing:** the ID lives in `sessionStorage`, not the URL (so a shared link or a page reload after closing the tab loses it — `sessionStorage` survives reload but not a closed tab); there is no server-side draft-recovery mechanism if the browser state is lost mid-round; API response types are still `any` in places (e.g. `verdict: any` in `result/page.tsx`), not generated/shared typed contracts. |
 | T023 — Queued/running/retry/review states; accessible forms; no unintended answer carryover | 🟡 Partial | Three concrete accessibility fixes were made this pass (form label/control association via `htmlFor`/`fieldset`+`legend`, a non-interactive `div` with a click handler converted to a `<button>`, non-stable React list keys replaced) in `interview/page.tsx`, `round/[id]/page.tsx`, and `result/page.tsx` — see [CHANGELOG.md](CHANGELOG.md). No loading state exists beyond a simple `loading` boolean disabling the form; there's no distinct "queued"/"retry"/"under review" UI state (there's nothing to be "queued" behind, since P2's durable queue doesn't exist). No test proves answers don't carry over between rounds/questions. |
-| T024 — Dashboard detail → evidence review with approve/correct/escalate + attributed history | ⬜ Not started | `app/dashboard/[id]/page.tsx` remains a read-only detail view; there is no reviewer action (approve/correct/escalate) or amendment-history concept anywhere in the schema or UI. |
+| T024 — Dashboard detail → evidence review with approve/correct/escalate + attributed history | 🟡 Partial | `/review/evaluations/{id}` and the reviewer page now support approve/correct/escalate actions with immutable attributed history and rubric version metadata. The legacy dashboard still needs a deeper evidence-span editor and controlled report export. |
 | T025 — Server-side search/filter/pagination on the dashboard list | 🟡 Partial | The API (`GET /evaluations`) already supports `status`/`limit`/`offset` server-side (prior pass). Whether the dashboard *UI* actually exposes and uses all of these (vs. client-side filtering of one fetched page) was not re-verified in this pass — flagged here rather than asserted either way. |
 | T026 — Consent/privacy/accommodation flows; a11y checks; remove unused assets | 🟡 Partial | Concrete a11y lint fixes made (see T023). Consent/privacy/accommodation UI flows: ⬜ not started. Unused-asset review (`useFullscreen.ts`/`FullscreenWarning.tsx`, flagged by `CODEBASE_REVIEW.md` as apparently unused, and redundant Google Fonts loading via both CSS and `next/font`): not re-verified or removed in this pass — see "Deferred" below. |
 
@@ -87,7 +99,7 @@ existing first, per the roadmap's own stated dependency.
 | Task | Status | Evidence |
 |---|---|---|
 | T031 — Reproducible builds, one IaC/deployment definition, isolated envs, managed secrets | 🟡 Partial | CI remains test/type-check only, but `backend/Dockerfile`, `.dockerignore`, and a health-checked Postgres/backend `docker-compose.yml` now provide a reproducible local build. Cloud deployment, managed secrets, and isolated hosted environments remain open. |
-| T032 — Real-Postgres contract/concurrency tests, scans, load/fault tests, migration rehearsal | ⬜ Not started | The entire automated suite runs against SQLite only (see [TESTING.md](TESTING.md)). No dependency/secret scanning job exists in CI. |
+| T032 — Real-Postgres contract/concurrency tests, scans, load/fault tests, migration rehearsal | 🟡 Partial | `backend/scripts/verify_postgres.py` now initializes the schema, proves 22 RLS policies isolate two tenants, and races two workers to prove one atomic job claim; CI runs it against PostgreSQL 17. Real-Postgres load/fault testing, dependency/secret scanning, and rollback rehearsal remain open. |
 | T033 — Retention/deletion, audit integrity, backup restore verification | 🟡 Partial | Authenticated export and account anonymization now exist, with last-owner protection and audit events. Retention scheduling, object/telemetry deletion, backup restore, and external audit anchoring remain open. |
 | T034 — Consented pilot; track reliability/cost/quality; publish limitations | ⬜ Not started | No pilot has been run; this documentation set itself is the closest artifact to "published limitations" that exists (see [SECURITY.md](SECURITY.md)). |
 

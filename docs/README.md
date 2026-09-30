@@ -31,6 +31,7 @@ difference explicitly.
 | Document | What it covers | Read this if you want to... |
 |---|---|---|
 | [PRODUCT_BLUEPRINT.md](PRODUCT_BLUEPRINT.md) | The full product Evalia becomes: RBAC & multi-tenancy, recruiter campaigns/ATS, candidate profile vault & one-click apply, matching engine, DSA/dev prep suite with in-browser IDE, gamification, auto-apply agent, admin console, phased delivery plan | Understand the target product and how to get there from here. |
+| [AI_INTERVIEW_ARCHITECTURE_PLAN.md](AI_INTERVIEW_ARCHITECTURE_PLAN.md) | Research-grounded architecture and phased plan for application-linked, AI-conducted interviews and recruiter evidence reports | Design and plan the role/campaign/posting-specific interviewer before implementation. |
 | [DECISIONS.md](DECISIONS.md) | The 10 architectural/product decisions that block the blueprint's Phase 0, each with options, trade-offs, and a recommendation | Make the calls needed before platform work starts. |
 | [UI_REVAMP_PLAN.md](UI_REVAMP_PLAN.md) | Glassmorphism design system, motion system, and a phased plan to migrate 501 inline styles into a real styling layer — including why the current UI structurally cannot animate | Understand the UI/UX direction and migration approach. |
 | [../PRODUCTION_ROADMAP.md](../PRODUCTION_ROADMAP.md) | Hardening plan for the *existing* interview pipeline (durable execution, evaluation harness, observability) | Improve the pipeline that exists today. |

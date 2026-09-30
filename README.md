@@ -18,15 +18,16 @@ silently turned into a PASS/FAIL/HIRE/REJECT verdict.
 
 ## What this is (and isn't)
 
-This is a working prototype with real correctness/safety fixes applied to
-its core evaluation pipeline (evaluation-scoped state, strict output
-validation, PII-safe API responses, idempotent finalization — see
-[`docs/CHANGELOG.md`](docs/CHANGELOG.md)) and a real automated test suite
-(38 backend tests, CI-enforced). **It has no authentication, no
-multi-tenancy, and no durable job queue.** Do not expose it to the public
-internet without adding an access-control layer in front of it. See
-[`docs/SECURITY.md`](docs/SECURITY.md) for the full, specific list of what
-is and isn't protected.
+This is a working prototype with authenticated candidate/recruiter flows,
+tenant-scoped marketplace data, durable interview admission, strict output
+validation, PII-safe responses, idempotent finalization, and a database-driven
+DSA preparation suite with sandboxed Judge0 execution for local development.
+The project has an automated backend suite, frontend type-check/build gates,
+real-Postgres RLS/concurrency verification, and Playwright recovery coverage.
+It is **not production-certified**: cloud deployment, managed secrets, real
+Postgres load/restore exercises, benchmark quality evidence, and a consented
+pilot remain open. See [`docs/GAP_ANALYSIS.md`](docs/GAP_ANALYSIS.md) and
+[`docs/SECURITY.md`](docs/SECURITY.md).
 
 Two other documents at the repository root describe **planning**, not
 current state: [`CODEBASE_REVIEW.md`](CODEBASE_REVIEW.md) (a prior
@@ -40,7 +41,7 @@ actually been implemented.
 
 ```
 Resume → Screening Agent → Technical Agent → Behavioral Agent → Recommendation Agent → Committee Evaluator
-              ↓ FAIL: REJECT      ↓ FAIL: REJECT      ↓ FAIL: REJECT
+              ↓ recommendation/review state, not an unattended hiring decision
 ```
 
 The Recommendation and Committee agents receive **only** prior agents'

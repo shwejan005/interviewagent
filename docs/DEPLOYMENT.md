@@ -17,6 +17,10 @@ exercise. `PRODUCTION_ROADMAP.md` section 4 recommends "Next.js on
 Vercel, API + worker on AWS ECS/Fargate, managed Postgres" as a pragmatic
 first production shape; only the local container/compose foundation exists.
 
+The local PostgreSQL contract verifier now proves RLS policy coverage and
+atomic durable-job claims against PostgreSQL. This is local/CI evidence, not a
+substitute for a production restore or load exercise.
+
 ## Environment variables that affect runtime behavior
 
 See `.env.example` for the full list with descriptions. The ones that

@@ -75,6 +75,16 @@ as candidates.
 | 200 | `{access_token, token_type, expires_in}` |
 | 401 | Unknown email **or** wrong password — deliberately indistinguishable, and with comparable response time, so the endpoint cannot be used to enumerate accounts |
 
+### `POST /auth/refresh`
+
+Renews a normal authenticated session while the current bearer token is still
+valid. The frontend asks for explicit user consent in the final 15 minutes of
+the session before calling this endpoint. The response has the same shape as
+login and registration: `{access_token, token_type, expires_in}`.
+
+Impersonation tokens cannot be renewed; they retain their separate 30-minute
+maximum lifetime and remain attributable to the originating administrator.
+
 ### `GET /auth/me`
 
 Returns the caller's identity, active org context, capabilities, and all
