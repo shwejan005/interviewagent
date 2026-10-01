@@ -52,6 +52,7 @@ export default function JobDetailPage() {
   const router = useRouter();
   const postingId = params.id as string;
   const { actor, loading: authLoading } = useAuth();
+  const profileUrl = "/profile?next=" + encodeURIComponent(`/jobs/${postingId}`);
 
   const [posting, setPosting] = useState<JobPosting | null>(null);
   const [form, setForm] = useState<ApplicationForm | null>(null);
@@ -62,7 +63,7 @@ export default function JobDetailPage() {
   const [applied, setApplied] = useState(false);
 
   useEffect(() => {
-    load();
+    void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [postingId, actor]);
 
@@ -107,6 +108,10 @@ export default function JobDetailPage() {
           answer_text,
         })),
       };
+      if (!form?.profile_complete) {
+        router.push(profileUrl);
+        return;
+      }
       await api.post(`/jobs/${postingId}/apply`, payload);
       setApplied(true);
       notify.success("Application submitted.");
@@ -189,9 +194,9 @@ export default function JobDetailPage() {
 
         {applied ? (
           <GlassCard elevation="high" padding="lg" className="mt-6 border-[color-mix(in_srgb,var(--color-success)_35%,transparent)]">
-            <p className="eyebrow text-[var(--color-success)]">APPLICATION SUBMITTED</p>
+            <p className="eyebrow text-[var(--color-success)]">APPLICATION SUBMITTED · SCREENING QUEUED</p>
             <p className="mt-2 text-[13px] leading-[1.6] text-ink-muted">
-              Track its progress from{" "}
+              Your application is being screened automatically. If it passes the posting’s configured criteria, an AI interview will be prepared for you to start. Track its progress from{" "}
               <Link href="/applications" className="font-semibold text-brand underline">
                 My Applications
               </Link>
@@ -213,6 +218,18 @@ export default function JobDetailPage() {
                 </Link>{" "}
                 to apply.
               </p>
+            )}
+
+            {actor && form && !form.profile_complete && (
+              <div className="mt-5 rounded-lg border border-[rgba(245,158,11,0.35)] bg-[rgba(245,158,11,0.08)] p-4">
+                <p className="text-[13px] font-semibold text-ink-heading">Complete your profile before applying</p>
+                <p className="mt-1 text-[12px] leading-relaxed text-ink-muted">Import a resume and review the extracted details, or create a professional profile with a headline and at least one skill or work experience. You can return here after saving.</p>
+                <Link href={profileUrl} className="mt-3 inline-flex text-[12px] font-semibold text-brand hover:underline">Complete profile →</Link>
+              </div>
+            )}
+
+            {actor && !form && !error && (
+              <p className="mt-4 text-[12px] text-ink-subtle">Loading application requirements…</p>
             )}
 
             {actor && form && form.questions.length > 0 && (
@@ -239,7 +256,7 @@ export default function JobDetailPage() {
               <p className="mt-5 text-[13px] text-[var(--color-error)]">{error}</p>
             )}
 
-            <Button className="mt-6" size="lg" onClick={handleApply} loading={applying}>
+            <Button className="mt-6" size="lg" onClick={handleApply} loading={applying} disabled={actor ? !form?.profile_complete : false}>
               {applyLabel(applying, Boolean(actor))}
             </Button>
           </GlassCard>

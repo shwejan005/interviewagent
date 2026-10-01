@@ -1,10 +1,10 @@
 # AI-conducted interview: research-grounded architecture and delivery plan
 
 **Prepared:** 2026-10-01
-**Status:** Proposed architecture; not implemented or production-approved
+**Status:** First application-linked, text-only workflow implemented and SQLite/mock-provider tested; **not production-approved**. Live voice, speech processing, a feature-specific PostgreSQL/RLS/concurrency run, provider/privacy approval, comprehensive retention, and calibrated adaptive-path scoring remain open.
 **Scope:** An end-to-end, application-linked AI interview and recruiter report for a specific organization, campaign, posting, and candidate application.
 
-This is a feature plan grounded in the current repository and the sources listed below. It is not legal advice, a vendor selection, or a claim that the proposed interview has been validated. No code changes are implied by this plan.
+This document records the original research-grounded target architecture and the current implementation boundary. It is not legal advice, a vendor selection, a claim of validated hiring quality, or production approval. Sections describing voice/media, legal/privacy review, calibration, and pilot gates remain future work unless explicitly marked implemented below.
 
 ## 1. Recommendation in brief
 
@@ -12,13 +12,13 @@ Build this as a **bounded interview domain inside the existing Next.js + FastAPI
 
 1. **Use the application as the ownership and authorization root.** The server derives organization and posting from the application, then campaign from the posting. The candidate must never choose those associations by supplying IDs to the interview client.
 2. **Automate the positive path from application submission.** Require a complete candidate profile first (resume upload → editable extraction → save, or a structured manual profile). When an application is committed, automatically queue screening. A passing applicant automatically receives an AI-interview invitation/session; the recruiter does not click “screen,” “invite,” or schedule each candidate. The candidate still chooses when to start and explicitly accepts the disclosed interview mode.
-3. **Make live voice the intended interview experience, with an equivalent text path.** Start with a provider feasibility spike and a mocked/text end-to-end flow; enable real microphone streaming only after privacy, consent, latency, accessibility, and recovery gates pass. Camera/video is off by default and not scored.
+3. **Keep live voice as a future experience goal, not a delivered capability.** The implemented vertical slice is text-only with explicit notice acknowledgement. Real microphone streaming, transcription, and speech output require a provider feasibility/privacy/accessibility review and are not present in the code.
 4. **Use deterministic orchestration around constrained AI roles.** One application pipeline controller owns screening admission, allowed transitions, interview phases, timing, retries, and completion. A conversational interviewer asks bounded, level-aware follow-ups; separate scoring/report steps cite answer evidence. Model output cannot directly change application stage or make a hiring decision.
 5. **Pin screening and each interview to versioned posting policies.** Keep hard constraints, level/difficulty map, question plan, competency weights, and scoring anchors immutable for that application run. Generate the report from those snapshots, not from whatever criteria happen to be current when the report is opened.
 6. **Show progress and the report in the existing application detail surface.** Candidates see profile-required, screening-queued, interview-ready, and report-pending states. Recruiters see the pipeline history, job-specific evidence, uncertainty/transcription caveats, and exception/review actions; they retain the final advance/hold/reject decision.
 7. **Do not use the supplied paper’s headline numbers as product targets.** It is useful for workflow ideas, but its reported outcomes are not sufficiently documented in the supplied copy to establish effect sizes or fairness.
 
-**Roadmap relationship:** This is an addendum to [PRODUCTION_ROADMAP.md](../PRODUCTION_ROADMAP.md), not a replacement for its durable-state, evaluation-harness, privacy, and controlled-pilot gates. That roadmap currently treats voice as a later extension to the generic interview flow; this plan defines an application-submit-triggered screening → AI-interview-ready flow as the end state, while validating the queue/session/report contracts with mocked/text paths before enabling live voice for candidates.
+**Roadmap relationship:** This is an addendum to [PRODUCTION_ROADMAP.md](../PRODUCTION_ROADMAP.md), not a replacement for its durable-state, evaluation-harness, privacy, and controlled-pilot gates. The application-submit-triggered screening → AI-interview-ready → text-session → evidence-report vertical slice is implemented with mocked model calls. Voice remains a separate later extension and must not be inferred from the text flow.
 
 ## 2. Product objective and boundaries
 
@@ -56,26 +56,24 @@ For a candidate with a ready profile who applies to an enabled posting, provide 
 
 | Existing capability | Current behavior and implication for this feature |
 |---|---|
-| Profile and application submission | The application endpoint requires a profile row and required posting answers, but does not currently validate resume/profile completeness. It snapshots profile data and creates the application; it does not enqueue a screening job. The active profile UI already supports resume parsing, editable review, and explicit save, but manual structured profile completion and an apply-readiness gate need to be made equivalent. See [profile UI](../frontend/app/profile/page.tsx), [hiring schema](../backend/app/config/hiring_schema.py), and [candidate application routes](../backend/app/candidate/controller.py). |
-| Resume screening | Screening is currently a separate recruiter-triggered `POST .../applications/{id}/screen` action. It runs in the request path, attaches an evaluation, and does not conduct the technical/behavioral interview end to end. The implementation uses resume/profile snapshot plus posting title; it does not yet run the requested versioned hard-constraint and application-answer screening policy. See [hiring controller](../backend/app/hiring/controller.py). |
-| Generic AI evaluation | A separate five-stage evaluation pipeline supports screening, technical, behavioral, recommendation, and committee work. Its generic start payload is resume + role + candidate name, not a fully authorized application interview. The candidate UI for that pipeline is text-oriented. See [evaluation routes](../backend/app/evaluation/controller_v1.py), [evaluation DTOs](../backend/app/evaluation/dto.py), and [candidate interview UI](../frontend/app/interview/page.tsx). |
+| Profile and application submission | Profile readiness is enforced: resume text, or a professional headline plus at least one skill/experience entry. Resume parsing still requires candidate review/save. Application submission freezes profile/answers and atomically creates the application, application-interview session, and idempotent screening job. See [profile UI](../frontend/app/profile/page.tsx) and [candidate application routes](../backend/app/candidate/controller.py). |
+| Application screening and interview admission | New applications are screened asynchronously by the durable worker using structured CrewAI output, deterministic constraint/threshold checks, and exact source-quote validation. Clear passes automatically receive an interview-ready session and notification; uncertain or failed work goes to review. The old per-applicant recruiter screen route returns 409 for applications using the automatic workflow. |
+| Generic AI evaluation | The separate five-stage legacy evaluation pipeline remains. Application-linked evaluations are excluded from generic candidate/sandbox listing and detail reads; the new candidate flow is authorized through the application. See [evaluation routes](../backend/app/evaluation/controller_v1.py) and [evaluation controller](../backend/app/evaluation/controller.py). |
 | Scheduled interviews | The hiring domain stores recruiter-scheduled interviews, participants, timezone, and optional meeting URL. That is a calendar record, not an AI media session. The automated AI path must not require a recruiter to create a schedule for each passing applicant; create an interview-ready invitation/window automatically and link to a calendar record only when a customer explicitly wants one. See [hiring schema](../backend/app/config/hiring_schema.py) and [interview routes](../backend/app/hiring/controller.py). |
-| Posting criteria and report | Criteria are stored per posting. The current report is one-per-application and scores competencies through heuristic round-name/keyword matching. That is a useful display surface, not a sufficient transcript-grounded scoring engine. The report model will need interview-session history and evidence links. See [criteria schema](../backend/app/config/interview_criteria_schema.py), [report service](../backend/app/interview_criteria/service.py), and [recruiter posting UI](../frontend/app/org/postings/[id]/page.tsx). |
-| Durable execution | The backend has an additive durable `/v1` evaluation API and a database-backed worker/job pattern, but the current application-submit path does not admit screening work and the recruiter screening action runs synchronously. Use durable jobs for automatic screening, notification, and post-interview scoring/reporting; commit application and screening/outbox admission atomically. See [worker](../backend/app/worker/job_worker.py), [candidate application routes](../backend/app/candidate/controller.py), and [durable evaluation controller](../backend/app/evaluation/controller_v1.py). |
+| Posting criteria and report | Posting criteria include technical/behavioral competencies, role level, question counts, pass threshold, and bounded follow-ups. New reports preserve per-competency evidence, screening evidence, turns, and difficulty; the adaptive-path weighted total is withheld. The compatibility report table remains one row per application, not per-session history. |
+| Durable execution | Application screening, answer assessment, report generation, and ready-email delivery use the database worker. Application + frozen input + session + screening job admission is transactional. Worker/model execution is mocked in tests; live provider behavior is not validated. See [worker](../backend/app/worker/job_worker.py) and [candidate application routes](../backend/app/candidate/controller.py). |
 | Auth and campaign scope | Authentication, organization capabilities, application authorization, and campaign-assignment checks already exist. Every new candidate and recruiter operation must use those server-side checks; frontend visibility alone is not access control. See [authz](../backend/app/shared/authz.py) and the [application report controller](../backend/app/interview_criteria/controller.py). |
 | Voice/media | No microphone capture, voice-interview transport, speech transcription, or interview-media retention workflow was found in the active candidate interview path. This is a net-new capability and requires a provider/privacy decision. The existing local OpenAI-compatible model configuration is not, by itself, a production real-time voice architecture. |
 
-### Main design gaps to close
+### Remaining design and release gaps
 
-- The candidate apply endpoint creates the application but no screening job. The current per-application recruiter screen endpoint is the manual trigger; replace that as the normal flow with atomic application + screening-job admission.
-- Apply currently checks that a profile exists, not that it has the job-relevant details needed by screening. Add a readiness gate backed by either reviewed resume extraction or structured manual profile entry.
-- The current screening call does not evaluate a versioned set of posting constraints/application answers and runs synchronously. The automated flow needs explicit deterministic eligibility rules, evidence-bearing model assessment, durable retries, and safe exception states.
-- A passing screen currently does not automatically create an interview-ready invitation/session. Add the pass → ready event, candidate notification, and candidate-controlled start without a recruiter action per applicant.
-- `applications.evaluation_id` is a single nullable pointer, while interviews need multiple attempts, restarts, and report history. Do not use that field as the new feature’s only session identity.
-- The current `application_interview_reports` key permits one report per application. Model report/session history explicitly, and preserve the existing application-level report endpoint as a compatibility summary if feasible.
-- Current posting criteria can be updated in place. An in-progress or completed interview must retain the exact question/rubric snapshot it used.
-- The current heuristic report does not prove that a candidate answer supports a competency score. Add structured, answer-linked evidence and abstention/insufficient-evidence handling.
-- Voice connection lifecycle, candidate consent/notice, transcript correction, accessibility, retention/deletion, and provider failure recovery need first-class contracts and tests.
+- **Voice/media is not implemented.** The current interview only supports text; there is no microphone, speech recognition, text-to-speech, video, transcript correction, or voice reconnect path.
+- **PostgreSQL parity and concurrency remain unverified for the new feature.** Policies and SQL are present for application/session/turn data, but the PostgreSQL contract has not been rerun against this feature's schema, nor have truly concurrent answer/withdraw/report races been exercised.
+- **Report history is limited.** `application_interview_reports` remains one row per application rather than one immutable report per session attempt.
+- **Criteria versioning is snapshot-based, not a normalized approval/history workflow.** Each application keeps its rubric snapshot/version, but immutable approved policy publication, migration, and reviewer sign-off are not a separate product flow.
+- **Retention and privacy operations are incomplete.** Withdrawal cancels pending work and clears screening input, but there is no comprehensive expiry/deletion workflow for completed answer turns and reports. Provider terms, data region, and training/retention settings require review before real candidate data is used.
+- **Quality/fairness evaluation is not complete.** Tests use fake model outputs; there is no adjudicated role-specific benchmark, prompt-injection suite, fairness audit, cross-path calibration, or live-provider validation.
+- **Adaptive scoring remains intentionally partial.** Per-competency evidence/scores are shown, but the weighted total is withheld until question/follow-up paths are calibrated.
 
 ## 4. Research findings and how they affect the design
 
@@ -199,6 +197,14 @@ Before committing any scorer/provider wiring, test a narrow vertical slice with 
 
 ## 6. End-to-end workflow
 
+**Implementation note:** The current code implements profile readiness,
+atomic application/screening admission, automatic pass-to-ready notification,
+explicit versioned notice acknowledgement, persisted text answers, bounded
+follow-ups, and an evidence report. It does **not** implement the voice/media,
+microphone permission, speech transcription, transcript correction, pause/
+reconnect, accommodation-request, or retention controls described as target
+behavior below. Do not treat those target steps as shipped features.
+
 1. **Complete candidate profile before apply.** Candidate registers and either uploads a resume for extraction, edits the suggested professional profile, and saves it, or enters the equivalent structured profile manually. The apply page shows profile readiness and asks only for missing job-specific screening answers. The server enforces the same readiness requirements.
 2. **Configure/version the posting once.** An authorized recruiter sets the posting’s screening constraints, required evidence, rubric/competencies, role family and target level, interview difficulty bands, question plan, follow-up policy, interview window, candidate notice, and review exceptions. Publishing validates and freezes a policy version. An updated job creates a new revision for new applicants; existing applications remain pinned to the revision active when they applied unless an explicit audited migration is approved. No per-applicant screen/invite/scheduling clicks are part of the normal flow.
 3. **Submit application and atomically admit screening.** `POST /jobs/{posting_id}/apply` validates posting/profile/required answers, freezes the candidate profile and answers, creates the application and application event, and writes an idempotent screening/outbox job in the same transaction. It returns immediately with a queued status; the candidate tracker shows screening in progress. If the transaction fails, neither a half-created application nor an orphaned screening request remains.
@@ -212,6 +218,14 @@ Before committing any scorer/provider wiring, test a narrow vertical slice with 
 11. **Human owns the hiring decision.** The pipeline controller may advance a validated clear pass from screening to the next assessment stage using the published policy. After the interview report is ready, only an authorized recruiter/hiring manager makes the hiring disposition (advance beyond assessment, hold, or reject) through the existing application transition route. A failed interview, screen exception, missing evidence, cancellation, empty report, or infrastructure failure must not silently become an automatic rejection.
 
 ## 7. Data model and API contracts
+
+The following schema/API tables began as design concepts. The implemented
+release uses `application_ai_interviews`,
+`application_ai_interview_turns`, `posting_evaluation_criteria`, and the
+existing one-row-per-application `application_interview_reports`; there is no
+separate normalized policy-history, pipeline-run, event, assessment, or
+per-session report table yet. See [DATA_MODEL.md](DATA_MODEL.md) for the
+implemented schema and [API_REFERENCE.md](API_REFERENCE.md) for actual routes.
 
 ### Proposed data concepts
 
@@ -231,7 +245,12 @@ For tenant safety, every recruiter read/write must verify the same organization 
 
 Keep broad application stage, screening job state, interview-session state, and hiring outcome separate. A proposed application-stage path is `APPLIED → SCREENING → AI_INTERVIEW → PENDING_REVIEW`; add/migrate the `AI_INTERVIEW` stage and update UI/funnel analytics if the existing enum cannot represent it. The pipeline run stores execution details such as `QUEUED`, `RUNNING`, `PASS`, `REVIEW_REQUIRED`, and retryable/terminal operational failure. A passing screen moves to `AI_INTERVIEW` and makes a session `READY`; report completion moves to `PENDING_REVIEW`. Suggested session progression is `READY → IN_PROGRESS → SUBMITTED → REPORT_PENDING → REPORT_READY → CLOSED`. Exceptional session states include `CANCELLED`, `EXPIRED`, `PROVIDER_FAILED`, and `REVIEW_REQUIRED`. A transient disconnect is recoverable and is not a terminal candidate outcome. Enforce legal transitions and optimistic version/idempotency guards server-side.
 
-### Illustrative API surface (to refine before implementation)
+### Implemented API surface and future extensions
+
+The current text-flow routes are listed in [API_REFERENCE.md](API_REFERENCE.md).
+This table mixes that implemented surface with target media/recovery
+extensions; a route or operation mentioned only as a future extension below
+must not be assumed to exist in the application.
 
 | Actor | Operation | Authorization/contract |
 |---|---|---|
@@ -244,7 +263,11 @@ Keep broad application stage, screening job state, interview-session state, and 
 | Candidate | Complete, pause/resume, or report transcription problem. | Candidate owns session; completion is idempotent; technical failure maps to retry/review. |
 | Recruiter | Read application pipeline, sessions, screening exceptions, and report history; record exception/final review actions. | Application-read plus current org and campaign checks; transcript detail is separately permissioned/audited where appropriate. No per-candidate screen/invite action is required for a clear pass. |
 
-Use the existing candidate/recruiter route families and API client conventions. The exact endpoint names are intentionally illustrative until reviewed against current API contracts. Keep all state-changing operations as `POST`/`PUT`/`PATCH` with expected state/version or idempotency key. Status reads should be safe, scoped, and non-mutating.
+The implemented text routes use the existing candidate/recruiter route
+families and are documented in [API_REFERENCE.md](API_REFERENCE.md). The
+media credentials/streaming, explicit pause/resume, and transcript correction
+operations in the table are future contracts, not existing routes. New
+state-changing APIs should retain the same scoped, idempotent design.
 
 ## 8. Report design and scoring policy
 
@@ -335,6 +358,15 @@ Set numeric service-level and quality thresholds only after the selected provide
 
 ## 11. Phased implementation plan and exit gates
 
+**Current progress:** Phase 0 decisions/approvals remain open. Phase 1 profile
+readiness and automatic screening admission, and Phase 2 text interview-ready
+admission/notification are implemented and covered by mocked-provider tests.
+Phase 3 has a persisted technical/behavioral text interview with bounded
+follow-ups, but no real-time voice or full reconnect/accommodation path.
+Phase 4 has evidence-linked per-competency reporting and human-review routing,
+but no per-session report history or calibrated aggregate score. Phase 5 is
+not started; the current code is not production-approved.
+
 | Phase | Deliverables | Exit gate |
 |---|---|---|
 | **0 — Policy, legal, and provider decisions** | Select pilot role(s), rubric owner, target job levels, required profile fields/constraints, core question/difficulty bank, target jurisdictions, exception policy, candidate self-start interview window, accommodation route, retention/notice model, provider criteria, and cost ceiling. Explicitly approve the intended operating model: recruiters configure once per posting and do not screen/invite/schedule each applicant. Run a synthetic real-time voice spike without candidate data. | Policy owner approves criteria, deterministic pass/exception routing, and the no-per-applicant-click operating model; privacy/legal review path is identified; provider supports required session, transcript, security, and deletion controls or a text-first pilot is selected. |
@@ -346,25 +378,27 @@ Set numeric service-level and quality thresholds only after the selected provide
 
 No calendar estimate is committed here. A credible estimate depends on Phase 0 decisions, real-time provider availability, legal/vendor review, and the number of supported roles/languages. The voice provider spike and report-per-session schema are the highest-risk early tasks.
 
-## 12. Suggested repository ownership map
+## 12. Repository ownership map and remaining work
 
 Keep files grouped by domain rather than adding interview logic across unrelated application controllers.
 
 | Area | Proposed ownership |
 |---|---|
-| Application pipeline | Add a bounded service around candidate application submission for profile readiness, immutable snapshots, and atomic application + screening-job/outbox admission. Keep the existing candidate controller as a thin HTTP boundary. |
-| Screening/session domains | A proposed `backend/app/application_pipeline/` package owns versioned hard constraints, screening assessment, pass/exception routing, and notification admission. A new `backend/app/ai_interview/` package owns session state, conversation orchestration, provider protocols/adapters, transcript turns, and score/report validation. |
-| Schemas/migrations | Add additive SQLite/PostgreSQL schema and ordered migration entries for policy versions, pipeline runs/events, sessions, turns, and report history; update application/report repositories with compatibility reads. Do not hand-edit only one dialect. |
-| Criteria | Extend `backend/app/interview_criteria/` for immutable eligibility, role-level/difficulty, rubric revisions, and validated scoring anchors; retain current read APIs while new applications use pinned revision IDs/snapshots. |
-| Worker | Register application-screening, candidate-notification, and post-session score/report jobs in `backend/app/worker/job_worker.py`; payloads contain IDs and trace metadata, not raw candidate content. |
-| Candidate UI | Strengthen `frontend/app/profile/page.tsx` and the job apply page with resume-import/manual profile readiness; add pipeline status and an AI-interview lobby/session route plus reusable media/session hooks. |
-| Recruiter UI | Extend the posting-level configuration once and the applicant drawer in `frontend/app/org/postings/[id]/page.tsx` with aggregate pipeline progress, exception queue, evidence report, history, and human review. Do not require a per-applicant screen/invite action. |
+| Application pipeline | Implemented in `backend/app/candidate/controller.py` and `backend/app/hiring/repository.py`: profile readiness, frozen application evidence, and atomic application + session + screening-job admission. |
+| Screening/session domains | `backend/app/ai_interview/` owns typed screening/answer assessment, deterministic question planning, persisted session/turn progression, and report generation. The workflow controller remains regular application code; there is no live media adapter. |
+| Schemas/migrations | Implemented in `backend/app/config/ai_interview_schema.py`, `backend/app/config/interview_criteria_schema.py`, and migrations 5–6 in `backend/app/config/migrations.py`. There is no normalized per-session report history or policy approval ledger yet. |
+| Criteria | `backend/app/interview_criteria/` stores technical/behavioral categories, thresholds, role level, question counts, and bounded follow-up settings; each application pins a rubric/policy snapshot. |
+| Worker | `backend/app/worker/job_worker.py` handles application screening, answer assessment, report generation, and ready notification. Job payloads carry IDs, not resume/transcript content. |
+| Candidate UI | `frontend/app/profile/page.tsx`, `frontend/app/jobs/[id]/page.tsx`, `frontend/app/applications/page.tsx`, and `frontend/app/ai-interview/[applicationId]/page.tsx` implement profile readiness, application status, notice acknowledgement, and text turns. |
+| Recruiter UI | `frontend/app/org/postings/[id]/page.tsx` contains posting criteria, pipeline/report review, screening exceptions, and audited reasoned override; there is no manual per-applicant screen button. |
 | API client | Add typed request/response methods in the existing frontend API client. Avoid ad-hoc `fetch` calls with unvalidated report shapes. |
-| Tests/docs | Add backend domain/API/worker tests, PostgreSQL migration tests, Playwright candidate and recruiter flows, evaluation fixtures, and update API/data-model/security docs alongside implementation. |
+| Tests/docs | `backend/tests/test_ai_interview.py` and `frontend/tests/ai-interview-flow.spec.ts` cover mocked vertical flows and key ownership/state guards. PostgreSQL feature-specific migration/RLS/concurrency tests, live provider evaluation, and fairness benchmarks remain future work. |
 
-These are proposed ownership boundaries, not files created in this planning task.
+These are current code locations for the text-first slice; voice/media,
+retention, policy approval/history, report history, and production validation
+remain proposed follow-up work.
 
-## 13. Decisions required before implementation
+## 13. Decisions required before a production pilot
 
 1. Which first role family and which exact, job-related competencies/anchors? Who approves the rubric and example answers?
 2. Confirm the default interview window and whether any pilot customer requires calendar appointments. The proposed default is an automatically created, candidate-started session within a posting-defined window; calendar scheduling is optional. What text/accommodation fallback is required?

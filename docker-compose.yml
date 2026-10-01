@@ -34,7 +34,12 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
       JWT_SECRET: ${JWT_SECRET:-compose-development-secret-change-me}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      AGENT_MODEL: ${AGENT_MODEL:-}
+      AGENT_BASE_URL: ${AGENT_BASE_URL:-}
+      AGENT_API_KEY: ${AGENT_API_KEY:-}
       COPILOT_PROXY_API_KEY: ${COPILOT_PROXY_API_KEY:-not-needed}
+      FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-http://localhost:3000}
+      AI_INTERVIEW_NOTICE_VERSION: ${AI_INTERVIEW_NOTICE_VERSION:-ai-interview-v1}
       JUDGE0_URL: ${JUDGE0_URL:-}
       JUDGE0_TOKEN: ${JUDGE0_TOKEN:-}
     depends_on:
@@ -46,13 +51,18 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     restart: unless-stopped
-    command: ["python", "job_worker.py"]
+    command: ["python", "-m", "app.worker.job_worker"]
     environment:
       APP_ENV: ${APP_ENV:-development}
       DATABASE_URL: postgresql://evalia:evalia@postgres:5432/evalia
       JWT_SECRET: ${JWT_SECRET:-compose-development-secret-change-me}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      AGENT_MODEL: ${AGENT_MODEL:-}
+      AGENT_BASE_URL: ${AGENT_BASE_URL:-}
+      AGENT_API_KEY: ${AGENT_API_KEY:-}
       COPILOT_PROXY_API_KEY: ${COPILOT_PROXY_API_KEY:-not-needed}
+      FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-http://localhost:3000}
+      AI_INTERVIEW_NOTICE_VERSION: ${AI_INTERVIEW_NOTICE_VERSION:-ai-interview-v1}
       JUDGE0_URL: ${JUDGE0_URL:-}
       JUDGE0_TOKEN: ${JUDGE0_TOKEN:-}
     depends_on:

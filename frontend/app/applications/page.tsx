@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { AnimatePresence, motion } from "framer-motion";
 import Navbar from "../components/Navbar";
 import {
@@ -23,6 +24,7 @@ import { EASE_OUT, staggerContainer, staggerItem } from "../../lib/motion";
 const STAGE_TONE: Record<string, PillTone> = {
   APPLIED: "primary",
   SCREENING: "primary",
+  AI_INTERVIEW: "primary",
   PENDING_REVIEW: "warning",
   TECHNICAL: "primary",
   BEHAVIORAL: "primary",
@@ -58,7 +60,7 @@ export default function ApplicationsPage() {
       router.push("/login?next=/applications");
       return;
     }
-    load();
+    void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, actor]);
 
@@ -149,6 +151,11 @@ export default function ApplicationsPage() {
                         <span className="mt-0.5 block text-[12px] text-ink-subtle">
                           {app.org_name} · Applied {formatDate(app.created_at)}
                         </span>
+                        {app.ai_interview_status && (
+                          <span className="mt-1 block text-[11px] text-ink-muted">
+                            AI interview: {app.ai_interview_status.replaceAll("_", " ").toLowerCase()}
+                          </span>
+                        )}
                       </span>
                       <StatusPill tone={STAGE_TONE[app.current_stage] ?? "muted"}>
                         {app.current_stage}
@@ -164,6 +171,16 @@ export default function ApplicationsPage() {
                           transition={{ duration: 0.2, ease: EASE_OUT }}
                         >
                           <div className="border-t border-subtle px-5 pb-5 pt-4">
+                            {app.ai_interview_status === "INTERVIEW_READY" && (
+                              <Link href={`/ai-interview/${app.id}`} className="btn-primary mb-5 inline-flex no-underline">
+                                Start AI interview
+                              </Link>
+                            )}
+                            {["INTERVIEW_IN_PROGRESS", "ANSWER_PROCESSING"].includes(app.ai_interview_status || "") && (
+                              <Link href={`/ai-interview/${app.id}`} className="btn-primary mb-5 inline-flex no-underline">
+                                Continue AI interview
+                              </Link>
+                            )}
                             {detail && (
                               <>
                                 <p className="mono text-[10px] tracking-[0.08em] text-ink-subtle">TIMELINE</p>

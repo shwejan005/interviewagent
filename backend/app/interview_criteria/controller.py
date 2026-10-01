@@ -41,6 +41,7 @@ def _to_response(criteria) -> CriteriaResponse:
         competencies=criteria.competencies,
         custom_questions=criteria.custom_questions,
         pass_threshold=criteria.pass_threshold,
+        interview_settings=criteria.interview_settings,
         rubric_version=criteria.rubric_version,
         updated_at=criteria.updated_at,
     )
@@ -72,6 +73,7 @@ async def upsert_criteria(
         [c.model_dump() for c in req.competencies],
         req.custom_questions,
         req.pass_threshold,
+        req.interview_settings.model_dump(),
         actor.user_id,
     )
     audit.record_from_actor(
@@ -110,4 +112,5 @@ async def get_application_report(
         recommendation=report.recommendation,
         rubric_version=report.rubric_version,
         generated_at=report.generated_at,
+        interview_details=report.interview_details,
     )

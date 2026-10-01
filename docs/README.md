@@ -22,6 +22,7 @@ difference explicitly.
 | [SETUP.md](SETUP.md) | Local dev setup for backend + frontend, environment variables, Windows notes | Get the project running on your machine. |
 | [TESTING.md](TESTING.md) | Test suite structure, what is/isn't covered, how to run tests, live-agent testing | Run or extend the automated tests. |
 | [SECURITY.md](SECURITY.md) | Current security posture, fixed issues, and known open gaps, mapped to CODEBASE_REVIEW.md findings | Understand what protections exist and what doesn't yet. |
+| [AI_INTERVIEW_ARCHITECTURE_PLAN.md](AI_INTERVIEW_ARCHITECTURE_PLAN.md) | Research-grounded design, implemented text-first application workflow, and remaining voice/provider/production gates | Understand what is delivered and what is still only a future requirement. |
 | [GAP_ANALYSIS.md](GAP_ANALYSIS.md) | Task-by-task comparison of PRODUCTION_ROADMAP.md against the actual codebase | See exactly what from the roadmap is done, partially done, or not started, with evidence. |
 | [DEPLOYMENT.md](DEPLOYMENT.md) | How the app runs today (dev launcher, Docker, Vercel) and what's missing for real production deployment | Deploy it or evaluate deployment readiness. |
 | [CHANGELOG.md](CHANGELOG.md) | Chronological log of every substantive change made to this codebase by an AI coding agent, with the reason for each change | Audit what changed, when, and why. |
@@ -31,7 +32,6 @@ difference explicitly.
 | Document | What it covers | Read this if you want to... |
 |---|---|---|
 | [PRODUCT_BLUEPRINT.md](PRODUCT_BLUEPRINT.md) | The full product Evalia becomes: RBAC & multi-tenancy, recruiter campaigns/ATS, candidate profile vault & one-click apply, matching engine, DSA/dev prep suite with in-browser IDE, gamification, auto-apply agent, admin console, phased delivery plan | Understand the target product and how to get there from here. |
-| [AI_INTERVIEW_ARCHITECTURE_PLAN.md](AI_INTERVIEW_ARCHITECTURE_PLAN.md) | Research-grounded architecture and phased plan for application-linked, AI-conducted interviews and recruiter evidence reports | Design and plan the role/campaign/posting-specific interviewer before implementation. |
 | [DECISIONS.md](DECISIONS.md) | The 10 architectural/product decisions that block the blueprint's Phase 0, each with options, trade-offs, and a recommendation | Make the calls needed before platform work starts. |
 | [UI_REVAMP_PLAN.md](UI_REVAMP_PLAN.md) | Glassmorphism design system, motion system, and a phased plan to migrate 501 inline styles into a real styling layer — including why the current UI structurally cannot animate | Understand the UI/UX direction and migration approach. |
 | [../PRODUCTION_ROADMAP.md](../PRODUCTION_ROADMAP.md) | Hardening plan for the *existing* interview pipeline (durable execution, evaluation harness, observability) | Improve the pipeline that exists today. |

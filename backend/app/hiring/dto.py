@@ -165,7 +165,7 @@ class ApplyRequest(BaseModel):
 
 class TransitionRequest(BaseModel):
     to_stage: str = Field(
-        pattern="^(SCREENING|PENDING_REVIEW|TECHNICAL|BEHAVIORAL|INTERVIEW|OFFER|HIRED|REJECTED)$"
+        pattern="^(SCREENING|AI_INTERVIEW|PENDING_REVIEW|TECHNICAL|BEHAVIORAL|INTERVIEW|OFFER|HIRED|REJECTED)$"
     )
     note: str = Field(default="", max_length=2_000)
 

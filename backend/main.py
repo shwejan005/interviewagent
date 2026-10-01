@@ -49,6 +49,8 @@ from app.evaluation.controller_v1 import router as durable_router  # noqa: E402
 from app.review.controller import router as review_router  # noqa: E402
 from app.resume.controller import router as resume_router  # noqa: E402
 from app.interview_criteria.controller import router as interview_criteria_router  # noqa: E402
+from app.ai_interview.controller import candidate_router as ai_interview_candidate_router  # noqa: E402
+from app.ai_interview.controller import recruiter_router as ai_interview_recruiter_router  # noqa: E402
 
 # Configure logging
 configure_logging()
@@ -64,9 +66,10 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Initializing Evalia backend...")
     app.state.ready = False
-    if not os.getenv("GEMINI_API_KEY"):
+    if not os.getenv("GEMINI_API_KEY") and not os.getenv("AGENT_BASE_URL", "").strip():
         logger.warning(
-            "GEMINI_API_KEY is not set. Agent calls will fail until it is configured."
+            "No agent provider credential or AGENT_BASE_URL is configured. "
+            "Agent jobs will remain queued/retry until a provider is configured."
         )
     _validate_startup_config()
     init_db()
@@ -101,12 +104,10 @@ def _validate_startup_config() -> None:
             "production use; set DATABASE_URL to a managed PostgreSQL instance."
         )
 
-    if app_env == "production" and not os.getenv("GEMINI_API_KEY"):
+    if app_env == "production" and not os.getenv("GEMINI_API_KEY") and not os.getenv("AGENT_BASE_URL", "").strip():
         logger.warning(
-            "APP_ENV=production but no GEMINI_API_KEY is set. Confirm agents.py is "
-            "intentionally pointed at a non-Gemini provider (see LLM_MODEL in agents.py) "
-            "before deploying — a hardcoded local-proxy override left in place would "
-            "silently break in any environment where that proxy isn't reachable."
+            "APP_ENV=production but neither GEMINI_API_KEY nor AGENT_BASE_URL is set. "
+            "Configure an LLM provider before enabling automatic interview processing."
         )
 
 
@@ -205,6 +206,8 @@ app.include_router(jobs_router)
 # recruiter_router's are more specific and must match first.
 app.include_router(recruiter_router)
 app.include_router(interview_criteria_router)
+app.include_router(ai_interview_candidate_router)
+app.include_router(ai_interview_recruiter_router)
 app.include_router(prep_router)
 app.include_router(durable_router)
 app.include_router(review_router)

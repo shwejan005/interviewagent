@@ -7,12 +7,13 @@ a non-owner role and exercises the policies explicitly.
 """
 
 
-def _policy(cur, table: str, expression: str) -> None:
+def _policy(cur, table: str, expression: str, *, check_expression: str | None = None) -> None:
     policy = f"evalia_rls_{table.replace('-', '_')}"
     cur.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
     cur.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY")
     cur.execute(f"DROP POLICY IF EXISTS {policy} ON {table}")
-    cur.execute(f"CREATE POLICY {policy} ON {table} USING ({expression}) WITH CHECK ({expression})")
+    check = check_expression or expression
+    cur.execute(f"CREATE POLICY {policy} ON {table} USING ({expression}) WITH CHECK ({check})")
 
 
 def apply_policies(cur) -> None:
@@ -20,10 +21,34 @@ def apply_policies(cur) -> None:
     org = "NULLIF(current_setting('evalia.current_org_id', true), '')::bigint"
     user = "NULLIF(current_setting('evalia.current_user_id', true), '')::bigint"
 
-    for table in ("campaigns", "job_postings", "applications", "application_events", "interviews", "referrals"):
+    for table in ("campaigns", "interviews", "referrals"):
         _policy(cur, table, f"org_id = {org}")
+    # Public job discovery must work for candidates without an active org. A
+    # published posting is readable, but creating/updating postings remains
+    # tenant-scoped through WITH CHECK.
+    _policy(cur, "job_postings", f"org_id = {org} OR status = 'PUBLISHED'", check_expression=f"org_id = {org}")
+    _policy(cur, "applications", f"org_id = {org} OR candidate_user_id = {user}")
+    _policy(
+        cur,
+        "application_events",
+        f"org_id = {org} OR application_id IN "
+        f"(SELECT id FROM applications WHERE candidate_user_id = {user})",
+    )
+    _policy(
+        cur,
+        "application_answers",
+        f"application_id IN (SELECT id FROM applications "
+        f"WHERE org_id = {org} OR candidate_user_id = {user})",
+    )
+    for table in ("application_ai_interviews", "application_ai_interview_turns"):
+        _policy(cur, table, f"org_id = {org} OR candidate_user_id = {user}")
 
-    _policy(cur, "organizations", f"id = {org}")
+    _policy(
+        cur,
+        "organizations",
+        f"id = {org} OR EXISTS (SELECT 1 FROM job_postings jp WHERE jp.org_id = organizations.id AND jp.status = 'PUBLISHED')",
+        check_expression=f"id = {org}",
+    )
     _policy(cur, "org_memberships", f"org_id = {org} OR user_id = {user}")
     _policy(cur, "campaign_members", f"campaign_id IN (SELECT id FROM campaigns WHERE org_id = {org}) OR user_id = {user}")
 
@@ -39,7 +64,8 @@ def apply_policies(cur) -> None:
 def protected_tables() -> tuple[str, ...]:
     return (
         "organizations", "org_memberships", "campaigns", "campaign_members",
-        "job_postings", "applications", "application_events", "interviews", "referrals",
+        "job_postings", "applications", "application_answers", "application_events", "interviews", "referrals",
+        "application_ai_interviews", "application_ai_interview_turns",
         "candidate_profiles", "work_experiences", "education_entries", "skill_claims",
         "job_preferences", "answer_vault_entries", "prep_roadmaps", "prep_roadmap_nodes",
         "prep_submissions", "prep_code_submissions", "prep_goals", "prep_gamification", "prep_xp_events",

@@ -55,7 +55,7 @@ class TestSchemaMigrations:
     def test_schema_ledger_applies_current_version(self, isolated_db):
         with isolated_db._get_conn() as (conn, cur):
             cur.execute("SELECT version FROM schema_migrations ORDER BY version")
-            assert [row["version"] for row in cur.fetchall()] == [1, 2, 3, 4]
+            assert [row["version"] for row in cur.fetchall()] == [1, 2, 3, 4, 5, 6]
 
             cur.execute("PRAGMA table_info(agent_verdicts)")
             verdict_columns = {row["name"] for row in cur.fetchall()}
@@ -65,7 +65,7 @@ class TestSchemaMigrations:
         isolated_db.init_db()
         with isolated_db._get_conn() as (conn, cur):
             cur.execute("SELECT COUNT(*) AS count FROM schema_migrations")
-            assert cur.fetchone()["count"] == 4
+            assert cur.fetchone()["count"] == 6
 
     def test_legacy_sqlite_job_table_is_rebuilt_without_losing_rows(
         self, isolated_db, tmp_path, monkeypatch

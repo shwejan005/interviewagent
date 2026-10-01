@@ -9,6 +9,8 @@ from the request.
 
 import asyncio
 import logging
+import os
+from dataclasses import asdict
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -16,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from app.candidate import repository as cdb, service as matching
 from app.config import database as db
 from app.hiring import repository as hdb
+from app.interview_criteria.service import CriteriaService
 from app.hiring.dto import (
     ApplyRequest,
     EducationRequest,
@@ -42,6 +45,22 @@ async def _db(func, *args, **kwargs):
 
 def _client_ip(request: Request) -> Optional[str]:
     return request.client.host if request.client else None
+
+
+def _profile_readiness(profile: Optional[dict]) -> tuple[bool, list[str]]:
+    """A resume or a minimal structured professional profile is required."""
+    if profile is None:
+        return False, ["Create your candidate profile."]
+    if (profile.get("resume_text") or "").strip():
+        return True, []
+    missing = []
+    if not (profile.get("headline") or "").strip():
+        missing.append("Add a professional headline.")
+    has_skills = bool(profile.get("skills"))
+    has_experience = bool(profile.get("experiences"))
+    if not has_skills and not has_experience:
+        missing.append("Add at least one skill or work-experience entry.")
+    return not missing, missing
 
 
 async def _require_profile(actor: Actor) -> dict:
@@ -206,7 +225,8 @@ async def get_application_form(posting_id: int, actor: Actor = Depends(current_a
     if posting is None:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
 
-    profile = await _db(cdb.get_profile_by_user, actor.user_id)
+    profile = await _db(cdb.get_full_profile, actor.user_id)
+    profile_complete, missing_profile_fields = _profile_readiness(profile)
     vault = await _db(cdb.get_vault_answers, profile["id"]) if profile else {}
 
     questions = [
@@ -221,7 +241,8 @@ async def get_application_form(posting_id: int, actor: Actor = Depends(current_a
         "posting_id": posting_id,
         "title": posting["title"],
         "questions": questions,
-        "profile_complete": profile is not None,
+        "profile_complete": profile_complete,
+        "missing_profile_fields": missing_profile_fields,
         "unanswered_count": sum(1 for q in questions if not q["is_prefilled"]),
     }
 
@@ -241,12 +262,15 @@ async def apply_to_job(
     if posting is None:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
 
-    profile = await _db(cdb.get_profile_by_user, actor.user_id)
+    profile = await _db(cdb.get_full_profile, actor.user_id)
+    profile_complete, missing_profile_fields = _profile_readiness(profile)
     if profile is None:
         raise HTTPException(
             status_code=400,
             detail="Create your profile before applying. See PUT /me/profile.",
         )
+    if not profile_complete:
+        raise HTTPException(status_code=400, detail={"message": "Complete your professional profile before applying.", "missing_profile_fields": missing_profile_fields})
 
     vault = await _db(cdb.get_vault_answers, profile["id"])
     supplied = {a.question_key: a for a in req.answers}
@@ -278,6 +302,22 @@ async def apply_to_job(
         })
 
     snapshot = await _db(cdb.build_application_snapshot, actor.user_id)
+    criteria = await _db(CriteriaService().get_or_default, posting_id, posting["org_id"])
+    policy_snapshot = asdict(criteria)
+    policy_snapshot.update({
+        "posting_id": posting_id,
+        "posting_title": posting["title"],
+        "posting_description": posting.get("description", ""),
+        "required_skills": posting.get("required_skills", []),
+        "minimum_experience": posting.get("min_experience"),
+        "maximum_experience": posting.get("max_experience"),
+        "candidate_notice_version": os.getenv("AI_INTERVIEW_NOTICE_VERSION", "ai-interview-v1"),
+    })
+    screening_input = {
+        "profile_snapshot": snapshot,
+        "resume_text": profile.get("resume_text", ""),
+        "application_answers": answers,
+    }
 
     try:
         application_id = await _db(
@@ -288,6 +328,8 @@ async def apply_to_job(
             profile_id=profile["id"],
             snapshot=snapshot,
             answers=answers,
+            ai_interview_policy=policy_snapshot,
+            ai_interview_screening_input=screening_input,
         )
     except hdb.DuplicateApplicationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -310,7 +352,7 @@ async def apply_to_job(
         resource_org_id=posting["org_id"],
         detail={"posting_id": posting_id},
     )
-    return {"application_id": application_id, "status": "APPLIED"}
+    return {"application_id": application_id, "status": "SCREENING_QUEUED", "screening_status": "QUEUED"}
 
 
 @router.get("/applications")

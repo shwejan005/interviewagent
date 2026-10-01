@@ -138,6 +138,7 @@ export type PostingCriterion = {
   label: string;
   weight: number;
   description: string;
+  category?: "TECHNICAL" | "BEHAVIORAL";
 };
 
 export type CriteriaResponse = {
@@ -145,11 +146,19 @@ export type CriteriaResponse = {
   competencies: PostingCriterion[];
   custom_questions: string[];
   pass_threshold: number;
+  interview_settings: InterviewSettings;
   rubric_version: string;
   updated_at: string;
 };
 
-export type CriteriaDraft = Pick<CriteriaResponse, "competencies" | "custom_questions" | "pass_threshold">;
+export type InterviewSettings = {
+  role_level: "ENTRY" | "MID" | "SENIOR";
+  technical_question_count: number;
+  behavioral_question_count: number;
+  max_followups_per_question: number;
+};
+
+export type CriteriaDraft = Pick<CriteriaResponse, "competencies" | "custom_questions" | "pass_threshold" | "interview_settings">;
 
 export type CompetencyScore = {
   key: string;
@@ -168,6 +177,57 @@ export type ApplicationReportResponse = {
   recommendation: string;
   rubric_version: string;
   generated_at: string;
+  interview_details: {
+    source?: string;
+    screening?: {
+      decision?: string;
+      score?: number;
+      policy_version?: string;
+      constraint_gaps?: string[];
+      evidence?: Array<{ criterion_key: string; status: string; source?: string | null; quote?: string; rationale?: string }>;
+    };
+    interview?: {
+      role_level?: string;
+      turn_count?: number;
+      weighted_score_status?: string;
+      human_decision_required?: boolean;
+      turns?: Array<{
+        sequence_no: number;
+        phase: "TECHNICAL" | "BEHAVIORAL";
+        question_type: "CORE" | "FOLLOW_UP";
+        competency_key: string;
+        difficulty: number;
+        question: string;
+        answer: string | null;
+        assessment: { score?: number; evidence_quote?: string; summary?: string; gaps?: string[] };
+      }>;
+    };
+  };
+};
+
+export type AIInterviewTurn = {
+  id: number;
+  sequence_no: number;
+  phase: "TECHNICAL" | "BEHAVIORAL";
+  question_type: "CORE" | "FOLLOW_UP";
+  competency_key: string;
+  difficulty: number;
+  question_text: string;
+  answer_text: string | null;
+  state: "ASKED" | "ANSWER_QUEUED" | "ASSESSED";
+};
+
+export type CandidateAIInterview = {
+  application_id: number;
+  status: string;
+  phase: string;
+  rubric_version: string;
+  role_level: string;
+  candidate_notice_version: string;
+  consent_required: boolean;
+  current_question: AIInterviewTurn | null;
+  turns: AIInterviewTurn[];
+  message: string;
 };
 
 export type ScreeningQuestion = {
@@ -230,6 +290,8 @@ export type ApplicationSummary = {
   location: string;
   remote_policy: string;
   org_name: string;
+  ai_interview_status?: string | null;
+  ai_interview_phase?: string | null;
 };
 
 export type ApplicationDetail = {
@@ -245,6 +307,8 @@ export type ApplicationDetail = {
   candidate_name?: string;
   candidate_email?: string;
   profile_snapshot: Record<string, unknown>;
+  ai_interview_status?: string | null;
+  ai_interview_phase?: string | null;
 };
 
 export type ApplicationEvent = {

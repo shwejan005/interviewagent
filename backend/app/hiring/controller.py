@@ -420,6 +420,8 @@ async def screen_application(
     await _campaign_id_for_posting(actor, org_id, application["posting_id"])
     if application.get("evaluation_id") is not None:
         raise HTTPException(status_code=409, detail="This application has already been screened.")
+    if application.get("ai_interview_status"):
+        raise HTTPException(status_code=409, detail="Application screening is automatic; use the application pipeline status and review tools.")
     if application["current_stage"] != str(hdb.ApplicationStage.APPLIED):
         raise HTTPException(status_code=409, detail="Only newly applied candidates can be screened.")
 
@@ -471,20 +473,40 @@ async def screen_application(
     )
     if not await _db(hdb.attach_evaluation, application_id, org_id, evaluation_id):
         raise HTTPException(status_code=409, detail="Application changed while screening.")
-    next_stage = (
-        hdb.ApplicationStage.PENDING_REVIEW
-        if result["decision"] in ("FAIL", "BORDERLINE")
-        else hdb.ApplicationStage.TECHNICAL
-    )
-    await _db(
-        hdb.transition_application,
-        application_id,
-        org_id,
-        str(next_stage),
-        actor.user_id,
-        "Automated screening recommendation recorded.",
-        True,
-    )
+    if result["decision"] in ("FAIL", "BORDERLINE"):
+        next_stage = hdb.ApplicationStage.PENDING_REVIEW
+        await _db(
+            hdb.transition_application,
+            application_id,
+            org_id,
+            str(next_stage),
+            actor.user_id,
+            "Automated screening recommendation recorded.",
+            True,
+        )
+    else:
+        # The legacy screening adapter is retained for older evaluations. Its
+        # valid stage path is APPLIED -> SCREENING -> TECHNICAL, not the
+        # invalid direct APPLIED -> TECHNICAL transition.
+        await _db(
+            hdb.transition_application,
+            application_id,
+            org_id,
+            str(hdb.ApplicationStage.SCREENING),
+            actor.user_id,
+            "Legacy screening recommendation recorded.",
+            True,
+        )
+        next_stage = hdb.ApplicationStage.TECHNICAL
+        await _db(
+            hdb.transition_application,
+            application_id,
+            org_id,
+            str(next_stage),
+            actor.user_id,
+            "Legacy screening passed; technical stage opened.",
+            True,
+        )
 
     audit.record_from_actor(
         actor,

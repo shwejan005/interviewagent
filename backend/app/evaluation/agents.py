@@ -11,17 +11,21 @@ import os
 
 from crewai import LLM, Agent
 
-# LLM model — Gemini 2.5 Flash via LiteLLM provider prefix
-LLM_MODEL = "gemini/gemini-2.5-flash"
-
-# LLM model — local Copilot proxy (OpenAI-compatible), used instead of Gemini above.
-# Proxy is served by a VS Code extension at http://127.0.0.1:9999/v1/chat/completions.
-LLM_MODEL = LLM(
-    model="openai/gpt-5.6-luna",
-    base_url="http://127.0.0.1:9999/v1",
-    api_key=os.getenv("COPILOT_PROXY_API_KEY", "not-needed"),
-    custom_openai=True,
-)
+# Use Gemini by default in backend and worker processes. An OpenAI-compatible
+# endpoint can be selected explicitly for a local proxy or another provider;
+# never assume that localhost inside a container points at the developer host.
+AGENT_MODEL = os.getenv("AGENT_MODEL", "").strip()
+AGENT_BASE_URL = os.getenv("AGENT_BASE_URL", "").strip()
+if AGENT_BASE_URL:
+    openai_compatible_model = AGENT_MODEL or "openai/gpt-4o-mini"
+    LLM_MODEL = LLM(
+        model=openai_compatible_model if openai_compatible_model.startswith("openai/") else f"openai/{openai_compatible_model}",
+        base_url=AGENT_BASE_URL,
+        api_key=os.getenv("AGENT_API_KEY") or os.getenv("COPILOT_PROXY_API_KEY", "not-needed"),
+        custom_openai=True,
+    )
+else:
+    LLM_MODEL = LLM(model=AGENT_MODEL or "gemini/gemini-2.5-flash")
 
 
 def create_screening_agent() -> Agent:

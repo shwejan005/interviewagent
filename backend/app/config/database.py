@@ -682,6 +682,7 @@ def init_db() -> None:
     """Initialize database schema. Safe to call multiple times."""
     from app.config import (
         hiring_schema,
+        ai_interview_schema,
         interview_criteria_schema,
         migrations,
         prep_schema,
@@ -697,6 +698,7 @@ def init_db() -> None:
             cur.execute(_PG_SCHEMA)
             cur.execute(_PG_IDENTITY_SCHEMA)
             cur.execute(hiring_schema.SCHEMA_PG)
+            cur.execute(ai_interview_schema.SCHEMA_PG)
             cur.execute(prep_schema.SCHEMA_PG)
             cur.execute(review_schema.SCHEMA_PG)
             cur.execute(resume_schema.SCHEMA_PG)
@@ -719,6 +721,7 @@ def init_db() -> None:
             conn.executescript(_SQLITE_SCHEMA)
             conn.executescript(_SQLITE_IDENTITY_SCHEMA)
             conn.executescript(hiring_schema.SCHEMA_SQLITE)
+            conn.executescript(ai_interview_schema.SCHEMA_SQLITE)
             conn.executescript(prep_schema.SCHEMA_SQLITE)
             conn.executescript(review_schema.SCHEMA_SQLITE)
             conn.executescript(resume_schema.SCHEMA_SQLITE)
@@ -1190,6 +1193,12 @@ def list_evaluations(
         params.append(org_id)
     elif public_only:
         clauses.append("org_id IS NULL AND owner_user_id IS NULL")
+    # Application-linked screenings/interviews are presented only through
+    # tenant/campaign-scoped application routes, not the generic sandbox list.
+    clauses.append(
+        "NOT EXISTS (SELECT 1 FROM applications AS linked_application "
+        "WHERE linked_application.evaluation_id = evaluations.id)"
+    )
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     params.extend([limit, offset])
     with _get_conn() as (conn, cur):
@@ -1227,6 +1236,10 @@ def count_evaluations(
             params.append(org_id)
         elif public_only:
             clauses.append("org_id IS NULL AND owner_user_id IS NULL")
+        clauses.append(
+            "NOT EXISTS (SELECT 1 FROM applications AS linked_application "
+            "WHERE linked_application.evaluation_id = evaluations.id)"
+        )
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         cur.execute(f"SELECT COUNT(*) as c FROM evaluations {where}", tuple(params))
         row = cur.fetchone()

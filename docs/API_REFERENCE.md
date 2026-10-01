@@ -207,11 +207,52 @@ by which one candidate reads another's profile.
 |---|---|---|
 | `GET /jobs` | none | Public job board. Published postings only, across all orgs. Filters: `q`, `location`, `remote_policy` |
 | `GET /jobs/{id}` | none | Posting detail. 404 unless published |
-| `GET /jobs/{id}/application-form` | required | **The "fill it once" endpoint.** Returns the posting's questions with `prefilled_answer` populated from the vault and `unanswered_count` — the client only prompts for genuinely new questions |
-| `POST /jobs/{id}/apply` | required | Submit. Answers not supplied are taken from the vault; supplied answers are written back unless `save_answers_to_vault: false`. 409 on duplicate, 400 without a profile or with missing required answers |
+| `GET /jobs/{id}/application-form` | required | **The "fill it once" endpoint.** Returns posting questions with `prefilled_answer`, `unanswered_count`, `profile_complete`, and `missing_profile_fields`. A profile is ready when it has resume text or a professional headline plus at least one skill or experience entry |
+| `POST /jobs/{id}/apply` | required | Submit. Answers not supplied are taken from the vault; supplied answers are written back unless `save_answers_to_vault: false`. The server requires profile readiness and required answers (400 otherwise), returns 409 on duplicate, and atomically creates the application, frozen screening snapshot, interview session, and idempotent screening job. Returns 201 with `status: SCREENING_QUEUED` |
 | `GET /me/applications` | required | Application tracker |
 | `GET /me/applications/{id}` | required | Detail plus timeline. **Internal recruiter notes are deliberately excluded** |
 | `POST /me/applications/{id}/withdraw` | required | Withdraw. Allows re-applying later, since the uniqueness index excludes withdrawn rows |
+
+### Candidate: application-linked AI interview
+
+The current candidate interview is **text-only**. There is no live microphone,
+transcription, video, or speech provider integration in this release. Valid
+applications are automatically screened by the durable worker; a clear,
+validated pass prepares the interview and notifies the candidate without a
+recruiter-per-applicant screen, invite, or scheduling action. Borderline,
+unsupported, or failed screening goes to human review, not model-only rejection.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /me/applications/{application_id}/ai-interview` | Read the caller's own pipeline/interview status, persisted question turns, current question, pinned rubric version, and notice version. Other candidates receive 404 |
+| `POST /me/applications/{application_id}/ai-interview/start` | Start a ready interview after acknowledging `{ "accepted": true, "notice_version": "ai-interview-v1", "modality": "TEXT" }`. A stale notice version returns 409 |
+| `POST /me/applications/{application_id}/ai-interview/answers` | Submit `{ "turn_id": 123, "answer": "..." }`; returns 202 while a durable worker assesses the answer. Replaying the same answer is idempotent; conflicting or out-of-order answers return 409 |
+
+Candidate-visible session statuses include `SCREENING_QUEUED`, `SCREENING`,
+`INTERVIEW_READY`, `INTERVIEW_IN_PROGRESS`, `ANSWER_PROCESSING`,
+`REPORT_PENDING`, `REPORT_READY`, `REVIEW_REQUIRED`, `CANCELLED`, and
+`EXPIRED`. `PENDING_REVIEW` is an application stage, not a session status. A
+clear screen advances the application to `AI_INTERVIEW`; report publication
+moves it to `PENDING_REVIEW` only if a recruiter has not already advanced it.
+
+### Recruiter: posting criteria, interview status, and report
+
+These routes require the organization header, tenant check, and campaign
+assignment check. Posting criteria writes require `campaign:update`; interview
+and report reads require `application:read`; approving a screening exception
+requires `application:read` and `application:advance`.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /orgs/{org_id}/postings/{posting_id}/criteria` | Read the posting rubric and interview settings |
+| `PUT /orgs/{org_id}/postings/{posting_id}/criteria` | Configure competencies (including technical and behavioral categories), screening threshold, role level, core question counts, custom questions, and bounded follow-up count for future applications |
+| `GET /orgs/{org_id}/applications/{application_id}/ai-interview` | Read screening status/evidence and recruiter-authorized persisted interview turns |
+| `POST /orgs/{org_id}/applications/{application_id}/ai-interview/approve-screening-exception` | Explicitly approve an uncertain screening exception with a required 10–2000 character reason; approval is audited and prepares the interview |
+| `GET /orgs/{org_id}/applications/{application_id}/report` | Read the application-linked screening and interview report. Returns 404 until the report is published |
+
+AI interview report recommendations are `HUMAN_REVIEW_REQUIRED`; the
+adaptive-path weighted total is withheld pending calibration. The report is
+advisory evidence, not a hiring decision.
 
 ## Recruiter: campaigns, postings, pipeline
 
@@ -231,25 +272,33 @@ well as checked at the route layer.
 | `GET /orgs/{org_id}/applications/{id}` | `application:read` — **audited at Tier 3** as a sensitive read |
 | `POST /orgs/{org_id}/applications/{id}/transition` | `application:advance`, **plus `application:reject` to reject** |
 
+The legacy `POST /orgs/{org_id}/applications/{id}/screen` remains for older
+applications without an AI-interview workflow. It returns 409 for new
+applications already admitted to automatic screening; it is not part of the
+normal applicant flow.
+
 ### Application stages
 
 ```
-APPLIED → SCREENING → TECHNICAL → BEHAVIORAL → INTERVIEW → OFFER → HIRED
-    ↓          ↓           ↓            ↓           ↓         ↓
-         PENDING_REVIEW (automated adverse recommendation, awaiting a human)
-                              ↓
-                    REJECTED / WITHDRAWN  (terminal)
+APPLIED → SCREENING → AI_INTERVIEW → PENDING_REVIEW → INTERVIEW → OFFER → HIRED
+  ↓          ↓            ↓              ↓
+     PENDING_REVIEW (screening exception or AI report awaiting a human)
+                ↓
+          REJECTED / WITHDRAWN  (terminal)
 ```
+
+The legacy `TECHNICAL` and `BEHAVIORAL` stages remain supported for existing
+workflows; the new application-linked text interview uses `AI_INTERVIEW` and
+then `PENDING_REVIEW`.
 
 Transitions are validated against an explicit table — an out-of-order or
 replayed request returns **409** rather than corrupting pipeline history.
 Terminal stages have no exits.
 
-`PENDING_REVIEW` exists because **automated rejection is disabled by
-default** (`auto_reject_enabled: false` on every posting). An automated stage
-producing an adverse recommendation parks the application for human review
-rather than rejecting it. It can transition in either direction — overriding
-the machine is the point. See [DECISIONS.md](DECISIONS.md) D-10.
+`PENDING_REVIEW` exists because the application-linked AI flow does not make
+model-only rejection or final hiring decisions. Unclear screening evidence
+and completed interview reports are presented for human review. See
+[DECISIONS.md](DECISIONS.md) D-10.
 
 ---
 

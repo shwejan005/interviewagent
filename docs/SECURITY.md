@@ -31,6 +31,38 @@ What exists now:
 | Account enumeration resistance | Login returns identical errors and comparable timing for unknown email vs. wrong password |
 | Rate limiting | Basic in-memory per-IP (single-process only) |
 
+### Application-linked AI interview controls
+
+- Application submission requires a ready candidate profile and stores a
+   frozen profile/answer snapshot with the screening session and durable job.
+   Worker payloads carry identifiers rather than resume/transcript content.
+- Candidate session APIs resolve ownership from the authenticated user and
+   application; recruiter reads and screening-exception overrides require
+   organization capability plus the posting's campaign assignment. Generic
+   evaluation routes do not expose application-linked evaluations to
+   candidates or unassigned recruiters.
+- Screening and answer outputs are typed and bounded. A `PASS` is accepted
+   only after deterministic threshold/constraint checks and exact evidence
+   substring validation against the submitted source. Uncertainty, invalid
+   output, or exhausted work routes to human review; model output cannot
+   reject an applicant or choose a final hiring outcome.
+- Interview turns are application/session scoped, sequence-unique, and
+   idempotent; report persistence, evaluation completion, and session
+   publication are atomic. A late report cannot overwrite a terminal
+   application decision or rewind a recruiter-advanced stage.
+- The current interview modality is text-only. No audio/video is collected
+   by this feature. Candidate acknowledgement records a versioned notice and
+   `TEXT` modality, but this is not a substitute for a jurisdiction-specific
+   legal/privacy review.
+
+**Important residual data risk:** screening prompts contain candidate resume,
+profile, and application-answer content and send it to the configured model
+provider. Review provider retention, data-processing terms, region, access,
+and training settings before using real candidate data. Completed answers,
+transcripts, and reports do not yet have a comprehensive retention/expiry
+workflow. Exact quote checks reduce unsupported citations; they do not defend
+against prompt injection or prove that a grounded assessment is job-valid.
+
 What is still missing is listed under "Explicitly open gaps" below.
 
 ## `CODEBASE_REVIEW.md` findings — status
@@ -90,24 +122,30 @@ environment:
    available for the labeled demo. Its opaque evaluation token is scoped to
    one run, but the sandbox is not an authenticated candidate/recruiter
    workflow and should not be used for production hiring data.
-2. **PostgreSQL RLS and production database proof.** Application-layer tenant
-   and campaign assignment checks exist, but RLS and automated real-Postgres
-   concurrency tests remain open.
+2. **PostgreSQL feature verification.** RLS policies now include application,
+   answer, AI-interview, and turn tables, and application-layer tenant/campaign
+   checks are tested. The existing PostgreSQL contract test predates these new
+   tables; a non-owner RLS test and concurrency/migration run against the
+   current AI-interview schema remain open.
 3. **Spend/abuse budgets beyond the basic rate limiter.** No
    per-tenant or global LLM spend cap exists; the rate limiter only bounds
    *request count*, not cost. The in-memory limiter is also single-process
    only — multiple workers each enforce an independent limit.
 4. **A real evaluation/grading harness for the agents themselves** (Q05
    above) — unimplemented.
-5. **Prompt-injection defenses** (Q06) — no sanitization, delimiter
-   strategy, or adversarial test suite exists for resume/answer content
-   passed into agent prompts.
+5. **Prompt-injection defenses** (Q06) — candidate resume/answer content is
+   still untrusted prompt input. There is no established sanitization or
+   defense strategy and no adversarial test suite. Exact evidence-quote
+   validation prevents some fabricated citations but does not neutralize
+   instructions embedded in candidate content.
 6. **Audit anchoring** — the hash chain detects edits and deletions, but a
    sufficiently privileged attacker who rewrites every subsequent row could
    reforge it. Resisting that needs periodic signed digests written to
    separately-credentialed, object-locked storage.
-7. **Schema migrations** — see [DATA_MODEL.md](DATA_MODEL.md). Startup DDL
-   plus a narrow additive-column helper is not a substitute for versioned,
-   reviewable migrations once real data exists.
+7. **Schema migration operations** — an ordered migration ledger now exists
+   through version 6 (see [DATA_MODEL.md](DATA_MODEL.md)); it is intentionally
+   small and has no rollback framework. The AI-interview migrations and RLS
+   policies still need verification against the target production PostgreSQL
+   version and a backup/restore rehearsal before real-data rollout.
 8. **Password reset, email verification, MFA** — none implemented. The
    `email_verified_at` column exists but nothing sets it.

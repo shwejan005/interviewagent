@@ -1,7 +1,7 @@
 "use client";
 
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   BriefcaseBusiness,
@@ -135,6 +135,7 @@ function EditPanel({
 
 export default function ProfilePage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { actor, loading: authLoading } = useAuth();
   const [profile, setProfile] = useState<CandidateProfile | null>(null);
   const [loading, setLoading] = useState(true);
@@ -161,6 +162,11 @@ export default function ProfilePage() {
   const [resumeDraft, setResumeDraft] = useState<ResumeDraft | null>(null);
   const [resumeParsing, setResumeParsing] = useState(false);
   const resumeInputRef = useRef<HTMLInputElement>(null);
+
+  const navigateBackToApply = (isReady: boolean) => {
+    const next = searchParams.get("next");
+    if (isReady && next && next.startsWith("/") && !next.startsWith("//")) router.push(next);
+  };
 
   useEffect(() => {
     if (authLoading) return;
@@ -256,6 +262,8 @@ export default function ProfilePage() {
       setEditOpen(false);
       setResumeDraft(null);
       notify.success("Profile imported and saved.");
+      const profileReady = Boolean(payload.resume_text.trim() || (payload.headline.trim() && payload.skills.length + payload.work_experiences.length > 0));
+      navigateBackToApply(profileReady);
     } catch (error) {
       notify.error(error instanceof ApiError ? error.detail : "Failed to save imported profile.");
     } finally {
@@ -278,6 +286,8 @@ export default function ProfilePage() {
       await loadProfile();
       notify.success("Profile updated.");
       setEditOpen(false);
+      const hasSkillsOrExperience = skillsText.split(",").some((skill) => skill.trim()) || experienceCount > 0;
+      navigateBackToApply(Boolean(resumeText.trim() || (headline.trim() && hasSkillsOrExperience)));
     } catch (error) {
       notify.error(error instanceof ApiError ? error.detail : "Failed to save profile.");
     } finally {

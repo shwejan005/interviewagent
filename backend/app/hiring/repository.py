@@ -40,6 +40,7 @@ class PostingStatus(StrEnum):
 class ApplicationStage(StrEnum):
     APPLIED = "APPLIED"
     SCREENING = "SCREENING"
+    AI_INTERVIEW = "AI_INTERVIEW"
     # Terminal-adjacent: an automated stage produced an adverse recommendation
     # and is waiting on a human. See DECISIONS.md D-10.
     PENDING_REVIEW = "PENDING_REVIEW"
@@ -63,18 +64,22 @@ TERMINAL_STAGES = frozenset({
 # pipeline history.
 _ALLOWED_TRANSITIONS: dict[ApplicationStage, frozenset[ApplicationStage]] = {
     ApplicationStage.APPLIED: frozenset({
-        ApplicationStage.SCREENING, ApplicationStage.PENDING_REVIEW,
+        ApplicationStage.SCREENING, ApplicationStage.AI_INTERVIEW, ApplicationStage.PENDING_REVIEW,
         ApplicationStage.REJECTED, ApplicationStage.WITHDRAWN,
     }),
     ApplicationStage.SCREENING: frozenset({
-        ApplicationStage.TECHNICAL, ApplicationStage.PENDING_REVIEW,
+        ApplicationStage.TECHNICAL, ApplicationStage.AI_INTERVIEW, ApplicationStage.PENDING_REVIEW,
         ApplicationStage.REJECTED, ApplicationStage.WITHDRAWN,
     }),
     ApplicationStage.PENDING_REVIEW: frozenset({
         # A human can override an adverse automated recommendation in either
         # direction — that is the entire point of the stage existing.
-        ApplicationStage.SCREENING, ApplicationStage.TECHNICAL,
+        ApplicationStage.SCREENING, ApplicationStage.AI_INTERVIEW, ApplicationStage.TECHNICAL,
         ApplicationStage.BEHAVIORAL, ApplicationStage.INTERVIEW,
+        ApplicationStage.REJECTED, ApplicationStage.WITHDRAWN,
+    }),
+    ApplicationStage.AI_INTERVIEW: frozenset({
+        ApplicationStage.PENDING_REVIEW, ApplicationStage.INTERVIEW,
         ApplicationStage.REJECTED, ApplicationStage.WITHDRAWN,
     }),
     ApplicationStage.TECHNICAL: frozenset({
@@ -463,7 +468,9 @@ def set_posting_status(posting_id: int, org_id: int, status: str) -> bool:
 def create_application(org_id: int, posting_id: int, candidate_user_id: int,
                        profile_id: Optional[int], snapshot: dict,
                        answers: Optional[list[dict]] = None,
-                       source: str = "DIRECT") -> int:
+                       source: str = "DIRECT",
+                       ai_interview_policy: Optional[dict] = None,
+                       ai_interview_screening_input: Optional[dict] = None) -> int:
     """Submit an application.
 
     Raises DuplicateApplicationError if the candidate already has a live
@@ -516,11 +523,30 @@ def create_application(org_id: int, posting_id: int, candidate_user_id: int,
                 (application_id, org_id, "submitted",
                  str(ApplicationStage.APPLIED), candidate_user_id),
             )
+            if ai_interview_policy is not None and ai_interview_screening_input is not None:
+                # Local import avoids a hiring<->interview package import cycle.
+                from app.ai_interview.repository import insert_application_workflow_in_transaction
+
+                insert_application_workflow_in_transaction(
+                    cur,
+                    application_id=application_id,
+                    org_id=org_id,
+                    candidate_user_id=candidate_user_id,
+                    policy_snapshot=ai_interview_policy,
+                    screening_input=ai_interview_screening_input,
+                )
         return application_id
     except _IntegrityError as exc:
-        raise DuplicateApplicationError(
-            "You have already applied to this posting."
-        ) from exc
+        with _get_conn() as (conn, cur):
+            cur.execute(
+                f"SELECT id FROM applications WHERE posting_id = {_ph()} AND candidate_user_id = {_ph()} "
+                f"AND withdrawn_at IS NULL ORDER BY id DESC LIMIT 1",
+                (posting_id, candidate_user_id),
+            )
+            existing = cur.fetchone()
+        if existing is not None:
+            raise DuplicateApplicationError("You have already applied to this posting.") from exc
+        raise
 
 
 def get_application(application_id: int, org_id: Optional[int] = None) -> Optional[dict]:
@@ -534,8 +560,11 @@ def get_application(application_id: int, org_id: Optional[int] = None) -> Option
     p = _ph()
     with _get_conn() as (conn, cur):
         select = (
-            "SELECT a.*, u.full_name AS candidate_name, u.email AS candidate_email "
+            "SELECT a.*, u.full_name AS candidate_name, u.email AS candidate_email, "
+            "ai.status AS ai_interview_status, ai.phase AS ai_interview_phase "
             "FROM applications a JOIN users u ON u.id = a.candidate_user_id "
+            "LEFT JOIN application_ai_interviews ai ON ai.application_id = a.id "
+            "AND ai.status NOT IN ('CANCELLED', 'EXPIRED') "
         )
         if org_id is None:
             cur.execute(f"{select}WHERE a.id = {p}", (application_id,))
@@ -588,8 +617,11 @@ def list_applications_for_posting(posting_id: int, org_id: int, stage: Optional[
 
     with _get_conn() as (conn, cur):
         cur.execute(
-            f"SELECT a.*, u.full_name AS candidate_name, u.email AS candidate_email "
+            f"SELECT a.*, u.full_name AS candidate_name, u.email AS candidate_email, "
+            f"ai.status AS ai_interview_status, ai.phase AS ai_interview_phase "
             f"FROM applications a JOIN users u ON u.id = a.candidate_user_id "
+            f"LEFT JOIN application_ai_interviews ai ON ai.application_id = a.id "
+            f"AND ai.status NOT IN ('CANCELLED', 'EXPIRED') "
             f"WHERE {' AND '.join(clauses)} ORDER BY a.created_at DESC LIMIT {p} OFFSET {p}",
             tuple(params),
         )
@@ -608,10 +640,13 @@ def list_applications_for_candidate(candidate_user_id: int, limit: int = 50,
         cur.execute(
             f"SELECT a.id, a.status, a.current_stage, a.created_at, a.updated_at, "
             f"a.withdrawn_at, p.id AS posting_id, p.title AS posting_title, "
-            f"p.location, p.remote_policy, o.name AS org_name "
+            f"p.location, p.remote_policy, o.name AS org_name, "
+            f"ai.status AS ai_interview_status, ai.phase AS ai_interview_phase "
             f"FROM applications a "
             f"JOIN job_postings p ON p.id = a.posting_id "
             f"JOIN organizations o ON o.id = a.org_id "
+            f"LEFT JOIN application_ai_interviews ai ON ai.application_id = a.id "
+            f"AND ai.status NOT IN ('CANCELLED', 'EXPIRED') "
             f"WHERE a.candidate_user_id = {p} "
             f"ORDER BY a.created_at DESC LIMIT {p} OFFSET {p}",
             (candidate_user_id, limit, offset),
@@ -691,6 +726,9 @@ def withdraw_application(application_id: int, candidate_user_id: int) -> bool:
             (application_id, row["org_id"], "withdrawn", row["current_stage"],
              str(ApplicationStage.WITHDRAWN), candidate_user_id),
         )
+        from app.ai_interview.repository import cancel_for_withdrawal
+
+        cancel_for_withdrawal(cur, application_id)
         return True
 
 

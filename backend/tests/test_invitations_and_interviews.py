@@ -62,6 +62,11 @@ def test_scheduling_scopes_participants_and_candidate_agenda(client):
     assert add_member.status_code == 201, add_member.text
     candidate = _register(client, "schedule-candidate@example.com")
     client.put("/me/profile", json={"headline": "Candidate"}, headers=_auth(candidate))
+    client.put(
+        "/me/profile/skills",
+        json={"skills": [{"skill": "Python", "years": 1}]},
+        headers=_auth(candidate),
+    )
     posting = _make_posting(client, {"token": recruiter, "org_id": org_id})
     application_id = client.post(
         f"/jobs/{posting['id']}/apply", json={}, headers=_auth(candidate)

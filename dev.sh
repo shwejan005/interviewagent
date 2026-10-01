@@ -71,6 +71,7 @@ echo -e "${CYAN}═════════════════════�
 echo -e "${CYAN}  Evalia — Multi-Agent Interview Evaluation System${NC}"
 echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}"
 echo -e "  ${GREEN}Backend${NC}  → http://localhost:8000"
+echo -e "  ${GREEN}Worker${NC}   → durable screening/interview jobs"
 echo -e "  ${GREEN}Frontend${NC} → http://localhost:3000"
 echo -e "  ${GREEN}API Docs${NC} → http://localhost:8000/docs"
 echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}"
@@ -81,9 +82,14 @@ echo ""
 (cd "$BACKEND_DIR" && uvicorn main:app --reload --port 8000) &
 BACKEND_PID=$!
 
+# The worker is a separate process: application screening and interview turns
+# are durable jobs, never paid model calls inside the candidate HTTP request.
+(cd "$BACKEND_DIR" && python -m app.worker.job_worker) &
+WORKER_PID=$!
+
 # Start frontend in background
 (cd "$FRONTEND_DIR" && npm run dev) &
 FRONTEND_PID=$!
 
 # Wait for both — if either exits, the trap cleans up the other
-wait $BACKEND_PID $FRONTEND_PID
+wait $BACKEND_PID $WORKER_PID $FRONTEND_PID

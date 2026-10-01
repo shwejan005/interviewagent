@@ -4,15 +4,17 @@
 
 | Suite | Location | What it covers | Live LLM calls? | Last verified run |
 |---|---|---|---|---|
-| Backend automated tests | `backend/tests/` (pytest) | Output parsing/validation, database PII/uniqueness/batching, full route pipeline (mocked agents), identity/RBAC, marketplace, matching, invitations, scheduling, application screening, durable v1 admission/worker execution, prep suite, reviewer actions, data export/deletion, contract harness, health/readiness, durable worker retries/cancellation/shutdown, structured event redaction | No | 229 passed, 0 failed (2026-09-30) |
-| Frontend type-check | `frontend/` (`npm run typecheck`) | TypeScript type safety across the whole `app/`/`components/` tree | N/A | 0 errors (2026-09-30) |
-| PostgreSQL contract | `backend/scripts/verify_postgres.py` | RLS tenant isolation, policy coverage, atomic concurrent job claims | No | PASS against local PostgreSQL 17.4 (2026-09-30) |
-| Browser recovery | `frontend/tests/prep-recovery.spec.ts` (`npm run test:e2e`) | Problem selection, refresh recovery, persistent Prep sidebar navigation | No | 2 passed (2026-09-30) |
+| Backend automated tests | `backend/tests/` (pytest) | Output parsing/validation, database PII/uniqueness/batching, identity/RBAC, marketplace, automatic application screening, AI-interview worker/session/report flow, withdrawal and terminal-state guards, interview criteria, durable jobs, prep suite, data export/deletion, health/readiness, retries/cancellation, structured event redaction | No | 260 passed, 0 failed, 31 warnings (SQLite; 2026-10-01) |
+| Frontend type-check | `frontend/` (`npm run typecheck`) | TypeScript type safety across the whole app/components tree | N/A | 0 errors (2026-10-01) |
+| PostgreSQL contract | `backend/scripts/verify_postgres.py` | RLS policy coverage and atomic concurrent job claims | No | PASS against local PostgreSQL 17.4 (2026-09-30, before AI-interview changes; not rerun for the new tables) |
+| Browser suite | `frontend/tests/` (`npx playwright test`) | Application submit/status, candidate text interview/consent/answer flow, recruiter review, profile/criteria, scheduling picker, route roles, and prep recovery/navigation | No | 10 passed (2026-10-01) |
 | Live agent smoke test | Ad hoc, not checked in (see below) | The actual CrewAI agents against a real LLM endpoint, end-to-end | **Yes** | Full happy path (PASS→PASS→PASS→HIRE) + reject path, verified manually 2026-09-27; not automated/repeatable as a checked-in test |
 
-There is still no live-agent test in CI (by design — see below), and the
-browser suite currently covers the prep recovery journey rather than the full
-marketplace/interview workflow.
+The AI-interview tests use deterministic mocked model calls and mocked browser
+API responses. They verify orchestration and UI behavior, not the quality of
+a live provider response. The earlier PostgreSQL contract run predates the
+AI-interview tables/policies; SQLite success is not proof of PostgreSQL RLS
+or concurrency behavior.
 
 ## Running the backend suite
 
@@ -109,6 +111,11 @@ means:
   scheduling, and cancellation.
 - `tests/test_durable_pipeline.py` — 202 responses, durable screening
   admission, worker advancement, and scoped status access.
+- `tests/test_ai_interview.py` — profile-first application admission, automatic
+  screening, exact-evidence and threshold gates, human review/override,
+  candidate ownership, consent/version checks, idempotent answers, persisted
+  technical/behavioral turns, report publication, and late-report guards for
+  recruiter advancement, terminal rejection, and withdrawal.
 - `tests/test_prep.py` — topic catalog, roadmap ownership, progress XP, and
   explicit unverified submission behavior.
 - `tests/test_data_subject.py` — authenticated export, last-owner protection,
@@ -135,6 +142,17 @@ npm run typecheck
 No output means success (exit code 0). See [SETUP.md](SETUP.md) for why
 `next build` itself is not a reliable check in a network-restricted
 environment, and why a bare `npx tsc` should not be used here.
+
+## Running the browser suite
+
+```powershell
+cd frontend
+npx playwright test
+```
+
+The checked-in AI-interview browser tests stub backend responses. They cover
+the candidate's text-only application/interview journey and recruiter report
+surface; they do not call an LLM, use a microphone, or verify PostgreSQL.
 
 ## Live agent smoke test (manual, not automated)
 
@@ -181,25 +199,29 @@ loop") — not implemented; see [GAP_ANALYSIS.md](GAP_ANALYSIS.md) P3.
 
 Documented here so it isn't mistaken for an oversight during review:
 
-- **Concurrency/load testing** — no test exercises two truly concurrent
-  requests racing on the same evaluation (the `DuplicateVerdictError` path
-  is tested by *simulating* the race — manually resetting `current_round`
-  between two sequential requests — not by firing genuinely parallel
-  requests).
-- **Real PostgreSQL** — the entire suite runs against SQLite. `database.py`
-  has a PostgreSQL code path, but it has not been exercised by an automated
-  test in this repository (`PRODUCTION_ROADMAP.md` explicitly calls out that
-  "SQLite is not proof of concurrency/SQL parity").
-- **Frontend component/browser tests** — no Vitest/Jest/Playwright config
-  exists; only `tsc` type-checking is automated for the frontend.
+- **AI interview concurrency/load testing** — report-vs-terminal and
+  recruiter-stage guards are covered sequentially, but no test fires truly
+  concurrent AI-interview submissions/withdrawals/report publication. The
+  earlier PostgreSQL worker-claim test is not evidence for these races.
+- **AI-feature PostgreSQL verification** — the full suite runs against SQLite.
+  `backend/scripts/verify_postgres.py` passed before the AI interview tables
+  and policies were added; it has not been rerun against the current schema.
+  SQLite success is not proof of SQL parity, RLS, or concurrency.
+- **Live AI interviewer provider** — no live LLM call was made for screening,
+  answer assessment, or report generation in this validation. The manual
+  smoke test above covers the older generic evaluation pipeline only.
+- **Frontend unit/accessibility tests** — browser flows exist, but there is no
+  Vitest/Jest component suite or automated axe/screen-reader/device coverage.
 - **Accessibility testing** — a few concrete accessibility lint findings
   were fixed during this documentation pass (label/control association,
   non-interactive click handlers, array-index React keys — see
   [CHANGELOG.md](CHANGELOG.md)), but there is no automated accessibility
   test (e.g. axe-core) verifying this doesn't regress.
-- **Security testing** — no automated authorization/tenant-isolation tests
-  exist, because there is no authorization/tenant isolation implemented yet
-  (see [SECURITY.md](SECURITY.md)).
+- **AI interview security beyond route tests** — candidate ownership,
+  organization boundaries, and assigned-campaign reads have focused tests;
+  there is no independent penetration test, prompt-injection benchmark, or
+  feature-specific non-owner PostgreSQL RLS test yet (see
+  [SECURITY.md](SECURITY.md)).
 - **Distributed observability** — worker lifecycle JSON events are tested
   locally, but there is no OpenTelemetry trace, external observability
   destination, alert, or crash/restart integration test yet.

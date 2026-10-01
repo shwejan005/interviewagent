@@ -2,43 +2,73 @@
 
 ## System overview
 
-Evalia is a single-tenant, unauthenticated, sequential multi-agent interview
-evaluation pipeline. A Next.js frontend collects a resume and candidate
-answers; a FastAPI backend orchestrates five CrewAI agent invocations
-against an LLM provider, validates every agent's output against a strict
-Pydantic schema, and persists results in PostgreSQL (production) or SQLite
-(local development fallback).
+Evalia is a multi-tenant candidate/recruiter hiring platform with two distinct
+evaluation paths: the legacy generic five-stage evaluation, and a new
+application-rooted automatic screening plus persisted AI interview. The
+application path uses a deterministic FastAPI state controller, durable
+database-backed jobs, a candidate-facing text interview, and recruiter-scoped
+evidence reports. PostgreSQL is the production target; SQLite is used for
+local development and most automated tests. The feature does not yet provide
+live voice, transcription, or video.
 
 ```mermaid
 flowchart LR
     Browser["Browser\n(Next.js app)"] -->|"/api/* rewrite"| NextProxy["next.config.js\nrewrites() proxy"]
-    NextProxy --> FastAPI["FastAPI app\n(main.py + routes.py)"]
-    FastAPI --> CrewRunner["crew_runner.py\n(orchestration + validation)"]
-    CrewRunner --> Agents["agents.py\n(5 CrewAI Agent personas)"]
-    Agents --> LLM["LLM provider\n(Gemini or local OpenAI-compatible proxy)"]
-    CrewRunner --> Verdicts["backend/verdicts/{evaluation_id}/\n(raw + parsed JSON per round)"]
-    FastAPI --> DB[("PostgreSQL or SQLite\n(database.py)")]
-    DB --> Worker["job_worker.py\n(durable finalization worker)"]
-    Worker --> CrewRunner
+    NextProxy --> FastAPI["FastAPI app\n(auth + domain routers)"]
+    FastAPI --> Hiring["Candidate / hiring\napplication services"]
+    Hiring --> AIInterview["ai_interview\nstate + evidence validation"]
+    FastAPI --> Legacy["Legacy generic evaluation\ncrew_runner.py"]
+    Legacy --> Agents["CrewAI agents"]
+    AIInterview --> DB[("PostgreSQL or SQLite")]
+    Legacy --> DB
+    DB --> Worker["Durable job worker\nscreen / assess / report / notify"]
+    Worker --> AIInterview
+    Worker --> Legacy
+    AIInterview --> Verdicts["Application-scoped<br/>interview turns + report"]
+    Agents --> LLM["Configured model provider"]
+    AIInterview --> LLM
 ```
 
-  The legacy pipeline supports authenticated owner/org scope plus a token-gated
-  anonymous sandbox; it is not the application workflow. Final recommendation
-  and committee work can be admitted to the durable
-  `background_jobs` table and resumed from persisted round-4/5 checkpoints;
-  `job_worker.py` claims those jobs with leases and bounded retry policy;
-  cancellation requests are persisted and checked before and after handler
-  execution. Execution metadata is persisted with each verdict, including an
-  attempt ID, model/prompt/rubric labels, optional usage JSON, error type,
-  timestamps, and deployment provenance.
-  Screening, technical, and behavioral calls still run in the HTTP request
-  path, and the final-decision route may execute its claimed job inline for
-  backward compatibility. Hiring applications can invoke screening as a
-  human-reviewed recommendation, while invitation and scheduled-interview
-  records live in the hiring domain. See [GAP_ANALYSIS.md](GAP_ANALYSIS.md)
-  for the remaining P2 gaps.
+The legacy generic evaluation retains its owner/org access plus token-gated
+anonymous sandbox and is not the application pipeline. Its older synchronous
+routes remain for compatibility. Application screening, answer assessment,
+report generation, and candidate notification use the durable worker and
+`background_jobs`; the job payload carries IDs, while candidate evidence is
+loaded from application-scoped storage. Hiring calendar records remain a
+separate feature. See [AI_INTERVIEW_ARCHITECTURE_PLAN.md](AI_INTERVIEW_ARCHITECTURE_PLAN.md)
+and [SECURITY.md](SECURITY.md) for the implemented boundary and outstanding
+release requirements.
 
-## The five-agent pipeline
+## Application-linked AI interview (text-only release)
+
+`POST /jobs/{posting_id}/apply` requires a ready profile, freezes profile and
+application-answer evidence, snapshots the posting criteria, and commits the
+application, `application_ai_interviews` row, and idempotent screening job in
+one transaction. A durable worker runs the structured screening call; code
+validates exact source quotes, required evidence, posting constraints, and the
+configured threshold. Only a validated clear pass advances the application to
+`AI_INTERVIEW`, prepares the interview, and queues a notification. Unclear
+evidence and execution failures are routed to `REVIEW_REQUIRED`; the model
+cannot reject or make a hiring decision.
+
+The core technical/behavioral question plan is deterministic from the pinned
+rubric. Candidate consent and text answers are submitted through
+application-owned routes. Answer assessments may request a bounded
+follow-up or a one-band difficulty change, but the server owns turn order and
+validates the result. Each question, answer, evidence assessment, and
+difficulty is persisted in `application_ai_interview_turns`. Report generation
+runs as a durable job; report, linked evaluation completion, and
+`REPORT_READY` publication commit atomically. The application moves to
+`PENDING_REVIEW` only if it is still at `AI_INTERVIEW`, so report publication
+cannot undo a recruiter's subsequent decision or terminal state.
+
+This release is text-only: it has no microphone streaming, speech recognition,
+video, or live voice provider. Provider-backed model calls have not been
+validated end-to-end for this workflow. A clear report remains advisory and
+requires human review; the cross-path weighted score is withheld pending
+calibration.
+
+## Legacy generic five-agent pipeline
 
 | Stage | Round | Agent (`agents.py`) | Input (AGENT CONTEXT) | Output | Failure behavior |
 |---|---|---|---|---|---|
@@ -89,7 +119,7 @@ concretely is today:
 
 | Type | Claimed purpose | Actual implementation |
 |---|---|---|
-| Session context | "Current interview session state" | **Does not exist as a separate concept any more.** `state.py` now holds only static constants (`AVAILABLE_ROLES`, `PIPELINE_STAGES`) and a per-evaluation verdict-directory helper. All session/lifecycle state lives in the `evaluations` table (see [DATA_MODEL.md](DATA_MODEL.md)), keyed by `evaluation_id`. This was a deliberate fix for a real bug (see below) — there is intentionally no process-global mutable session dictionary any more. |
+| Session context | "Current interview session state" | There is no process-global mutable session dictionary. Legacy generic evaluation state lives in `evaluations`; the application-linked flow stores session/policy state in `application_ai_interviews` and ordered questions, answers, and assessments in `application_ai_interview_turns` (see [DATA_MODEL.md](DATA_MODEL.md)). |
 | Decision memory | "Persistent agent verdicts & evaluation logs" | Real, and evaluation-scoped: `backend/verdicts/{evaluation_id}/round{N}.txt` (raw LLM text) and `round{N}.json` (validated, structured verdict) plus the `agent_verdicts` SQL table, which is the actual source of truth read by every API response. The flat files are a debugging/audit convenience, not queried by the API. |
 | Agent context | "Explicit passing" | Real — see "Bias isolation" above. Every `run_*` function in `crew_runner.py` takes exactly the arguments it's allowed to see; there is no hidden global lookup. |
 
@@ -111,43 +141,21 @@ this one instance of it.
 
 ## LLM provider configuration
 
-`agents.py` defines a single `LLM_MODEL` constant used by all five agents.
-As of this documentation pass, the file contains **two** assignments to
-`LLM_MODEL`:
+The CrewAI adapters in `backend/app/evaluation/agents.py` select a provider
+from the process environment. By default they use
+`gemini/gemini-2.5-flash` and `GEMINI_API_KEY`. Set `AGENT_MODEL` to choose a
+different model; set both `AGENT_BASE_URL` and `AGENT_MODEL` to use an
+OpenAI-compatible endpoint, with optional `AGENT_API_KEY` credentials. The
+backend and worker must receive the same provider configuration and must be
+able to reach the endpoint from their own runtime/container network.
 
-```python
-LLM_MODEL = "gemini/gemini-2.5-flash"
-
-LLM_MODEL = LLM(
-    model="openai/gpt-5.6-luna",
-    base_url="http://127.0.0.1:9999/v1",
-    api_key=os.getenv("COPILOT_PROXY_API_KEY", "not-needed"),
-    custom_openai=True,
-)
-```
-
-The **second assignment wins** — Evalia currently talks to a local,
-OpenAI-compatible proxy at `http://127.0.0.1:9999/v1`, not Gemini, despite
-the `GEMINI_API_KEY` environment variable and all of the Gemini-specific
-naming elsewhere in the codebase (README text, `main.py` startup warning,
-`requirements.txt`'s `crewai[google-genai]` extra). **This is intentional**
-(added at the request of whoever is running this instance locally against a
-VS Code extension-hosted proxy on port 9999), but it means:
-
-- Anyone deploying this code as-is, expecting Gemini, will silently talk to
-  `127.0.0.1:9999` instead and get connection errors in any environment
-  without that proxy running.
-- To restore Gemini, delete/comment out the second `LLM_MODEL = LLM(...)`
-  block.
-- `crewai`'s `LLM(model="openai/...", base_url=..., custom_openai=True)`
-  forces the native OpenAI-compatible provider regardless of the model name,
-  which is why an arbitrary model string like `gpt-5.6-luna` works against a
-  non-OpenAI backend as long as that backend implements the
-  `/v1/chat/completions` wire format.
-
-See [GAP_ANALYSIS.md](GAP_ANALYSIS.md) for the recommended follow-up
-(externalize this as an environment-driven choice instead of a hardcoded
-second assignment).
+The application interview's screening and answer-assessment adapters use
+CrewAI behind durable worker jobs. The core question plan and state machine
+are deterministic application code; CrewAI does not own application state,
+authorization, or interview turn order. Automated tests mock model calls.
+See [SETUP.md](SETUP.md) and `.env.example` for configuration. A configured
+provider is not evidence of acceptable retention terms or validated hiring
+quality; review those before sending real candidate data.
 
 ## Request lifecycle for a mutating endpoint
 

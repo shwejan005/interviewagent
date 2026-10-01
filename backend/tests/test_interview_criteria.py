@@ -49,7 +49,13 @@ class TestCriteriaCrud:
         )
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert {c["label"] for c in body["competencies"]} == {"Python", "PostgreSQL"}
+        assert {c["label"] for c in body["competencies"]} == {
+            "Python",
+            "PostgreSQL",
+            "Behavioral communication and collaboration",
+        }
+        assert sum(c["weight"] for c in body["competencies"]) == pytest.approx(100)
+        assert body["interview_settings"]["role_level"] == "MID"
         assert body["updated_at"] == ""
 
     def test_put_criteria_persists_and_is_returned_on_get(self, client, recruiter):

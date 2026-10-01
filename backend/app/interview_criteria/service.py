@@ -11,6 +11,7 @@ heuristics elsewhere in this codebase.
 
 import logging
 import re
+from dataclasses import replace
 from typing import Optional
 
 from app.config import database as db
@@ -45,28 +46,58 @@ class CriteriaService:
         point instead of a blank form."""
         existing = self._repository.get(posting_id)
         if existing is not None:
-            return existing
+            competencies = [
+                {
+                    **item,
+                    "category": item.get("category") or (
+                        "BEHAVIORAL" if _BEHAVIORAL_KEYWORDS.search(f"{item.get('key', '')} {item.get('label', '')}") else "TECHNICAL"
+                    ),
+                }
+                for item in existing.competencies
+            ]
+            return replace(existing, competencies=competencies)
 
         posting = hdb.get_posting(posting_id, org_id)
         required_skills = (posting or {}).get("required_skills") or []
-        competencies = [
-            {
-                "key": re.sub(r"[^a-z0-9_]", "_", skill.lower())[:60] or f"skill_{i}",
-                "label": skill,
-                "weight": round(100 / max(1, len(required_skills)), 2),
-                "description": "",
-            }
-            for i, skill in enumerate(required_skills[:10])
-        ] or [
-            {"key": "technical_skills", "label": "Technical skills", "weight": 50.0, "description": ""},
-            {"key": "communication", "label": "Communication", "weight": 50.0, "description": ""},
-        ]
+        selected_skills = required_skills[:10]
+        if selected_skills:
+            technical_weight = 80.0
+            competencies = [
+                {
+                    "key": re.sub(r"[^a-z0-9_]", "_", skill.lower())[:60] or f"skill_{i}",
+                    "label": skill,
+                    "weight": round(technical_weight / len(selected_skills), 2),
+                    "description": "",
+                    "category": "TECHNICAL",
+                }
+                for i, skill in enumerate(selected_skills)
+            ]
+            # Assign rounding remainder deterministically so the rubric totals 100.
+            competencies[0]["weight"] = round(technical_weight - sum(c["weight"] for c in competencies[1:]), 2)
+            competencies.append({
+                "key": "behavioral_communication",
+                "label": "Behavioral communication and collaboration",
+                "weight": 20.0,
+                "description": "Job-related clarity, collaboration, and ownership demonstrated in concrete work examples.",
+                "category": "BEHAVIORAL",
+            })
+        else:
+            competencies = [
+                {"key": "technical_skills", "label": "Technical skills", "weight": 50.0, "description": "", "category": "TECHNICAL"},
+                {"key": "behavioral_communication", "label": "Behavioral communication and collaboration", "weight": 50.0, "description": "", "category": "BEHAVIORAL"},
+            ]
         return PostingCriteria(
             posting_id=posting_id,
             org_id=org_id,
             competencies=competencies,
             custom_questions=[],
             pass_threshold=6.0,
+            interview_settings={
+                "role_level": "MID",
+                "technical_question_count": 2,
+                "behavioral_question_count": 2,
+                "max_followups_per_question": 1,
+            },
             rubric_version="posting-v1",
             updated_by=None,
             updated_at="",
@@ -79,10 +110,21 @@ class CriteriaService:
         competencies: list[dict],
         custom_questions: list[str],
         pass_threshold: float,
+        interview_settings: dict,
         updated_by: int,
     ) -> PostingCriteria:
+        normalized_competencies = [
+            {
+                **item,
+                "category": item.get("category") or (
+                    "BEHAVIORAL" if _BEHAVIORAL_KEYWORDS.search(f"{item.get('key', '')} {item.get('label', '')}") else "TECHNICAL"
+                ),
+            }
+            for item in competencies
+        ]
         return self._repository.upsert(
-            posting_id, org_id, competencies, custom_questions, pass_threshold, updated_by
+            posting_id, org_id, normalized_competencies, custom_questions, pass_threshold,
+            interview_settings, updated_by
         )
 
 

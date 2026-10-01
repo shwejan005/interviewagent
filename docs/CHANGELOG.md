@@ -10,6 +10,38 @@ Entries are in **reverse chronological order** (most recent session first).
 
 ---
 
+## Session 16 — Implement the application-linked text interview flow
+
+- Enforced profile readiness before apply (reviewed resume text or a minimal
+  structured profile) and made valid application submission atomically admit
+  the frozen screening input, application interview session, and idempotent
+  durable screening job.
+- Added structured CrewAI screening and answer-assessment adapters, exact
+  source-evidence validation, deterministic screening constraints/thresholds,
+  and a review-required path for unclear evidence, invalid output, or failed
+  jobs. A clear pass automatically prepares a candidate-started interview and
+  queues notification; recruiters no longer manually screen/invite each new
+  applicant.
+- Added candidate-owned consent/status/start/answer APIs and a persisted
+  technical + behavioral text interview with deterministic core questions,
+  bounded follow-ups, difficulty tracking, idempotent answers, and a recruiter
+  evidence report. Added organization/campaign-scoped report and exception
+  review surfaces; generic evaluation routes no longer expose linked records.
+- Made report, linked evaluation completion, and interview publication one
+  transaction. Late report workers cannot overwrite withdrawal/terminal
+  decisions or rewind a recruiter-advanced application. Added regression tests
+  for report-after-withdrawal and terminal/stage guards, and updated an older
+  scheduling fixture to satisfy profile-first application readiness.
+- Validation: backend suite **260 passed** (31 dependency/deprecation
+  warnings); frontend type-check passed; all **10 Playwright tests passed**.
+  AI interview tests use mocked provider calls; the feature-specific
+  PostgreSQL/RLS/concurrency contract and live model behavior have not been
+  validated.
+- **Not implemented:** live voice/microphone streaming, transcription, video,
+  transcript correction, production provider/privacy approval, comprehensive
+  retention/expiry workflow, and calibrated adaptive-path weighted scoring.
+  The candidate experience is text-only and reports require a human decision.
+
 ## Session 15 — Plan application-linked AI interviews
 
 - Added a research-grounded architecture and delivery plan for an

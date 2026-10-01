@@ -32,15 +32,19 @@ Copy-Item ../.env.example ../.env
 
 At minimum, decide which LLM provider you're using:
 
-- **Gemini (as documented/originally intended):** set `GEMINI_API_KEY` in
-  `.env`, and in `backend/agents.py`, delete or comment out the second
-  `LLM_MODEL = LLM(...)` assignment so the `gemini/gemini-2.5-flash` line
-  takes effect. See [ARCHITECTURE.md](ARCHITECTURE.md#llm-provider-configuration).
-- **Local OpenAI-compatible proxy (current default in this repo):** no
-  `GEMINI_API_KEY` needed; the hardcoded `LLM(base_url="http://127.0.0.1:9999/v1", ...)`
-  assignment in `agents.py` is what actually runs. You must have something
-  listening on that port implementing the `/v1/chat/completions` wire
-  format, or every agent call will fail with a connection error.
+- **Gemini (default):** set `GEMINI_API_KEY` in `.env`; the default model is
+  `gemini/gemini-2.5-flash`.
+- **OpenAI-compatible endpoint:** set `AGENT_BASE_URL` and `AGENT_MODEL`, and
+  set `AGENT_API_KEY` if the endpoint requires a key. `AGENT_MODEL` alone can
+  select a different Gemini model when `AGENT_BASE_URL` is unset. API and
+  worker processes must be able to reach the configured endpoint; `localhost`
+  inside a container refers to that container, not the developer host.
+
+The application-linked screening and interview assessor use the configured
+CrewAI provider in the durable worker. AI-interview integration tests replace
+these calls with deterministic fakes; no real provider call is required for
+the test suite. Do not send real candidate data until the provider's retention,
+training, residency, access, and data-processing terms have been reviewed.
 
 Database: leave `DATABASE_URL` unset for local SQLite (`backend/evalia.db`,
 auto-created). Set it to a PostgreSQL connection string to use Postgres
@@ -55,12 +59,20 @@ cd backend
 ```
 
 The durable command API is available under `/v1` when a worker is running.
-Start a worker in a second backend terminal:
+Automatic application screening, interview-answer assessment, report
+generation, and interview-ready email notifications also require the durable
+worker. Start it in a second backend terminal:
 
 ```powershell
 cd backend
-../.venv/Scripts/python.exe job_worker.py
+../.venv/Scripts/python.exe -m app.worker.job_worker
 ```
+
+The first application-linked candidate experience is text-only. Real-time
+voice, speech recognition, video, and a live-provider end-to-end smoke test
+are not implemented; a missing/unavailable provider leaves work queued for
+retry and then human review rather than turning the failure into a candidate
+rejection. Email is optional: the application tracker is the source of truth.
 
 The legacy interview routes remain available for compatibility. New clients
 that need process-loss recovery should use `POST /v1/evaluations`,

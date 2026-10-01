@@ -1,13 +1,12 @@
 # Evalia — Multi-Agent Interview Evaluation System
 
-Evalia is a five-stage candidate evaluation pipeline built on **CrewAI**:
-resume screening, a technical round, a behavioral round, a synthesized
-hiring recommendation, and a final committee decision that is deliberately
-isolated from the candidate's resume and raw answers to reduce
-resume-based bias. Every agent's output is validated against a strict
-Pydantic schema before it can become a business decision — malformed or
-invalid LLM output is recorded as a distinct execution failure, never
-silently turned into a PASS/FAIL/HIRE/REJECT verdict.
+Evalia is a multi-tenant candidate/recruiter hiring platform with two distinct
+evaluation paths: a legacy five-stage **CrewAI** evaluation pipeline and a
+profile-first, application-linked screening-to-interview workflow. New valid
+applications are automatically screened in a durable worker; a clear pass
+prepares a candidate-started **text** interview and a recruiter-facing,
+evidence-linked report. Application state and hiring decisions remain under
+deterministic server control and human review.
 
 > **Full documentation lives in [`docs/`](docs/README.md).** This README is
 > a short entry point; `docs/` has the complete, source-verified detail on
@@ -19,14 +18,16 @@ silently turned into a PASS/FAIL/HIRE/REJECT verdict.
 ## What this is (and isn't)
 
 This is a working prototype with authenticated candidate/recruiter flows,
-tenant-scoped marketplace data, durable interview admission, strict output
-validation, PII-safe responses, idempotent finalization, and a database-driven
-DSA preparation suite with sandboxed Judge0 execution for local development.
-The project has an automated backend suite, frontend type-check/build gates,
-real-Postgres RLS/concurrency verification, and Playwright recovery coverage.
-It is **not production-certified**: cloud deployment, managed secrets, real
-Postgres load/restore exercises, benchmark quality evidence, and a consented
-pilot remain open. See [`docs/GAP_ANALYSIS.md`](docs/GAP_ANALYSIS.md) and
+tenant-scoped marketplace data, durable background jobs, strict model-output
+validation, PII-scoped responses, and a database-driven DSA preparation
+suite. The application-linked AI interview currently supports text only; it
+does not provide live voice, transcription, video, or a calibrated aggregate
+score. Backend tests, frontend type-checking, and Playwright flows pass, but
+the new interview tables/policies have not been validated against PostgreSQL
+and the model calls were mocked in feature tests. It is **not
+production-certified**: provider/privacy approval, retention controls,
+PostgreSQL feature verification, quality/fairness evidence, and a consented
+pilot remain open. See [`docs/AI_INTERVIEW_ARCHITECTURE_PLAN.md`](docs/AI_INTERVIEW_ARCHITECTURE_PLAN.md), [`docs/GAP_ANALYSIS.md`](docs/GAP_ANALYSIS.md), and
 [`docs/SECURITY.md`](docs/SECURITY.md).
 
 Two other documents at the repository root describe **planning**, not
@@ -39,19 +40,18 @@ actually been implemented.
 
 ## Architecture, in brief
 
-```
-Resume → Screening Agent → Technical Agent → Behavioral Agent → Recommendation Agent → Committee Evaluator
-              ↓ recommendation/review state, not an unattended hiring decision
+```text
+Legacy:     Resume → Screening → Technical → Behavioral → Recommendation → Committee
+Application: Apply → durable automatic screening → candidate-started text interview → evidence report → human review
 ```
 
 The Recommendation and Committee agents receive **only** prior agents'
 structured verdicts — never the resume or raw candidate answers — by
 explicit, function-argument-level context passing (no shared/global state).
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full request
-lifecycle, the LLM provider configuration (this repository currently points
-at a local OpenAI-compatible proxy, not Gemini, by default — see that doc
-before assuming otherwise), and exactly what this design does and doesn't
-protect against.
+The application flow uses CrewAI for bounded background screening and answer
+assessment; a deterministic session controller owns questions, turns, and
+application transitions. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+for the provider configuration and security/validation boundaries.
 
 - **Frontend:** Next.js 14 (App Router) + Tailwind CSS
 - **Backend:** FastAPI (Python 3.11) + Pydantic v2
@@ -89,11 +89,20 @@ interviewagent/
 │   ├── crew_runner.py       # Orchestration, output parsing/validation
 │   ├── state.py             # Static constants + per-evaluation verdict paths
 │   ├── rate_limit.py        # Basic in-memory per-IP rate limiting middleware
-│   ├── tests/                # pytest suite — see docs/TESTING.md
+│   ├── app/
+│   │   ├── ai_interview/    # Application screening, persisted text turns, reports
+│   │   ├── candidate/       # Candidate profile, apply, tracker routes
+│   │   ├── config/          # SQLite/PostgreSQL schemas, migrations, RLS
+│   │   ├── evaluation/      # Legacy/durable CrewAI evaluation
+│   │   ├── hiring/          # Postings, applications, state transitions
+│   │   ├── interview_criteria/
+│   │   ├── shared/          # Auth, RBAC, audit, notifications
+│   │   └── worker/          # Durable job worker
+│   ├── tests/               # pytest suite — see docs/TESTING.md
 │   ├── verdicts/             # Per-evaluation decision-memory files (gitignored)
 │   └── requirements.txt / requirements-dev.txt
 ├── frontend/
-│   └── app/                  # interview/, round/[id]/, result/, dashboard/, etc.
+│   └── app/                  # hiring workspace, applications, ai-interview/, legacy evaluation UI
 ├── docs/                     # Full documentation set — start at docs/README.md
 └── .github/workflows/ci.yml  # Backend tests + frontend type-check on every PR
 ```
@@ -110,6 +119,10 @@ cd backend
 pip install -r requirements.txt
 # copy ../.env.example to ../.env and configure GEMINI_API_KEY or your LLM provider
 uvicorn main:app --reload --port 8000
+
+# Durable application screening/interview worker (separate terminal)
+cd backend
+../.venv/Scripts/python.exe -m app.worker.job_worker
 
 # Frontend (separate terminal)
 cd frontend
@@ -151,6 +164,11 @@ when it occurs). Endpoints at a glance:
 | `GET`  | `/evaluations/{id}` | Full verdict history for one evaluation (PII-safe) |
 | `GET`  | `/evaluations/{id}/report` | Structured per-stage pipeline report |
 | `GET`  | `/dashboard/stats` | Aggregate counters across all evaluations |
+| `POST` | `/jobs/{id}/apply` | Submit profile-ready application and queue automatic screening |
+| `GET`  | `/me/applications/{id}/ai-interview` | Read candidate-owned screening/interview status |
+| `POST` | `/me/applications/{id}/ai-interview/start` | Acknowledge notice and start the text interview |
+| `POST` | `/me/applications/{id}/ai-interview/answers` | Submit a durable text-interview answer |
+| `GET`  | `/orgs/{org_id}/applications/{id}/report` | Read the campaign-scoped recruiter evidence report |
 
 ## License
 

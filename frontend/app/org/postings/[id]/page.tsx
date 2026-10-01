@@ -20,6 +20,7 @@ import {
   StatusPill,
   Textarea,
 } from "../../../components/ui";
+import type { PillTone } from "../../../components/ui";
 import { useAuth } from "../../../../lib/auth-context";
 import { api, ApiError } from "../../../../lib/api";
 import { notify } from "../../../../lib/toast";
@@ -36,7 +37,56 @@ import type {
 } from "../../../../lib/types";
 import { staggerContainer, staggerItem } from "../../../../lib/motion";
 
-const NEXT_STAGE_OPTIONS = ["SCREENING", "TECHNICAL", "BEHAVIORAL", "INTERVIEW", "OFFER", "HIRED"];
+const NEXT_STAGE_OPTIONS = ["TECHNICAL", "BEHAVIORAL", "INTERVIEW", "OFFER", "HIRED"];
+
+type RecruiterAIInterviewStatus = {
+  status: string;
+  phase: string;
+  rubric_version: string;
+  role_level: string;
+  screening_result: { decision?: string; score?: number; constraint_gaps?: string[] };
+  error_code: string | null;
+  turns: Array<{ sequence_no: number; phase: string; question_type: string; question_text: string; answer_text: string | null; difficulty: number; assessment: { summary?: string } }>;
+};
+
+function aiInterviewStatusTone(status: string): PillTone {
+  if (status === "REVIEW_REQUIRED") return "warning";
+  if (status === "REPORT_READY") return "success";
+  return "primary";
+}
+
+function useRecruiterInterviewPolling(
+  orgId: number | null,
+  applicationId: number | undefined,
+  status: RecruiterAIInterviewStatus | null,
+  setStatus: (status: RecruiterAIInterviewStatus) => void,
+  setReport: (report: ApplicationReportResponse) => void,
+) {
+  useEffect(() => {
+    if (!orgId || !applicationId || !status) return;
+    const activeStatuses = new Set(["SCREENING_QUEUED", "SCREENING", "INTERVIEW_READY", "INTERVIEW_IN_PROGRESS", "ANSWER_PROCESSING", "REPORT_PENDING"]);
+    if (!activeStatuses.has(status.status)) return;
+    const delay = status.status === "INTERVIEW_READY" || status.status === "INTERVIEW_IN_PROGRESS" ? 10000 : 2500;
+    let disposed = false;
+    const timer = window.setTimeout(async () => {
+      try {
+        const next = await api.get<RecruiterAIInterviewStatus>(`/orgs/${orgId}/applications/${applicationId}/ai-interview`);
+        if (disposed) return;
+        setStatus(next);
+        if (next.status === "REPORT_READY") {
+          const report = await api.get<ApplicationReportResponse>(`/orgs/${orgId}/applications/${applicationId}/report`);
+          if (!disposed) setReport(report);
+        }
+      } catch {
+        // The report may not be persisted yet; preserve the last known pipeline state.
+      }
+    }, delay);
+    return () => {
+      disposed = true;
+      window.clearTimeout(timer);
+    };
+  }, [applicationId, orgId, setReport, setStatus, status]);
+}
 
 function formatSalaryRange(min: number | null, max: number | null): string {
   if (!min && !max) return "";
@@ -50,12 +100,10 @@ function candidateName(app: ApplicationSummary): string {
 function PipelineList({
   applications,
   onTransition,
-  onScreen,
   onView,
 }: Readonly<{
   applications: ApplicationSummary[];
   onTransition: (applicationId: number, toStage: string) => Promise<void>;
-  onScreen: (applicationId: number) => Promise<void>;
   onView: (applicationId: number) => void;
 }>) {
   if (applications.length === 0) {
@@ -74,6 +122,7 @@ function PipelineList({
           <tr className="mono text-[10px] tracking-[0.08em] text-ink-subtle">
             <th className="px-5 py-3 font-medium">CANDIDATE</th>
             <th className="px-5 py-3 font-medium">STAGE</th>
+            <th className="px-5 py-3 font-medium">AI SCREEN / INTERVIEW</th>
             <th className="px-5 py-3 font-medium">SOURCE</th>
             <th className="px-5 py-3 font-medium">APPLIED</th>
             <th className="px-5 py-3 font-medium">MOVE TO</th>
@@ -85,6 +134,7 @@ function PipelineList({
             <tr key={app.id} className="border-b border-subtle last:border-0 hover:bg-[rgba(255,255,255,0.025)]">
               <td className="px-5 py-4 text-[13px] font-semibold text-ink-heading">{candidateName(app)}</td>
               <td className="px-5 py-4"><StatusPill tone="primary">{app.current_stage}</StatusPill></td>
+              <td className="px-5 py-4 text-[11px] text-ink-muted">{app.ai_interview_status?.replaceAll("_", " ") || "Queued on apply"}</td>
               <td className="px-5 py-4 text-[12px] text-ink-muted">{app.status}</td>
               <td className="px-5 py-4 text-[12px] text-ink-muted">{new Date(app.created_at).toLocaleDateString()}</td>
               <td className="px-5 py-3">
@@ -97,9 +147,6 @@ function PipelineList({
                 </Select>
               </td>
               <td className="px-5 py-3 text-right whitespace-nowrap">
-                {app.current_stage === "APPLIED" && (
-                  <Button size="sm" variant="ghost" onClick={() => onScreen(app.id)}>Screen</Button>
-                )}
                 <Button size="sm" variant="ghost" onClick={() => onView(app.id)}>View</Button>
                 <Button size="sm" variant="ghost" onClick={() => onTransition(app.id, "REJECTED")}>Reject</Button>
               </td>
@@ -179,6 +226,7 @@ function CriteriaEditor({
           <p className="eyebrow">INTERVIEW RUBRIC</p>
           <h2 className="mt-2 text-[19px] font-semibold text-ink-heading">Evaluation criteria</h2>
           <p className="mt-1 max-w-[600px] text-[12px] leading-relaxed text-ink-muted">Define what the interview should measure. Completed interviews generate a weighted report against this rubric.</p>
+          <p className="mt-2 max-w-[600px] text-[11px] leading-relaxed text-ink-subtle">This policy is used automatically for every new application after you publish it. No per-applicant screen or interview invitation is required.</p>
         </div>
         <span className={`mono rounded-full border px-3 py-1 text-[11px] ${Math.abs(totalWeight - 100) < 0.01 ? "border-[rgba(34,197,94,0.35)] text-[var(--color-success)]" : "border-[rgba(245,158,11,0.4)] text-[var(--color-warning)]"}`}>
           {totalWeight.toFixed(0)}% total weight
@@ -194,23 +242,37 @@ function CriteriaEditor({
                 <Trash2 size={15} />
               </button>
             </div>
-            <div className="grid gap-3 sm:grid-cols-[1fr_1fr_120px]">
+            <div className="grid gap-3 sm:grid-cols-[1fr_1fr_130px_110px]">
               <Input label="LABEL" value={competency.label} onChange={(event) => updateCompetency(index, { label: event.target.value })} />
               <Input label="KEY" value={competency.key} onChange={(event) => updateCompetency(index, { key: event.target.value.toLowerCase().replace(/[^a-z0-9_]/g, "_") })} />
               <Input label="WEIGHT %" type="number" min={0.1} max={100} step={1} value={competency.weight} onChange={(event) => updateCompetency(index, { weight: Number(event.target.value) })} />
+              <Select label="CATEGORY" value={competency.category || "TECHNICAL"} onChange={(event) => updateCompetency(index, { category: event.target.value as PostingCriterion["category"] })}>
+                <option value="TECHNICAL">Technical</option>
+                <option value="BEHAVIORAL">Behavioral</option>
+              </Select>
             </div>
             <Textarea wrapperClassName="mt-3" label="DESCRIPTION" rows={2} value={competency.description} onChange={(event) => updateCompetency(index, { description: event.target.value })} />
           </div>
         ))}
       </div>
 
-      <Button type="button" size="sm" variant="secondary" className="mt-4" onClick={() => onChange({ ...draft, competencies: [...draft.competencies, { key: `competency_${draft.competencies.length + 1}`, label: "New competency", weight: 10, description: "" }] })}>
+      <Button type="button" size="sm" variant="secondary" className="mt-4" onClick={() => onChange({ ...draft, competencies: [...draft.competencies, { key: `competency_${draft.competencies.length + 1}`, label: "New competency", weight: 10, description: "", category: "TECHNICAL" }] })}>
         <Plus size={14} /> Add competency
       </Button>
 
       <div className="mt-6 grid gap-4 border-t border-subtle pt-6 sm:grid-cols-[1fr_160px]">
         <Textarea label="CUSTOM QUESTIONS" rows={5} value={draft.custom_questions.join("\n")} hint="One question per line." onChange={(event) => onChange({ ...draft, custom_questions: event.target.value.split("\n") })} />
         <Input label="PASS THRESHOLD" type="number" min={0} max={10} step={0.1} value={draft.pass_threshold} onChange={(event) => onChange({ ...draft, pass_threshold: Number(event.target.value) })} />
+      </div>
+      <div className="mt-5 grid gap-3 border-t border-subtle pt-5 sm:grid-cols-2">
+        <Select aria-label="TARGET ROLE LEVEL" label="TARGET ROLE LEVEL" value={draft.interview_settings.role_level} onChange={(event) => onChange({ ...draft, interview_settings: { ...draft.interview_settings, role_level: event.target.value as CriteriaDraft["interview_settings"]["role_level"] } })}>
+          <option value="ENTRY">Entry level</option>
+          <option value="MID">Mid level</option>
+          <option value="SENIOR">Senior level</option>
+        </Select>
+        <Input label="TECHNICAL QUESTIONS" type="number" min={1} max={5} step={1} value={draft.interview_settings.technical_question_count} onChange={(event) => onChange({ ...draft, interview_settings: { ...draft.interview_settings, technical_question_count: Number(event.target.value) } })} />
+        <Input label="BEHAVIORAL QUESTIONS" type="number" min={1} max={4} step={1} value={draft.interview_settings.behavioral_question_count} onChange={(event) => onChange({ ...draft, interview_settings: { ...draft.interview_settings, behavioral_question_count: Number(event.target.value) } })} />
+        <Input label="MAX FOLLOW-UPS / QUESTION" type="number" min={0} max={2} step={1} value={draft.interview_settings.max_followups_per_question} onChange={(event) => onChange({ ...draft, interview_settings: { ...draft.interview_settings, max_followups_per_question: Number(event.target.value) } })} />
       </div>
       <div className="mt-6 flex justify-end border-t border-subtle pt-5">
         <Button size="sm" loading={saving} onClick={() => void onSave()}><Save size={14} /> Save criteria</Button>
@@ -232,6 +294,9 @@ function InterviewReport({
         <div><p className="text-[12px] text-ink-subtle">RECOMMENDATION</p><p className="mt-1 text-[17px] font-semibold text-ink-heading">{report.recommendation}</p></div>
         <div className="text-right"><p className="text-[12px] text-ink-subtle">WEIGHTED SCORE</p><p className="mt-1 mono text-[17px] font-bold text-brand">{report.overall_weighted_score === null ? "—" : `${report.overall_weighted_score}/10`}</p></div>
       </div>
+      {report.overall_weighted_score === null && report.interview_details?.interview?.weighted_score_status && (
+        <p className="mt-2 text-[10px] text-ink-subtle">A combined score is withheld until adaptive question difficulty paths are validated; review the evidence and competency ratings below.</p>
+      )}
       <div className="mt-4 flex flex-col gap-3">
         {report.competency_scores.map((score) => (
           <div key={score.key} className="border-b border-subtle pb-3 last:border-0">
@@ -240,6 +305,51 @@ function InterviewReport({
           </div>
         ))}
       </div>
+      {report.interview_details?.screening && (
+        <div className="mt-5 rounded-lg border border-subtle bg-[rgba(255,255,255,0.025)] p-4">
+          <p className="eyebrow">AUTOMATED SCREENING</p>
+          <p className="mt-2 text-[12px] text-ink-muted">
+            {report.interview_details.screening.decision || "Completed"} · Policy {report.interview_details.screening.policy_version || report.rubric_version}
+            {typeof report.interview_details.screening.score === "number" ? ` · ${report.interview_details.screening.score}/10` : ""}
+          </p>
+          {(report.interview_details.screening.constraint_gaps || []).map((gap, index) => (
+            <p key={`${index}-${gap}`} className="mt-1 text-[11px] text-[var(--color-warning)]">{gap}</p>
+          ))}
+          {(report.interview_details.screening.evidence || []).map((evidence, index) => (
+            <p key={`${index}-${evidence.criterion_key}`} className="mt-2 text-[10px] text-ink-subtle">
+              {evidence.criterion_key.replaceAll("_", " ")} · {evidence.status}
+              {evidence.quote ? ` · “${evidence.quote}”` : ""}
+              {evidence.rationale ? ` — ${evidence.rationale}` : ""}
+            </p>
+          ))}
+        </div>
+      )}
+      {(report.interview_details?.interview?.turns?.length || 0) > 0 && (
+        <div className="mt-5 border-t border-subtle pt-5">
+          <div className="flex items-center justify-between gap-3">
+            <p className="eyebrow">INTERVIEW EVIDENCE</p>
+            <span className="mono text-[10px] text-ink-subtle">
+              {report.interview_details.interview?.role_level || "MID"} LEVEL · {report.interview_details.interview?.turn_count || 0} TURNS
+            </span>
+          </div>
+          <div className="mt-3 flex flex-col gap-3">
+            {report.interview_details.interview?.turns?.map((turn) => (
+              <article key={turn.sequence_no} className="rounded-lg border border-subtle bg-[rgba(255,255,255,0.025)] p-3">
+                <p className="mono text-[10px] text-ink-subtle">
+                  {turn.phase} · {turn.competency_key.replaceAll("_", " ")} · LEVEL {turn.difficulty} · {turn.question_type.replaceAll("_", " ")}
+                </p>
+                <p className="mt-2 text-[12px] font-semibold text-ink-heading">{turn.question}</p>
+                {turn.answer && <p className="mt-2 whitespace-pre-wrap text-[11px] leading-relaxed text-ink-muted">{turn.answer}</p>}
+                {typeof turn.assessment.score === "number" && <p className="mt-2 mono text-[10px] text-brand">Evidence rating: {turn.assessment.score}/10</p>}
+                {turn.assessment.summary && <p className="mt-2 text-[11px] leading-relaxed text-ink-muted">Assessment: {turn.assessment.summary}</p>}
+                {turn.assessment.evidence_quote && <blockquote className="mt-2 border-l-2 border-brand pl-3 text-[11px] italic text-ink-muted">“{turn.assessment.evidence_quote}”</blockquote>}
+                {turn.assessment.gaps?.map((gap, index) => <p key={`${index}-${gap}`} className="mt-1 text-[10px] text-[var(--color-warning)]">Evidence gap: {gap}</p>)}
+              </article>
+            ))}
+          </div>
+          <p className="mt-3 text-[10px] text-ink-subtle">Advisory AI assessment only. A human reviewer owns the hiring decision.</p>
+        </div>
+      )}
     </div>
   );
 }
@@ -271,6 +381,9 @@ export default function PostingDetailPage() {
   const [criteriaSaving, setCriteriaSaving] = useState(false);
   const [applicationReport, setApplicationReport] = useState<ApplicationReportResponse | null>(null);
   const [reportLoading, setReportLoading] = useState(false);
+  const [aiInterviewStatus, setAIInterviewStatus] = useState<RecruiterAIInterviewStatus | null>(null);
+  const [screeningOverrideReason, setScreeningOverrideReason] = useState("");
+  const [approvingScreeningOverride, setApprovingScreeningOverride] = useState(false);
 
   useEffect(() => {
     if (authLoading) return;
@@ -282,6 +395,8 @@ export default function PostingDetailPage() {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, actor, activeOrgId, postingId]);
+
+  useRecruiterInterviewPolling(activeOrgId, selectedApplication?.application.id, aiInterviewStatus, setAIInterviewStatus, setApplicationReport);
 
   const load = async () => {
     setLoading(true);
@@ -325,6 +440,7 @@ export default function PostingDetailPage() {
         competencies: data.competencies,
         custom_questions: data.custom_questions,
         pass_threshold: data.pass_threshold,
+        interview_settings: data.interview_settings || { role_level: "MID", technical_question_count: 2, behavioral_question_count: 2, max_followups_per_question: 1 },
       });
     } catch (err) {
       notify.error(err instanceof ApiError ? err.detail : "Failed to load evaluation criteria.");
@@ -341,7 +457,7 @@ export default function PostingDetailPage() {
         ...criteriaDraft,
         custom_questions: criteriaDraft.custom_questions.map((question) => question.trim()).filter(Boolean),
       });
-      setCriteriaDraft({ competencies: data.competencies, custom_questions: data.custom_questions, pass_threshold: data.pass_threshold });
+      setCriteriaDraft({ competencies: data.competencies, custom_questions: data.custom_questions, pass_threshold: data.pass_threshold, interview_settings: data.interview_settings || { role_level: "MID", technical_question_count: 2, behavioral_question_count: 2, max_followups_per_question: 1 } });
       notify.success("Evaluation criteria saved.");
     } catch (err) {
       notify.error(err instanceof ApiError ? err.detail : "Failed to save evaluation criteria.");
@@ -355,7 +471,7 @@ export default function PostingDetailPage() {
       return <CriteriaEditor draft={criteriaDraft} loading={criteriaLoading} saving={criteriaSaving} onChange={setCriteriaDraft} onSave={saveCriteria} />;
     }
     if (tab === "pipeline") {
-      return <PipelineList applications={applications} onTransition={handleTransition} onScreen={handleScreen} onView={loadApplication} />;
+      return <PipelineList applications={applications} onTransition={handleTransition} onView={loadApplication} />;
     }
     return <RecommendedList candidates={recommended} />;
   };
@@ -370,13 +486,27 @@ export default function PostingDetailPage() {
     }
   };
 
-  const handleScreen = async (applicationId: number) => {
+  const loadAIInterviewStatus = async (applicationId: number) => {
     try {
-      await api.post(`/orgs/${activeOrgId}/applications/${applicationId}/screen`);
-      await load();
-      notify.success("Screening recommendation recorded for human review.");
-    } catch (err) {
-      notify.error(err instanceof ApiError ? err.detail : "Failed to screen application.");
+      setAIInterviewStatus(await api.get<RecruiterAIInterviewStatus>(`/orgs/${activeOrgId}/applications/${applicationId}/ai-interview`));
+    } catch (error) {
+      setAIInterviewStatus(null);
+      if (!(error instanceof ApiError && error.status === 404)) {
+        notify.error(error instanceof ApiError ? error.detail : "Failed to load interview status.");
+      }
+    }
+  };
+
+  const loadApplicationReport = async (applicationId: number) => {
+    try {
+      setApplicationReport(await api.get<ApplicationReportResponse>(`/orgs/${activeOrgId}/applications/${applicationId}/report`));
+    } catch (error) {
+      setApplicationReport(null);
+      if (!(error instanceof ApiError && error.status === 404)) {
+        notify.error(error instanceof ApiError ? error.detail : "Failed to load interview report.");
+      }
+    } finally {
+      setReportLoading(false);
     }
   };
 
@@ -384,21 +514,34 @@ export default function PostingDetailPage() {
     setDetailLoading(true);
     setReportLoading(true);
     setApplicationReport(null);
+    setAIInterviewStatus(null);
+    setScreeningOverrideReason("");
     try {
       const detail = await api.get<{ application: ApplicationDetail; answers: unknown[]; timeline: ApplicationEvent[] }>(`/orgs/${activeOrgId}/applications/${applicationId}`);
       setSelectedApplication(detail);
-      try {
-        setApplicationReport(await api.get<ApplicationReportResponse>(`/orgs/${activeOrgId}/applications/${applicationId}/report`));
-      } catch (reportError) {
-        if (!(reportError instanceof ApiError && reportError.status === 404)) {
-          notify.error(reportError instanceof ApiError ? reportError.detail : "Failed to load interview report.");
-        }
-      }
+      await Promise.all([loadAIInterviewStatus(applicationId), loadApplicationReport(applicationId)]);
     } catch (err) {
       notify.error(err instanceof ApiError ? err.detail : "Failed to load candidate details.");
+      setReportLoading(false);
     } finally {
       setDetailLoading(false);
-      setReportLoading(false);
+    }
+  };
+
+  const approveScreeningException = async () => {
+    if (!selectedApplication || screeningOverrideReason.trim().length < 10) return;
+    setApprovingScreeningOverride(true);
+    try {
+      await api.post(`/orgs/${activeOrgId}/applications/${selectedApplication.application.id}/ai-interview/approve-screening-exception`, {
+        reason: screeningOverrideReason.trim(),
+      });
+      notify.success("Interview approved after human review. The candidate will be notified.");
+      await loadApplication(selectedApplication.application.id);
+      await load();
+    } catch (error) {
+      notify.error(error instanceof ApiError ? error.detail : "Could not approve the screening exception.");
+    } finally {
+      setApprovingScreeningOverride(false);
     }
   };
 
@@ -550,6 +693,29 @@ export default function PostingDetailPage() {
                   <DetailCell label="APPLIED" value={new Date(selectedApplication.application.created_at).toLocaleString()} />
                 </motion.div>
                 <section className="mt-7"><p className="eyebrow">PIPELINE ACTIVITY</p><PipelineLifecycle events={selectedApplication.timeline} /></section>
+                {aiInterviewStatus && (
+                  <section className="mt-7 border-t border-subtle pt-6">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <p className="eyebrow">AUTOMATIC SCREENING & AI INTERVIEW</p>
+                      <StatusPill tone={aiInterviewStatusTone(aiInterviewStatus.status)}>
+                        {aiInterviewStatus.status.replaceAll("_", " ")}
+                      </StatusPill>
+                    </div>
+                    <p className="mt-2 text-[11px] text-ink-subtle">Policy {aiInterviewStatus.rubric_version} · {aiInterviewStatus.role_level} level · {aiInterviewStatus.turns.length} persisted turns</p>
+                    {aiInterviewStatus.screening_result.decision && <p className="mt-2 text-[12px] text-ink-muted">Screening: {aiInterviewStatus.screening_result.decision}{typeof aiInterviewStatus.screening_result.score === "number" ? ` · ${aiInterviewStatus.screening_result.score}/10` : ""}</p>}
+                    {aiInterviewStatus.screening_result.constraint_gaps?.map((gap, index) => <p key={`${index}-${gap}`} className="mt-1 text-[11px] text-[var(--color-warning)]">{gap}</p>)}
+                    {aiInterviewStatus.error_code && <p className="mt-2 text-[11px] text-[var(--color-warning)]">{aiInterviewStatus.error_code}: recruiter review is required. Technical/model failures are not treated as candidate failures.</p>}
+                    {aiInterviewStatus.status === "SCREENING_QUEUED" && <p className="mt-2 text-[11px] text-ink-muted">Screening starts automatically; no per-candidate action is needed.</p>}
+                    {aiInterviewStatus.status === "REVIEW_REQUIRED" && selectedApplication.application.current_stage === "PENDING_REVIEW" && (
+                      <div className="mt-4 border-t border-subtle pt-4">
+                        <p className="text-[12px] font-semibold text-ink-heading">Human exception review</p>
+                        <p className="mt-1 text-[11px] leading-relaxed text-ink-muted">If the evidence is sufficient after review, approve the candidate to continue to the AI interview. Record why; this does not make a hiring decision.</p>
+                        <Textarea label="REVIEW RATIONALE (REQUIRED)" rows={3} value={screeningOverrideReason} onChange={(event) => setScreeningOverrideReason(event.target.value)} />
+                        <Button size="sm" className="mt-3" loading={approvingScreeningOverride} disabled={screeningOverrideReason.trim().length < 10} onClick={() => void approveScreeningException()}>Approve interview after review</Button>
+                      </div>
+                    )}
+                  </section>
+                )}
                 <section className="mt-7 border-t border-subtle pt-6">
                   <p className="eyebrow">INTERVIEW REPORT</p>
                   <InterviewReport loading={reportLoading} report={applicationReport} />

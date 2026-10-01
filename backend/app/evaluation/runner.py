@@ -144,6 +144,20 @@ async def _run_crew_with_retry(
         ) from error
 
 
+async def run_structured_agent_task(agent, task, schema: Type[BaseModel], *, stage: str) -> tuple[BaseModel, str]:
+    """Run a single CrewAI task and enforce its Pydantic result contract.
+
+    Unlike the legacy evaluation helpers below, this boundary does not read or
+    write verdict files. Application-linked interview workflows keep their
+    complete context in database-owned records so a worker restart or a second
+    worker cannot lose the conversation state.
+    """
+    crew = Crew(agents=[agent], tasks=[task], verbose=False)
+    raw_output = await _run_crew_with_retry(crew, stage=stage)
+    parsed = _parse_json_output(raw_output)
+    return _validate_verdict(parsed, schema, raw_output), raw_output
+
+
 from app.evaluation.agents import (
     create_screening_agent,
     create_technical_agent,

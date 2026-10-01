@@ -38,8 +38,10 @@ from app.evaluation.runner import (
 )
 from app.evaluation.service import FinalizationNotReadyError, finalize_evaluation
 from app.evaluation.state import AVAILABLE_ROLES, PIPELINE_STAGES
+from app.hiring import repository as hiring_db
 from app.shared import audit, security
 from app.shared.authz import Actor, optional_actor
+from app.shared.rbac import Capability
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -64,6 +66,28 @@ async def _load_accessible_evaluation(
         owns_evaluation = evaluation.get("owner_user_id") == actor.user_id
         belongs_to_org = actor.org_id is not None and evaluation.get("org_id") == actor.org_id
         if owns_evaluation or belongs_to_org:
+            linked_application = await _db(hiring_db.get_application_by_evaluation_id, evaluation_id)
+            if linked_application is not None:
+                # Application-linked screening/interview evaluations are not
+                # exposed through the generic sandbox endpoints. Candidates
+                # use their candidate-safe interview route; recruiters must
+                # have application-read and assignment to the linked campaign.
+                if owns_evaluation or not belongs_to_org or not actor.has(Capability.APPLICATION_READ):
+                    raise HTTPException(status_code=404, detail="Evaluation not found.")
+                posting = await _db(
+                    hiring_db.get_posting,
+                    linked_application["posting_id"],
+                    linked_application["org_id"],
+                )
+                if posting is None:
+                    raise HTTPException(status_code=404, detail="Evaluation not found.")
+                if not actor.has(Capability.CAMPAIGN_READ_ORG) and not await _db(
+                    hiring_db.is_campaign_member,
+                    posting["campaign_id"],
+                    actor.user_id,
+                    linked_application["org_id"],
+                ):
+                    raise HTTPException(status_code=404, detail="Evaluation not found.")
             return evaluation
         raise HTTPException(status_code=404, detail="Evaluation not found.")
 

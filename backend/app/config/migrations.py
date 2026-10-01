@@ -166,11 +166,39 @@ def _migration_004_prep_workspace(cur, use_postgres: bool) -> None:
     )
 
 
+def _migration_005_interview_configuration(cur, use_postgres: bool) -> None:
+    """Add configurable interview settings and report evidence details."""
+    _add_columns(
+        cur,
+        "posting_evaluation_criteria",
+        (("interview_settings_json", "TEXT NOT NULL DEFAULT '{}'", "TEXT NOT NULL DEFAULT '{}'"),),
+        use_postgres,
+    )
+    _add_columns(
+        cur,
+        "application_interview_reports",
+        (("interview_details_json", "TEXT NOT NULL DEFAULT '{}'", "TEXT NOT NULL DEFAULT '{}'"),),
+        use_postgres,
+    )
+
+
+def _migration_006_ai_interview_sequence(cur, use_postgres: bool) -> None:
+    """Add the monotonic persisted turn allocator to pre-existing AI sessions."""
+    _add_columns(
+        cur,
+        "application_ai_interviews",
+        (("next_turn_sequence", "INTEGER NOT NULL DEFAULT 1", "INTEGER NOT NULL DEFAULT 1"),),
+        use_postgres,
+    )
+
+
 MIGRATIONS: tuple[tuple[int, Migration], ...] = (
     (1, _migration_001_baseline),
     (2, _migration_002_execution_metadata),
     (3, _migration_003_cancellable_jobs),
     (4, _migration_004_prep_workspace),
+    (5, _migration_005_interview_configuration),
+    (6, _migration_006_ai_interview_sequence),
 )
 
 
