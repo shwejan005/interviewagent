@@ -1,11 +1,13 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import { usePathname } from "next/navigation"
 import Link from "next/link"
 import { ArrowRight, CheckCircle2, Flame, Gauge, Target, Trophy } from "lucide-react"
 
 import { GlassCard, PageShell, SkeletonList } from "../../components/ui"
 import { useAuth } from "../../../lib/auth-context"
+import { useActivePageRefresh } from "../../../lib/use-active-page-refresh"
 import { api, ApiError } from "../../../lib/api"
 import { notify } from "../../../lib/toast"
 
@@ -28,17 +30,34 @@ function Stat({ label, value, icon: Icon, accent }: Readonly<{ label: string; va
 }
 
 export default function PrepDashboardPage() {
+  const pathname = usePathname()
   const { actor, loading: authLoading } = useAuth()
   const [dashboard, setDashboard] = useState<Dashboard | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     if (authLoading || !actor) return
-    api.get<Dashboard>("/prep/me/dashboard")
-      .then(setDashboard)
-      .catch((error) => notify.error(error instanceof ApiError ? error.detail : "Failed to load progress dashboard."))
-      .finally(() => setLoading(false))
+    if (pathname !== "/prep/dashboard") return
+    void load()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [actor, authLoading])
+
+  async function load(showLoading = true) {
+    if (showLoading) setLoading(true)
+    try {
+      setDashboard(await api.get<Dashboard>("/prep/me/dashboard"))
+    } catch (error) {
+      notify.error(error instanceof ApiError ? error.detail : "Failed to load progress dashboard.")
+    } finally {
+      if (showLoading) setLoading(false)
+    }
+  }
+
+  useActivePageRefresh(
+    pathname === "/prep/dashboard",
+    !authLoading && Boolean(actor),
+    () => load(false),
+  )
 
   if (authLoading || loading) return <PageShell className="pt-12"><SkeletonList count={3} /></PageShell>
   if (!actor || !dashboard) return <PageShell className="pt-12"><p className="text-white/50">Sign in to view your prep progress.</p></PageShell>

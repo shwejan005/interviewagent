@@ -2,8 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Fonts load via next/font in app/layout.tsx (self-hosted, no render-blocking
-   request). A duplicate Google Fonts @import used to sit here and was removed. */
+/* Use the system font stack in globals.css; no external font request blocks paint. */
 
 @layer base {
   :root {

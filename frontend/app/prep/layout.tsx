@@ -1,6 +1,6 @@
 "use client"
 
-import { Suspense, useEffect, useMemo, useState, type ReactNode } from "react"
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 
 import Navbar from "../components/Navbar"
@@ -8,10 +8,8 @@ import { useAuth } from "../../lib/auth-context"
 import { api, ApiError } from "../../lib/api"
 import { notify } from "../../lib/toast"
 import PrepSidebar from "./PrepSidebar"
+import { PrepCatalogProvider, type PrepCatalogProblem, type PrepCatalogTopic } from "./prep-catalog-context"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
-
-type Topic = { id: number; slug: string; name: string; description: string; difficulty: string }
-type Problem = { id: number; slug: string; title: string; difficulty: string; topic_slug: string; topic_name: string }
 
 export default function PrepLayout({ children }: Readonly<{ children: ReactNode }>) {
   return (
@@ -26,10 +24,11 @@ function PrepLayoutContent({ children }: Readonly<{ children: ReactNode }>) {
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
-  const [topics, setTopics] = useState<Topic[]>([])
-  const [problems, setProblems] = useState<Problem[]>([])
+  const [topics, setTopics] = useState<PrepCatalogTopic[]>([])
+  const [problems, setProblems] = useState<PrepCatalogProblem[]>([])
   const [openTopics, setOpenTopics] = useState<Record<string, boolean>>({})
   const [loading, setLoading] = useState(true)
+  const catalogLoaded = useRef(false)
 
   const selectedProblemId = Number(searchParams.get("problem")) || null
   const selectedProblem = useMemo(
@@ -42,20 +41,26 @@ function PrepLayoutContent({ children }: Readonly<{ children: ReactNode }>) {
     [topics, problems],
   )
 
+  const refreshCatalog = useCallback(async () => {
+    const catalog = await api.get<{ topics: PrepCatalogTopic[]; problems: PrepCatalogProblem[] }>("/prep/catalog")
+    setTopics(catalog.topics)
+    setProblems(catalog.problems)
+  }, [])
+
   useEffect(() => {
-    if (authLoading) return
-    if (!actor) {
-      router.push(`/login?next=${encodeURIComponent(pathname)}`)
-      return
-    }
-    api.get<{ topics: Topic[]; problems: Problem[] }>("/prep/catalog")
-      .then((catalog) => {
-        setTopics(catalog.topics)
-        setProblems(catalog.problems)
-      })
-      .catch((error) => notify.error(error instanceof ApiError ? error.detail : "Failed to load prep navigation."))
-      .finally(() => setLoading(false))
+    if (!authLoading && !actor) router.push(`/login?next=${encodeURIComponent(pathname)}`)
   }, [actor, authLoading, pathname, router])
+
+  useEffect(() => {
+    if (authLoading || !actor || catalogLoaded.current) return
+    catalogLoaded.current = true
+    void refreshCatalog()
+      .catch((error: unknown) => {
+        catalogLoaded.current = false
+        notify.error(error instanceof ApiError ? error.detail : "Failed to load prep navigation.")
+      })
+      .finally(() => setLoading(false))
+  }, [actor, authLoading, refreshCatalog])
 
   useEffect(() => {
     if (!topics.length) return
@@ -87,20 +92,22 @@ function PrepLayoutContent({ children }: Readonly<{ children: ReactNode }>) {
     <div className="min-h-screen bg-[#08090d] text-white">
       <Navbar />
       <div className="pt-[68px]">
-        <SidebarProvider defaultOpen className="min-h-[calc(100vh-68px)]">
-          <PrepSidebar
-            topics={topics}
-            problems={problems}
-            topicSections={topicSections}
-            selectedTopic={selectedTopic}
-            selectedProblem={selectedProblem}
-            openTopics={openTopics}
-            onSelectTopic={selectTopic}
-            onToggleTopic={(slug) => setOpenTopics((current) => ({ ...current, [slug]: !(current[slug] ?? true) }))}
-            onSelectProblem={selectProblem}
-          />
-          <SidebarInset className="min-h-[calc(100vh-68px)] min-w-0">{children}</SidebarInset>
-        </SidebarProvider>
+        <PrepCatalogProvider value={{ topics, problems, refreshCatalog }}>
+          <SidebarProvider defaultOpen className="min-h-[calc(100vh-68px)]">
+            <PrepSidebar
+              topics={topics}
+              problems={problems}
+              topicSections={topicSections}
+              selectedTopic={selectedTopic}
+              selectedProblem={selectedProblem}
+              openTopics={openTopics}
+              onSelectTopic={selectTopic}
+              onToggleTopic={(slug) => setOpenTopics((current) => ({ ...current, [slug]: !(current[slug] ?? true) }))}
+              onSelectProblem={selectProblem}
+            />
+            <SidebarInset className="min-h-[calc(100vh-68px)] min-w-0">{children}</SidebarInset>
+          </SidebarProvider>
+        </PrepCatalogProvider>
       </div>
     </div>
   )

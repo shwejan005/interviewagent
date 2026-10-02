@@ -8,6 +8,7 @@ import { Button, GlassCard, Input, PageShell, Select, Textarea } from "../../com
 import { useAuth } from "../../../lib/auth-context"
 import { api, ApiError } from "../../../lib/api"
 import { notify } from "../../../lib/toast"
+import { usePrepCatalog } from "../prep-catalog-context"
 
 type Goal = { id?: number; target_role: string; target_date: string | null; daily_minutes: number; days_per_week: number; current_level: string; preferred_languages: string[]; focus_topics: string[]; notes: string }
 type Roadmap = { id: number; title: string; summary: string; generated_by: string; daily_minutes: number; weekly_hours: number; nodes: Array<{ id: number; position: number; topic_name: string; problem_id: number | null; item_type: string; estimated_minutes: number; rationale: string; status: string }> }
@@ -18,6 +19,7 @@ const DEFAULT_GOAL: Goal = { target_role: "Software Engineer", target_date: "", 
 
 export default function PrepRoadmapPage() {
   const { actor, loading: authLoading } = useAuth()
+  const { refreshCatalog } = usePrepCatalog()
   const [goal, setGoal] = useState<Goal>(DEFAULT_GOAL)
   const [topics, setTopics] = useState<Topic[]>([])
   const [roadmap, setRoadmap] = useState<Roadmap | null>(null)
@@ -65,6 +67,7 @@ export default function PrepRoadmapPage() {
     try {
       const response = await api.post<{ title: string; prompt: string }>("/prep/problems/generate", { topic_slug: problemTopic, difficulty: problemDifficulty, language: "python" })
       setGeneratedProblem(response)
+      await refreshCatalog()
       notify.success("A new database-backed challenge was created.")
     } catch (error) {
       notify.error(error instanceof ApiError ? error.detail : "Problem generation is unavailable right now.")

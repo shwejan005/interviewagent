@@ -2,7 +2,7 @@
 
 import { Suspense, useState } from "react";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import Navbar from "../components/Navbar";
 import { Button, GlassCard, Input } from "../components/ui";
@@ -73,7 +73,6 @@ function IntentTabs({ intent, onChange }: Readonly<{ intent: Intent; onChange: (
 }
 
 function RegisterForm() {
-  const router = useRouter();
   const searchParams = useSearchParams();
   const { register } = useAuth();
 
@@ -85,24 +84,19 @@ function RegisterForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [registrationResult, setRegistrationResult] = useState<{ message: string; verification_required: boolean } | null>(null);
 
   const copy = COPY[intent];
-  const loginHref = next ? `/login?next=${encodeURIComponent(next)}` : "/login";
+  const postSignupDestination = next || (intent === "recruiter" ? "/org" : "/profile");
+  const loginHref = `/login?next=${encodeURIComponent(postSignupDestination)}`;
+  const verificationHref = `/verify-email?email=${encodeURIComponent(email)}&next=${encodeURIComponent(postSignupDestination)}`;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     try {
-      await register(email, password, fullName);
-      // A deep-link (e.g. "log in to apply to this job") always wins over the
-      // persona default — the candidate already told us what they came for.
-      if (next) {
-        router.push(next);
-      } else if (intent === "recruiter") {
-        router.push("/org");
-      } else {
-        router.push("/profile");
-      }
+      const result = await register(email, password, fullName);
+      setRegistrationResult(result);
     } catch (err) {
       notify.error(err instanceof ApiError ? err.detail : "Something went wrong.");
     } finally {
@@ -141,7 +135,19 @@ function RegisterForm() {
 
           <motion.div variants={fadeUp}>
             <GlassCard elevation="high" padding="lg">
-              <form onSubmit={handleSubmit} className="flex flex-col gap-5">
+              {registrationResult ? (
+                <div role="status" aria-live="polite" className="flex flex-col gap-4">
+                  <p className="text-[13px] leading-relaxed text-ink-muted">{registrationResult.message}</p>
+                  <Link
+                    href={registrationResult.verification_required
+                      ? verificationHref
+                      : loginHref}
+                    className="btn-primary inline-flex w-full justify-center no-underline"
+                  >
+                    {registrationResult.verification_required ? "Check verification options" : "Go to log in"}
+                  </Link>
+                </div>
+              ) : <form onSubmit={handleSubmit} className="flex flex-col gap-5">
                 <Input
                   id="fullName"
                   type="text"
@@ -181,7 +187,7 @@ function RegisterForm() {
                 >
                   {loading ? "Creating account..." : copy.cta}
                 </Button>
-              </form>
+              </form>}
             </GlassCard>
           </motion.div>
 

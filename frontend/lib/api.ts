@@ -9,6 +9,7 @@
  */
 
 const API_BASE = "/api";
+const inFlightGetRequests = new Map<string, Promise<unknown>>();
 
 const TOKEN_KEY = "evalia_token";
 const TOKEN_EXPIRES_AT_KEY = "evalia_token_expires_at";
@@ -140,33 +141,55 @@ export async function apiFetch<T = unknown>(path: string, options: FetchOptions 
   const orgId = options.orgId !== undefined ? options.orgId : getActiveOrgId();
   if (orgId !== null) headers["X-Org-Id"] = String(orgId);
 
-  const res = await fetch(`${API_BASE}${path}`, {
-    method: options.method || (options.body ? "POST" : "GET"),
-    headers,
-    body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-  });
+  const method = options.method || (options.body ? "POST" : "GET");
+  const url = `${API_BASE}${path}`;
+  const requestKey = method === "GET"
+    ? JSON.stringify([url, headers.Authorization ?? "", headers["X-Org-Id"] ?? ""])
+    : null;
 
-  if (res.status === 204) return undefined as T;
+  if (requestKey) {
+    const existingRequest = inFlightGetRequests.get(requestKey);
+    if (existingRequest) return (await existingRequest) as T;
+  }
 
-  let data: unknown = null;
+  const request = (async () => {
+    const res = await fetch(url, {
+      method,
+      headers,
+      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+    });
+
+    if (res.status === 204) return undefined;
+
+    let data: unknown = null;
+    try {
+      data = await res.json();
+    } catch {
+      // A non-JSON body (e.g. a proxy error page) still needs a legible message.
+    }
+
+    if (!res.ok) {
+      const detail =
+        (data && typeof data === "object" && "detail" in data
+          ? formatApiDetail((data as { detail: unknown }).detail)
+          : null) ||
+        (res.status === 429
+          ? "Too many requests. Please slow down and try again shortly."
+          : `Request failed (${res.status}).`);
+      throw new ApiError(res.status, detail);
+    }
+
+    return data;
+  })();
+
+  if (requestKey) inFlightGetRequests.set(requestKey, request);
   try {
-    data = await res.json();
-  } catch {
-    // A non-JSON body (e.g. a proxy error page) still needs a legible message.
+    return (await request) as T;
+  } finally {
+    if (requestKey && inFlightGetRequests.get(requestKey) === request) {
+      inFlightGetRequests.delete(requestKey);
+    }
   }
-
-  if (!res.ok) {
-    const detail =
-      (data && typeof data === "object" && "detail" in data
-        ? formatApiDetail((data as { detail: unknown }).detail)
-        : null) ||
-      (res.status === 429
-        ? "Too many requests. Please slow down and try again shortly."
-        : `Request failed (${res.status}).`);
-    throw new ApiError(res.status, detail);
-  }
-
-  return data as T;
 }
 
 export async function apiUpload<T = unknown>(path: string, file: File, options: Pick<FetchOptions, "orgId" | "skipAuth"> = {}): Promise<T> {

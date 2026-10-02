@@ -10,6 +10,89 @@ Entries are in **reverse chronological order** (most recent session first).
 
 ---
 
+## Session 19 — Close AI-interview delivery and safety gaps
+
+- Added an audited, candidate-owned switch from an active voice-transcription
+  interview to the disclosed text accommodation. Added editable transcript
+  correction and explicit save-and-return behavior before submission.
+- Added optional coturn REST/HMAC credentials to human WebRTC room tickets.
+  Credentials are scoped to the user and room, expire after 10 minutes, and
+  are issued only by the backend; the shared secret remains server-side.
+  STUN-only remains the development fallback until a TURN service is configured.
+- Expanded candidate data export to include interview consent, drafts, and
+  transcripts while omitting recruiter screening inputs and assessment scores.
+  Account deletion now cancels interview jobs, report notifications, and
+  cascading application-linked interview data.
+- Required at least 10 characters of per-category job-related evidence on
+  human panel scorecards; added a negative API test and an E2E scorecard path.
+  Added coverage for guarded offer advancement after a completed human round.
+- Added identity-field counterfactual and deterministic question replay checks,
+  plus prompt-boundary regression coverage. These are narrow tests, not a
+  human-adjudicated fairness or quality evaluation.
+- Extended the PostgreSQL contract for application, AI-interview session/turn,
+  report, notification, and human scorecard RLS, including candidate ownership,
+  worker context, and cross-candidate write denial; refactored setup/assertion/
+  cleanup helpers. The existing PostgreSQL 17 CI job runs this contract.
+- Added a synthetic, opt-in live-provider smoke script. It requires explicit
+  `RUN_LIVE_AI_INTERVIEW_SMOKE=1`, makes two provider calls, never reads real
+  candidate data, and avoids printing prompts/provider output. It was not run
+  here because provider credentials are not configured.
+- Corrected historical plan, testing, API, setup, architecture, and deployment
+  notes so implemented browser transcription is not described as a managed
+  live AI voice call. Automatic completed-record retention, provider/privacy
+  approval, managed AI voice, and deployed TURN/shared signaling remain open.
+- Validation: the full backend suite passed **288 tests** (31 warnings) and
+  the complete Playwright suite passed **24 tests**; TypeScript type-check
+  passed. Focused scorecard validation also passed after requiring evidence.
+  The PostgreSQL service was unavailable locally (Docker engine and `psql` were
+  not available), and the opt-in live-provider smoke was skipped; CI/provider
+  execution must be reviewed before calling those paths validated.
+
+## Session 18 — Reduce development navigation stalls and stale UI
+
+- Traced the local Next.js 14.2 dev server and browser requests: the workspace
+  was already using Turbopack; the local `/api/jobs` request was about 150 ms,
+  while page code compiles on demand in dev. A separate cold Webpack run took
+  13.4 seconds to start and 10.3 seconds to compile `/jobs`, so Turbopack stays
+  the default and `dev:webpack` is only a troubleshooting fallback.
+- Increased the dev route-entry buffer to 32 routes/10 minutes so revisits do
+  not recompile after the default small buffer is displaced. Playwright now
+  builds in `.next-playwright`, separate from a developer's `.next`, avoiding
+  competing dev servers overwriting each other's output.
+- Added a root App Router loading fallback so a cold route compile shows an
+  immediate skeleton instead of leaving the previous screen visually frozen.
+- Replaced the prep workspace's remaining raw internal anchors with Next
+  `Link`; removed its duplicate catalog fetch by sharing layout-loaded catalog
+  state with the editor and refreshing it only after generated problems.
+- Deduplicated concurrent authenticated GETs by URL, token, and organization;
+  split job-detail and application-form loading to remove serial/duplicate
+  requests; added quiet data revalidation when key candidate/recruiter pages
+  are revisited or regain browser focus.
+- Corrected stale setup notes that incorrectly claimed `next/font/google` was
+  active; the app currently uses a system font stack.
+- Validation: frontend type-check passed and all **13 Playwright tests passed**.
+  The browser tests use mocked APIs; the local timing observation is not a
+  production benchmark.
+
+## Session 17 — Manage campaign and role lifecycles
+
+- Added edit and archive icons to campaign and job-posting cards, plus archived
+  filters and restore actions. Campaigns can be closed/reopened; roles can be
+  closed/reopened independently. Campaign closure closes published roles.
+- Added campaign/posting edit and lifecycle APIs. “Delete” is a reversible
+  soft archive: candidate job search stops showing the role immediately, but
+  applications, answers, interview turns, reports, and audit history remain
+  attached and readable to authorized recruiters. Restoring never silently
+  republishes a role.
+- Extended role editing to include posting requirements and application
+  screening questions. In-flight AI interview runs continue to use the title
+  and description frozen in their application policy snapshot.
+- Added backend and Playwright coverage for campaign close/archive/restore,
+  role edits, posting archive/restore, public visibility, and applicant-history
+  preservation, plus pinned interview-context behavior after posting edits.
+- Validation: **264 backend tests passed** (31 warnings), frontend type-check
+  passed, and all **13 Playwright tests passed**. Live PostgreSQL was not used.
+
 ## Session 16 — Implement the application-linked text interview flow
 
 - Enforced profile readiness before apply (reviewed resume text or a minimal
@@ -615,8 +698,8 @@ passing, ~44s total run time, zero live LLM calls / zero cost).
 
 ### Backend: rate limiting and startup validation (new)
 
-- **Added `backend/rate_limit.py`** (`InMemoryRateLimitMiddleware`): a
-  fixed-window, per-client-IP request counter. Default 60 requests/60s per
+- **Added `backend/app/shared/rate_limit.py`** (`InMemoryRateLimitMiddleware`): a
+  sliding-window, per-client-IP request log. Default 60 requests/60s per
   IP, configurable via `RATE_LIMIT_REQUESTS`/`RATE_LIMIT_WINDOW_SECONDS`,
   disableable via `RATE_LIMIT_REQUESTS=0`. **Why:** `CODEBASE_REVIEW.md`
   finding B04 and `PRODUCTION_ROADMAP.md` P1/T010 both call out the absence

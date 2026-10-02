@@ -55,15 +55,23 @@ test("prep homepage opens a problem and survives refresh", async ({ page }) => {
 test("prep navigation keeps the shared sidebar on roadmap and insights", async ({ page }) => {
   await mockPrepApi(page)
   await page.route("**/api/prep/goals", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ goal: null }) }))
+  const documentRequests: string[] = []
+  let catalogRequests = 0
+  page.on("request", (request) => {
+    if (request.isNavigationRequest()) documentRequests.push(request.url())
+    if (request.url().includes("/api/prep/catalog")) catalogRequests += 1
+  })
   await page.goto("/prep")
 
   const roadmapLink = page.locator('[data-sidebar="sidebar"] a[href="/prep/roadmap"]')
   await expect(roadmapLink).toHaveCount(1)
   await roadmapLink.click()
-  await expect(page).toHaveURL(/\/prep\/roadmap$/)
+  await expect(page).toHaveURL(/\/prep\/roadmap$/, { timeout: 15_000 })
   await expect(page.getByRole("link", { name: "Problem set" })).toBeVisible()
 
   await page.getByRole("link", { name: "Insights", exact: true }).click()
-  await expect(page).toHaveURL(/\/prep\/dashboard$/)
+  await expect(page).toHaveURL(/\/prep\/dashboard$/, { timeout: 15_000 })
   await expect(page.getByRole("link", { name: "Roadmap", exact: true })).toBeVisible()
+  expect(documentRequests).toHaveLength(1)
+  expect(catalogRequests).toBe(1)
 })

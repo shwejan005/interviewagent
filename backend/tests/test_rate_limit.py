@@ -3,13 +3,14 @@ Unit tests for rate_limit.InMemoryRateLimitMiddleware, in isolation from the
 full application (no database, no agents, no crewai import — fast).
 """
 
-import time
-
+import pytest
 from starlette.applications import Starlette
+from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import PlainTextResponse
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
+import app.shared.rate_limit as rate_limit
 from app.shared.rate_limit import InMemoryRateLimitMiddleware
 
 
@@ -49,11 +50,70 @@ class TestRateLimitMiddleware:
         for _ in range(20):
             assert client.get("/ping").status_code == 200
 
-    def test_window_resets_after_it_elapses(self):
+    def test_window_expires_hits_after_the_configured_duration(self, monkeypatch):
+        clock = [100.0]
+        monkeypatch.setattr(rate_limit, "monotonic", lambda: clock[0])
         client = TestClient(_make_app(requests_per_window=1, window_seconds=0.2))
         assert client.get("/ping").status_code == 200
         assert client.get("/ping").status_code == 429
 
-        time.sleep(0.3)
+        clock[0] += 0.2
         assert client.get("/ping").status_code == 200
+
+    def test_rejects_non_positive_window_when_rate_limiting_is_enabled(self):
+        with pytest.raises(ValueError, match="window_seconds must be positive"):
+            InMemoryRateLimitMiddleware(Starlette(), requests_per_window=1, window_seconds=0)
+
+    def test_retry_after_rounds_up_to_avoid_retrying_early(self, monkeypatch):
+        clock = [100.0]
+        monkeypatch.setattr(rate_limit, "monotonic", lambda: clock[0])
+        client = TestClient(_make_app(requests_per_window=1, window_seconds=60))
+        assert client.get("/ping").status_code == 200
+
+        clock[0] += 0.1
+        blocked = client.get("/ping")
+
+        assert blocked.status_code == 429
+        assert blocked.headers["Retry-After"] == "60"
+
+    def test_hits_expire_at_the_exact_sliding_window_boundary(self, monkeypatch):
+        clock = [100.0]
+        monkeypatch.setattr(rate_limit, "monotonic", lambda: clock[0])
+        client = TestClient(_make_app(requests_per_window=2, window_seconds=10))
+        assert client.get("/ping").status_code == 200
+        clock[0] += 5
+        assert client.get("/ping").status_code == 200
+
+        clock[0] = 110.0
+        assert client.get("/ping").status_code == 200
+
+    def test_periodic_cleanup_removes_idle_client_buckets(self):
+        middleware = InMemoryRateLimitMiddleware(
+            Starlette(), requests_per_window=1, window_seconds=10
+        )
+        middleware._hits["198.51.100.1"].append(100.0)
+        middleware._hits["198.51.100.2"].append(105.0)
+
+        middleware._prune_expired_clients(window_start=102.0)
+
+        assert "198.51.100.1" not in middleware._hits
+        assert list(middleware._hits["198.51.100.2"]) == [105.0]
+
+    def test_rate_limit_response_keeps_cors_headers(self):
+        app = _make_app(requests_per_window=1, window_seconds=60)
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["https://app.example.com"],
+            allow_methods=["GET"],
+            allow_headers=["*"],
+        )
+        client = TestClient(app)
+        request_headers = {"Origin": "https://app.example.com"}
+
+        assert client.get("/ping", headers=request_headers).status_code == 200
+        blocked = client.get("/ping", headers=request_headers)
+
+        assert blocked.status_code == 429
+        assert blocked.headers["access-control-allow-origin"] == "https://app.example.com"
+        assert blocked.headers["Retry-After"] == "60"
 

@@ -6,7 +6,6 @@ import { usePathname, useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   BarChart3,
-  Bell,
   BookOpen,
   BriefcaseBusiness,
   CalendarDays,
@@ -18,7 +17,6 @@ import {
   LogOut,
   Menu,
   Settings,
-  ShieldCheck,
   UserRound,
   UsersRound,
   X,
@@ -27,6 +25,7 @@ import {
 import { useAuth } from "../../lib/auth-context";
 import type { Actor, Membership } from "../../lib/types";
 import { DUR, EASE_OUT } from "../../lib/motion";
+import NotificationBell from "./NotificationBell";
 
 const GUEST_LINKS = [
   { href: "/", label: "Overview" },
@@ -124,7 +123,7 @@ function AccountMenu({
             <div className={`px-3 py-2 text-[11px] ${light ? "text-[#8b98a6]" : "text-ink-subtle"}`}>
               {activeMembership ? activeMembership.role_name.replaceAll("_", " ") : "Personal account"}
             </div>
-            <button type="button" role="menuitem" onClick={() => { setOpen(false); router.push("/profile"); }} className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-[13px] transition-colors ${light ? "text-[#384858] hover:bg-[#f3f6f8]" : "text-ink-muted hover:bg-glass-low hover:text-ink-heading"}`}>
+            <button type="button" role="menuitem" onClick={() => { setOpen(false); router.push(profileHref); }} className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-[13px] transition-colors ${light ? "text-[#384858] hover:bg-[#f3f6f8]" : "text-ink-muted hover:bg-glass-low hover:text-ink-heading"}`}>
               <UserRound size={16} /> Profile
             </button>
             <button type="button" role="menuitem" onClick={() => { setOpen(false); router.push(settingsHref); }} className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-[13px] transition-colors ${light ? "text-[#384858] hover:bg-[#f3f6f8]" : "text-ink-muted hover:bg-glass-low hover:text-ink-heading"}`}>
@@ -190,7 +189,11 @@ function WorkspaceNavbar() {
         { href: "/referrals", label: "Referrals", icon: FileText },
       ],
     },
-    ...(activeMembership ? [{ label: "MANAGE", links: [{ href: "/org", label: "Workspace", icon: UsersRound }, { href: "/org/analytics", label: "Analytics", icon: BarChart3 }] }] : []),
+    ...(activeMembership ? [{ label: "MANAGE", links: [
+      { href: "/org", label: "Workspace", icon: UsersRound },
+      ...(actor?.capabilities.includes("interview:schedule") ? [{ href: "/org/team", label: "Team", icon: UsersRound }] : []),
+      { href: "/org/analytics", label: "Analytics", icon: BarChart3 },
+    ] }] : []),
   ];
 
   const navigation = (
@@ -230,7 +233,7 @@ function WorkspaceNavbar() {
       <header className="fixed inset-x-0 top-0 z-50 flex h-[68px] items-center justify-between border-b border-[#e1e7ec] bg-white/95 px-4 shadow-[0_1px_4px_rgba(20,35,50,0.04)] backdrop-blur lg:left-[232px] lg:px-8">
         <button type="button" className="flex items-center gap-2 text-[#263342] lg:hidden" onClick={() => setMobileOpen(true)} aria-label="Open workspace navigation"><Menu size={20} /><span className="text-[14px] font-bold">EVALIA</span></button>
         <div className="hidden items-center gap-2 text-[12px] text-[#7b8996] lg:flex"><span className="font-semibold text-[#263342]">Profile</span><ChevronRight size={13} /><span>Overview</span></div>
-        <div className="ml-auto flex items-center gap-4"><button type="button" aria-label="Notifications" className="relative rounded-lg p-2 text-[#778695] transition-colors hover:bg-[#f1f4f6] hover:text-[#263342]"><Bell size={17} /><span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-[#ef8f3c]" /></button>{actor && <AccountMenu actor={actor} activeMembership={activeMembership} light onLogout={handleLogout} />}</div>
+        <div className="ml-auto flex items-center gap-4"><NotificationBell light />{actor && <AccountMenu actor={actor} activeMembership={activeMembership} light onLogout={handleLogout} />}</div>
       </header>
       <AnimatePresence>
         {mobileOpen && <motion.div className="fixed inset-0 z-[80] bg-[#10263a] lg:hidden" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: DUR.fast, ease: EASE_OUT }}><button type="button" className="absolute right-4 top-4 rounded-lg p-2 text-white" onClick={() => setMobileOpen(false)} aria-label="Close workspace navigation"><X size={22} /></button>{navigation}</motion.div>}
@@ -242,7 +245,7 @@ function WorkspaceNavbar() {
 function DefaultNavbar() {
   const pathname = usePathname();
   const router = useRouter();
-  const { actor, loading, logout, switchOrg, activeOrgId } = useAuth();
+  const { actor, loading, logout, activeOrgId } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   useEffect(() => {
@@ -257,15 +260,29 @@ function DefaultNavbar() {
   const activeMembership = actor?.memberships.find((membership) => membership.org_id === activeOrgId);
   const recruiterMode = Boolean(actor && activeMembership);
   let links = GUEST_LINKS;
-  if (actor) links = recruiterMode ? RECRUITER_LINKS : CANDIDATE_LINKS;
+  if (actor && recruiterMode && actor.capabilities.includes("interview:schedule")) {
+    links = [...RECRUITER_LINKS, { href: "/org/team", label: "Team" }];
+  } else if (actor && recruiterMode) {
+    links = RECRUITER_LINKS;
+  } else if (actor) {
+    links = CANDIDATE_LINKS;
+  }
   const handleLogout = () => { logout(); router.push("/"); };
+  let accountControls;
+  if (loading) {
+    accountControls = <div className="skeleton h-8 w-24" />;
+  } else if (actor) {
+    accountControls = <AccountMenu actor={actor} activeMembership={activeMembership} onLogout={handleLogout} />;
+  } else {
+    accountControls = <><Link href="/login" className="text-[13px] text-ink-muted hover:text-ink-heading">Log in</Link><Link href="/register?intent=candidate" className="btn-primary !px-4 !py-2 !text-[12px]">Sign up</Link></>;
+  }
 
   return (
     <nav className={`fixed inset-x-0 top-0 z-50 border-b transition-all duration-base ease-out-expo ${scrolled ? "border-subtle bg-[rgba(7,8,16,0.84)] backdrop-blur-[16px]" : "border-transparent bg-transparent"}`}>
       <div className="mx-auto flex h-16 max-w-[var(--max-width)] items-center gap-8 px-6">
         <Link href="/" className="group flex shrink-0 items-center gap-2"><span className="mono text-[14px] font-bold text-brand">EVALIA</span><span className="text-[11px] text-ink-subtle/50">/</span><span className="mono text-[11px] text-ink-subtle">v2.0</span></Link>
         <div className="hidden min-w-0 flex-1 items-center justify-center gap-7 md:flex">{links.map((link) => <NavLink key={link.href} href={link.href} label={link.label} active={pathname === link.href || (link.href !== "/" && pathname.startsWith(link.href))} />)}</div>
-        <div className="ml-auto flex shrink-0 items-center gap-3">{loading ? <div className="skeleton h-8 w-24" /> : actor ? <AccountMenu actor={actor} activeMembership={activeMembership} onLogout={handleLogout} /> : <><Link href="/login" className="text-[13px] text-ink-muted hover:text-ink-heading">Log in</Link><Link href="/register?intent=candidate" className="btn-primary !px-4 !py-2 !text-[12px]">Sign up</Link></>}</div>
+        <div className="ml-auto flex shrink-0 items-center gap-3">{actor && <NotificationBell />}{accountControls}</div>
         <button className="rounded-lg p-2 text-ink md:hidden" onClick={() => setMobileOpen((value) => !value)} aria-expanded={mobileOpen} aria-label={mobileOpen ? "Close menu" : "Open menu"}>{mobileOpen ? <X size={19} /> : <Menu size={19} />}</button>
       </div>
       <AnimatePresence>{mobileOpen && <motion.div className="absolute inset-x-0 top-full flex flex-col gap-3 border-b border-subtle bg-[rgba(7,8,16,0.96)] px-6 py-5 backdrop-blur-[20px] md:hidden" initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: DUR.base, ease: EASE_OUT }}>{links.map((link) => <Link key={link.href} href={link.href} className={`text-[14px] ${pathname === link.href ? "text-brand" : "text-ink"}`}>{link.label}</Link>)}{actor ? <button onClick={handleLogout} className="text-left text-[14px] text-[var(--color-error)]">Log out</button> : <Link href="/login" className="text-[14px] text-ink">Log in</Link>}</motion.div>}</AnimatePresence>

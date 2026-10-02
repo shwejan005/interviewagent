@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
 import { AnimatePresence, motion } from "framer-motion";
 import Navbar from "../components/Navbar";
@@ -16,6 +16,7 @@ import {
 } from "../components/ui";
 import type { PillTone } from "../components/ui";
 import { useAuth } from "../../lib/auth-context";
+import { useActivePageRefresh } from "../../lib/use-active-page-refresh";
 import { api, ApiError } from "../../lib/api";
 import { notify } from "../../lib/toast";
 import type { ApplicationDetail, ApplicationEvent, ApplicationSummary } from "../../lib/types";
@@ -48,6 +49,7 @@ function formatDate(d: string): string {
 
 export default function ApplicationsPage() {
   const router = useRouter();
+  const pathname = usePathname();
   const { actor, loading: authLoading } = useAuth();
   const [applications, setApplications] = useState<ApplicationSummary[]>([]);
   const [expanded, setExpanded] = useState<number | null>(null);
@@ -55,6 +57,7 @@ export default function ApplicationsPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    if (pathname !== "/applications") return;
     if (authLoading) return;
     if (!actor) {
       router.push("/login?next=/applications");
@@ -64,17 +67,23 @@ export default function ApplicationsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, actor]);
 
-  const load = async () => {
-    setLoading(true);
+  const load = async (showLoading = true) => {
+    if (showLoading) setLoading(true);
     try {
       const data = await api.get<{ applications: ApplicationSummary[] }>("/me/applications");
       setApplications(data.applications);
     } catch (err) {
       notify.error(err instanceof ApiError ? err.detail : "Failed to load applications.");
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   };
+
+  useActivePageRefresh(
+    pathname === "/applications",
+    !authLoading && Boolean(actor),
+    () => load(false),
+  );
 
   const toggleExpand = async (id: number) => {
     if (expanded === id) {
@@ -96,7 +105,7 @@ export default function ApplicationsPage() {
   const handleWithdraw = async (id: number) => {
     try {
       await api.post(`/me/applications/${id}/withdraw`);
-      await load();
+      await load(false);
       notify.success("Application withdrawn.");
     } catch (err) {
       notify.error(err instanceof ApiError ? err.detail : "Failed to withdraw.");

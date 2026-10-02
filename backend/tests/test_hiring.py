@@ -242,11 +242,146 @@ class TestCampaignsAndPostings:
         )
         assert resp.status_code == 400
 
+    def test_posting_edit_rejects_inverted_salary_range(self, client, recruiter):
+        posting = _make_posting(client, recruiter, publish=False)
+        org_id = recruiter["org_id"]
+        response = client.patch(
+            f"/orgs/{org_id}/postings/{posting['id']}",
+            json={"salary_min": 200000, "salary_max": 100000},
+            headers=_auth(recruiter["token"], org_id),
+        )
+        assert response.status_code == 400
+        assert response.json()["detail"] == "salary_min cannot exceed salary_max."
+
     def test_search_filters_by_query_and_remote_policy(self, client, recruiter):
         _make_posting(client, recruiter, publish=True, title="Rust Engineer")
         assert client.get("/jobs", params={"q": "rust"}).json()["total"] == 1
         assert client.get("/jobs", params={"q": "cobol"}).json()["total"] == 0
         assert client.get("/jobs", params={"remote_policy": "REMOTE"}).json()["total"] == 0
+
+    def test_campaign_close_archive_restore_preserves_applications_and_never_republishes_roles(
+        self, client, recruiter, candidate
+    ):
+        posting = _make_posting(client, recruiter, publish=True, title="Lifecycle Role")
+        org_id = recruiter["org_id"]
+        recruiter_headers = _auth(recruiter["token"], org_id)
+        candidate_headers = _auth(candidate["token"])
+        application_id = client.post(
+            f"/jobs/{posting['id']}/apply", json={}, headers=candidate_headers
+        ).json()["application_id"]
+        campaign_path = f"/orgs/{org_id}/campaigns/{posting['campaign_id']}"
+
+        closed = client.patch(campaign_path, json={"status": "CLOSED"}, headers=recruiter_headers)
+        assert closed.status_code == 200, closed.text
+        assert closed.json()["status"] == "CLOSED"
+        assert hdb.get_posting(posting["id"], org_id)["status"] == "CLOSED"
+        assert client.get("/jobs", params={"q": "Lifecycle Role"}).json()["total"] == 0
+        assert client.post(
+            f"/orgs/{org_id}/postings/{posting['id']}/status",
+            json={"status": "PUBLISHED"}, headers=recruiter_headers,
+        ).status_code == 409
+        assert client.post(
+            f"/orgs/{org_id}/postings",
+            json={"campaign_id": posting["campaign_id"], "title": "Should not create"},
+            headers=recruiter_headers,
+        ).status_code == 409
+
+        reopened_campaign = client.patch(campaign_path, json={"status": "ACTIVE"}, headers=recruiter_headers)
+        assert reopened_campaign.status_code == 200, reopened_campaign.text
+        assert hdb.get_posting(posting["id"], org_id)["status"] == "CLOSED"
+        assert client.get("/jobs", params={"q": "Lifecycle Role"}).json()["total"] == 0
+
+        archived = client.delete(campaign_path, headers=recruiter_headers)
+        assert archived.status_code == 204, archived.text
+        assert client.get("/jobs", params={"q": "Lifecycle Role"}).json()["total"] == 0
+        assert client.get(f"/jobs/{posting['id']}").status_code == 404
+        assert client.get(f"/orgs/{org_id}/campaigns", headers=recruiter_headers).json()["campaigns"] == []
+        archived_campaigns = client.get(
+            f"/orgs/{org_id}/campaigns?include_archived=true", headers=recruiter_headers
+        ).json()["campaigns"]
+        assert archived_campaigns[0]["deleted_at"] is not None
+
+        # Archival is not destructive: hiring history remains readable.
+        recruiter_application = client.get(
+            f"/orgs/{org_id}/applications/{application_id}", headers=recruiter_headers
+        )
+        assert recruiter_application.status_code == 200, recruiter_application.text
+        assert len(client.get("/me/applications", headers=candidate_headers).json()["applications"]) == 1
+
+        restored = client.post(f"{campaign_path}/restore", headers=recruiter_headers)
+        assert restored.status_code == 200, restored.text
+        assert restored.json()["deleted_at"] is None
+        assert restored.json()["status"] == "CLOSED"
+        assert hdb.get_posting(posting["id"], org_id)["status"] == "CLOSED"
+
+    def test_posting_edit_archive_and_restore_preserve_candidate_history(self, client, recruiter, candidate):
+        posting = _make_posting(
+            client,
+            recruiter,
+            publish=True,
+            title="Editable Role",
+            questions=[{"key": "reliability_story", "text": "Describe a reliability improvement.", "required": True}],
+        )
+        org_id = recruiter["org_id"]
+        recruiter_headers = _auth(recruiter["token"], org_id)
+        candidate_headers = _auth(candidate["token"])
+        application_id = client.post(
+            f"/jobs/{posting['id']}/apply", json={"answers": [{
+                "question_key": "reliability_story",
+                "answer_text": "I improved service reliability by adding SLO alerts.",
+            }]}, headers=candidate_headers,
+        ).json()["application_id"]
+
+        edited = client.patch(
+            f"/orgs/{org_id}/postings/{posting['id']}",
+            json={
+                "title": "Senior Editable Role",
+                "min_experience": None,
+                "max_experience": 10,
+                "salary_min": None,
+                "currency": "USD",
+                "screening_questions": [{"key": "reliability_story", "text": "Tell us how you improved service reliability.", "required": True}],
+            },
+            headers=recruiter_headers,
+        )
+        assert edited.status_code == 200, edited.text
+        assert edited.json()["title"] == "Senior Editable Role"
+        assert edited.json()["min_experience"] is None
+        assert edited.json()["max_experience"] == 10
+        assert edited.json()["salary_min"] is None
+        assert edited.json()["screening_questions"][0]["text"] == "Tell us how you improved service reliability."
+
+        archived = client.delete(f"/orgs/{org_id}/postings/{posting['id']}", headers=recruiter_headers)
+        assert archived.status_code == 204, archived.text
+        assert client.get(f"/jobs/{posting['id']}").status_code == 404
+        listed = client.get(
+            f"/orgs/{org_id}/postings?campaign_id={posting['campaign_id']}", headers=recruiter_headers
+        ).json()["postings"]
+        assert all(item["id"] != posting["id"] for item in listed)
+        archived_listed = client.get(
+            f"/orgs/{org_id}/postings?campaign_id={posting['campaign_id']}&include_archived=true",
+            headers=recruiter_headers,
+        ).json()["postings"]
+        archived_posting = next(item for item in archived_listed if item["id"] == posting["id"])
+        assert archived_posting["deleted_at"] is not None
+        assert archived_posting["status"] == "CLOSED"
+        assert client.get(
+            f"/orgs/{org_id}/applications/{application_id}", headers=recruiter_headers
+        ).status_code == 200
+
+        restored = client.post(
+            f"/orgs/{org_id}/postings/{posting['id']}/restore", headers=recruiter_headers
+        )
+        assert restored.status_code == 200, restored.text
+        assert restored.json()["deleted_at"] is None
+        assert restored.json()["status"] == "CLOSED"
+        assert client.get(f"/jobs/{posting['id']}").status_code == 404
+        republished = client.post(
+            f"/orgs/{org_id}/postings/{posting['id']}/status",
+            json={"status": "PUBLISHED"}, headers=recruiter_headers,
+        )
+        assert republished.status_code == 200, republished.text
+        assert client.get(f"/jobs/{posting['id']}").status_code == 200
 
 
 # ── Applying ─────────────────────────────────────────────────────────
@@ -593,6 +728,12 @@ class TestHiringAudit:
             f"/jobs/{posting['id']}/apply", json={}, headers=_auth(candidate["token"])
         ).json()["application_id"]
         org_id = recruiter["org_id"]
+        missing_reason = client.post(
+            f"/orgs/{org_id}/applications/{application_id}/transition",
+            json={"to_stage": "REJECTED"},
+            headers=_auth(recruiter["token"], org_id),
+        )
+        assert missing_reason.status_code == 422
         client.post(
             f"/orgs/{org_id}/applications/{application_id}/transition",
             json={"to_stage": "SCREENING"},
@@ -613,11 +754,12 @@ class TestHiringAudit:
             f"/jobs/{posting['id']}/apply", json={}, headers=_auth(candidate["token"])
         ).json()["application_id"]
         org_id = recruiter["org_id"]
-        client.post(
+        rejected = client.post(
             f"/orgs/{org_id}/applications/{application_id}/transition",
-            json={"to_stage": "REJECTED", "note": "Not a fit"},
+            json={"to_stage": "REJECTED", "note": "Not a fit for this role."},
             headers=_auth(recruiter["token"], org_id),
         )
+        assert rejected.status_code == 200, rejected.text
 
         rejections = [
             e for e in isolated_db.list_audit_events(limit=100)

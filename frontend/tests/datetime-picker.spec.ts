@@ -65,7 +65,7 @@ test("schedule interview uses the custom date and time picker", async ({ page })
 
   await page.goto("/org/postings/1")
   await page.getByRole("button", { name: "View" }).click()
-  await expect(page.getByText("SCHEDULE INTERVIEW", { exact: true })).toBeVisible()
+  await expect(page.getByText("SCHEDULE HUMAN INTERVIEW", { exact: true })).toBeVisible()
   await expect(page.locator('input[type="datetime-local"]')).toHaveCount(0)
 
   await page.getByRole("button", { name: "START", exact: true }).click()

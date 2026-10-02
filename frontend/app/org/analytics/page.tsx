@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { animate, motion } from "framer-motion";
 import {
   Area,
@@ -31,6 +31,7 @@ import {
 } from "../../components/ui";
 import type { PillTone } from "../../components/ui";
 import { useAuth } from "../../../lib/auth-context";
+import { useActivePageRefresh } from "../../../lib/use-active-page-refresh";
 import { api, ApiError } from "../../../lib/api";
 import { notify } from "../../../lib/toast";
 import type { AnalyticsOverview, FunnelResult, SelectionRatesResult } from "../../../lib/types";
@@ -249,6 +250,7 @@ function FunnelBar({ ratio, delay }: Readonly<{ ratio: number; delay: number }>)
 
 export default function AnalyticsPage() {
   const router = useRouter();
+  const pathname = usePathname();
   const { actor, loading: authLoading, activeOrgId } = useAuth();
   const [overview, setOverview] = useState<AnalyticsOverview | null>(null);
   const [funnel, setFunnel] = useState<FunnelResult | null>(null);
@@ -258,18 +260,19 @@ export default function AnalyticsPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    if (pathname !== "/org/analytics") return;
     if (authLoading) return;
     if (!actor) {
       router.push("/login?next=/org/analytics");
       return;
     }
     if (!activeOrgId) return;
-    load();
+    void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, actor, activeOrgId, segmentBy, days]);
 
-  const load = async () => {
-    setLoading(true);
+  const load = async (showLoading = true) => {
+    if (showLoading) setLoading(true);
     try {
       const [overviewData, funnelData, ratesData] = await Promise.all([
         api.get<AnalyticsOverview>(`/orgs/${activeOrgId}/analytics/overview?days=${days}`),
@@ -282,9 +285,15 @@ export default function AnalyticsPage() {
     } catch (err) {
       notify.error(analyticsErrorMessage(err));
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   };
+
+  useActivePageRefresh(
+    pathname === "/org/analytics",
+    !authLoading && Boolean(actor) && Boolean(activeOrgId),
+    () => load(false),
+  );
 
   if (authLoading || loading) {
     return (

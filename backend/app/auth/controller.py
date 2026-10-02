@@ -16,19 +16,26 @@ Deliberate behaviours worth knowing about:
 import asyncio
 import logging
 import os
+from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 
 from app.config import database as db
 from app.evaluation.dto import (
     ActorResponse,
     AddMemberRequest,
+    AccountEmailRequest,
+    AccountTokenRequest,
     CreateOrganizationRequest,
     LoginRequest,
     AcceptInvitationRequest,
+    InterviewProfileRequest,
     MembershipSummary,
     OrganizationResponse,
     RegisterRequest,
+    RegistrationResponse,
+    PasswordResetConfirmRequest,
+    PasswordResetRequest,
     SetMemberRoleRequest,
     TokenResponse,
 )
@@ -42,6 +49,11 @@ org_router = APIRouter(prefix="/orgs", tags=["organizations"])
 
 _INVALID_CREDENTIALS = "Invalid email or password."
 _NOT_FOUND = "Not found."
+_GENERIC_REGISTER_MESSAGE = (
+    "If an account can be created, next steps will be sent to that email address. "
+    "If verification is disabled, you can sign in now."
+)
+_GENERIC_ACCOUNT_MESSAGE = "If an eligible account exists, instructions will be sent to that email address."
 
 
 async def _db(func, *args, **kwargs):
@@ -55,14 +67,19 @@ def _client_ip(request: Request) -> str | None:
 # ── Authentication ───────────────────────────────────────────────────
 
 
-@router.post("/register", response_model=TokenResponse, status_code=201)
-async def register(req: RegisterRequest, request: Request):
-    """Create an account and return an access token.
+@router.post("/register", response_model=RegistrationResponse, status_code=202)
+async def register(req: RegisterRequest, request: Request, background_tasks: BackgroundTasks):
+    """Create an account without revealing whether the email was registered.
 
     New accounts have no organization membership — they begin as candidates.
     Becoming a recruiter happens by creating an org or accepting an invitation.
     """
-    password_hash = security.hash_password(req.password)
+    verification_required = notifications.email_verification_required()
+    if verification_required and not notifications.smtp_configured():
+        raise HTTPException(status_code=503, detail="Email verification is not configured.")
+
+    password_hash = await _db(security.hash_password, req.password)
+    user_id = None
     try:
         user_id = await _db(
             db.create_user,
@@ -71,25 +88,142 @@ async def register(req: RegisterRequest, request: Request):
             full_name=req.full_name,
         )
     except db.DuplicateEmailError:
-        # Registration inherently reveals whether an email is taken. Mitigating
-        # that properly requires an email-confirmation flow that always returns
-        # success; that is a Phase 1 concern, noted rather than faked here.
-        raise HTTPException(status_code=409, detail="An account with this email already exists.")
+        # Same response for existing and new addresses; never issue a session
+        # or reset an existing user's password through registration.
+        pass
 
+    if user_id is not None:
+        audit.record(
+            audit.Action.USER_REGISTERED,
+            tier=audit.AuditTier.SECURITY,
+            actor_user_id=user_id,
+            actor_ip=_client_ip(request),
+            resource_type="user",
+            resource_id=user_id,
+        )
+        if verification_required:
+            await _issue_account_token(
+                user_id,
+                str(req.email),
+                "EMAIL_VERIFY",
+                timedelta(hours=48),
+                background_tasks,
+            )
+        else:
+            await _db(db.mark_user_email_verified, user_id)
+
+    return RegistrationResponse(
+        message=_GENERIC_REGISTER_MESSAGE,
+        verification_required=verification_required,
+    )
+
+
+async def _issue_account_token(
+    user_id: int,
+    email: str,
+    purpose: str,
+    ttl: timedelta,
+    background_tasks: BackgroundTasks,
+) -> bool:
+    token = security.generate_account_token()
+    expires_at = (datetime.now(timezone.utc) + ttl).isoformat()
+    created = await _db(
+        db.create_account_token,
+        user_id,
+        purpose,
+        security.hash_account_token(token),
+        expires_at,
+    )
+    if not created:
+        return False
+    sender = (
+        notifications.send_email_verification_email
+        if purpose == "EMAIL_VERIFY"
+        else notifications.send_password_reset_email
+    )
+    background_tasks.add_task(_deliver_account_email, sender, email, token)
+    return True
+
+
+def _deliver_account_email(sender, email: str, token: str) -> None:
+    try:
+        delivery = sender(email, token)
+        if delivery not in {"sent", "not_configured"}:
+            logger.warning("Account email delivery was not successful: %s", delivery)
+    except Exception:
+        logger.exception("Account email delivery failed")
+
+
+@router.post("/email-verification/resend", response_model=RegistrationResponse, status_code=202)
+async def resend_email_verification(req: AccountEmailRequest, background_tasks: BackgroundTasks):
+    """Resend a verification link without confirming account existence."""
+    user = await _db(db.get_account_recovery_user, str(req.email))
+    if user is not None and not user.get("email_verified_at"):
+        await _issue_account_token(
+            int(user["id"]),
+            user["email"],
+            "EMAIL_VERIFY",
+            timedelta(hours=48),
+            background_tasks,
+        )
+    return RegistrationResponse(message=_GENERIC_ACCOUNT_MESSAGE)
+
+
+@router.post("/verify-email", response_model=RegistrationResponse)
+async def verify_email(req: AccountTokenRequest, request: Request):
+    user_id = await _db(
+        db.consume_account_token,
+        security.hash_account_token(req.token),
+        "EMAIL_VERIFY",
+    )
+    if user_id is None:
+        raise HTTPException(status_code=400, detail="This verification link is invalid or expired.")
     audit.record(
-        audit.Action.USER_REGISTERED,
+        "user.email_verified",
         tier=audit.AuditTier.SECURITY,
         actor_user_id=user_id,
         actor_ip=_client_ip(request),
         resource_type="user",
         resource_id=user_id,
     )
+    return RegistrationResponse(message="Email verified. You can now sign in.")
 
-    token = security.create_access_token(user_id)
-    return TokenResponse(
-        access_token=token,
-        expires_in=int(security.ACCESS_TOKEN_TTL.total_seconds()),
+
+@router.post("/password-reset/request", response_model=RegistrationResponse, status_code=202)
+async def request_password_reset(req: PasswordResetRequest, background_tasks: BackgroundTasks):
+    """Send a time-limited reset link, if the address belongs to an active user."""
+    user = await _db(db.get_account_recovery_user, str(req.email))
+    if user is not None:
+        await _issue_account_token(
+            int(user["id"]),
+            user["email"],
+            "PASSWORD_RESET",
+            timedelta(hours=1),
+            background_tasks,
+        )
+    return RegistrationResponse(message=_GENERIC_ACCOUNT_MESSAGE)
+
+
+@router.post("/password-reset/confirm", response_model=RegistrationResponse)
+async def confirm_password_reset(req: PasswordResetConfirmRequest, request: Request):
+    password_hash = await _db(security.hash_password, req.new_password)
+    user_id = await _db(
+        db.consume_account_token,
+        security.hash_account_token(req.token),
+        "PASSWORD_RESET",
+        password_hash=password_hash,
     )
+    if user_id is None:
+        raise HTTPException(status_code=400, detail="This password reset link is invalid or expired.")
+    audit.record(
+        "user.password_reset",
+        tier=audit.AuditTier.SECURITY,
+        actor_user_id=user_id,
+        actor_ip=_client_ip(request),
+        resource_type="user",
+        resource_id=user_id,
+    )
+    return RegistrationResponse(message="Password updated. Sign in with your new password.")
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -124,7 +258,7 @@ async def login(req: LoginRequest, request: Request):
         resource_id=user["id"],
     )
 
-    token = security.create_access_token(user["id"])
+    token = security.create_access_token(user["id"], auth_version=int(user.get("auth_version", 0)))
     return TokenResponse(
         access_token=token,
         expires_in=int(security.ACCESS_TOKEN_TTL.total_seconds()),
@@ -140,7 +274,7 @@ async def refresh_session(actor: Actor = Depends(current_actor)):
             detail="Impersonation sessions cannot be extended.",
         )
 
-    token = security.create_access_token(actor.user_id)
+    token = security.create_access_token(actor.user_id, auth_version=actor.auth_version)
     return TokenResponse(
         access_token=token,
         expires_in=int(security.ACCESS_TOKEN_TTL.total_seconds()),
@@ -160,6 +294,8 @@ async def me(actor: Actor = Depends(current_actor)):
         email=actor.email,
         full_name=actor.full_name,
         is_platform_admin=actor.is_platform_admin,
+        email_verified_at=actor.email_verified_at,
+        email_verification_required=notifications.email_verification_required(),
         impersonated_by=actor.impersonated_by,
         active_org_id=actor.org_id,
         active_role=actor.role,
@@ -259,6 +395,55 @@ async def list_members(
 ):
     assert_tenant(actor, org_id)
     return {"members": await _db(db.list_org_members, org_id)}
+
+
+@org_router.get("/{org_id}/team")
+async def list_interview_team(
+    org_id: int,
+    actor: Actor = Depends(requires(Capability.INTERVIEW_SCHEDULE)),
+):
+    """Return the minimal member directory needed for interviewer assignment."""
+    assert_tenant(actor, org_id)
+    return {"members": await _db(db.list_org_members, org_id)}
+
+
+@org_router.put("/{org_id}/members/{user_id}/interview-profile")
+async def update_interview_profile(
+    org_id: int,
+    user_id: int,
+    req: InterviewProfileRequest,
+    actor: Actor = Depends(current_actor),
+):
+    assert_tenant(actor, org_id)
+    if actor.user_id != user_id and not actor.has(Capability.ORG_MEMBER_ROLE_SET):
+        raise HTTPException(status_code=403, detail="You can only update your own interview profile.")
+    membership = await _db(db.get_membership, user_id, org_id)
+    if membership is None:
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    skills = list(dict.fromkeys(skill.strip() for skill in req.interview_skills if skill.strip()))
+    try:
+        profile = await _db(
+            db.upsert_interviewer_profile,
+            org_id,
+            user_id,
+            job_title=req.job_title,
+            interview_skills=skills,
+            timezone_name=req.timezone,
+            weekly_capacity=req.weekly_capacity,
+            available_for_interviews=req.available_for_interviews,
+            updated_by=actor.user_id,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=_NOT_FOUND) from exc
+    audit.record_from_actor(
+        actor,
+        "organization.interview_profile_updated",
+        resource_type="org_membership",
+        resource_id=int(membership["id"]),
+        resource_org_id=org_id,
+        detail={"target_user_id": user_id, "skills_count": len(skills), "available": req.available_for_interviews},
+    )
+    return {"member": profile}
 
 
 @org_router.post("/{org_id}/members", status_code=201)

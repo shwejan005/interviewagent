@@ -5,6 +5,8 @@ from typing import Any
 
 
 Migration = Callable[[Any, bool], None]
+_SQLITE_INTEGER_DEFAULT_ZERO = "INTEGER NOT NULL DEFAULT 0"
+_TEXT_DEFAULT_TEXT = "TEXT NOT NULL DEFAULT 'TEXT'"
 
 
 def _existing_columns(cur, table: str, use_postgres: bool) -> set[str]:
@@ -52,7 +54,7 @@ def _migration_002_execution_metadata(cur, use_postgres: bool) -> None:
         "background_jobs",
         (
             ("tenant_key", "TEXT", "TEXT"),
-            ("cancellation_requested", "BOOLEAN NOT NULL DEFAULT FALSE", "INTEGER NOT NULL DEFAULT 0"),
+            ("cancellation_requested", "BOOLEAN NOT NULL DEFAULT FALSE", _SQLITE_INTEGER_DEFAULT_ZERO),
         ),
         use_postgres,
     )
@@ -192,6 +194,69 @@ def _migration_006_ai_interview_sequence(cur, use_postgres: bool) -> None:
     )
 
 
+def _migration_007_auth_version(cur, use_postgres: bool) -> None:
+    """Add a per-user JWT generation counter used to revoke sessions on reset."""
+    _add_columns(
+        cur,
+        "users",
+        (("auth_version", "INTEGER NOT NULL DEFAULT 0", _SQLITE_INTEGER_DEFAULT_ZERO),),
+        use_postgres,
+    )
+
+
+def _migration_008_interview_answer_drafts(cur, use_postgres: bool) -> None:
+    """Persist an unsubmitted candidate answer for refresh/network recovery."""
+    _add_columns(
+        cur,
+        "application_ai_interview_turns",
+        (
+            ("draft_answer_text", "TEXT NOT NULL DEFAULT ''", "TEXT NOT NULL DEFAULT ''"),
+            ("draft_updated_at", "TIMESTAMPTZ", "TEXT"),
+        ),
+        use_postgres,
+    )
+
+
+def _migration_009_interview_voice_source(cur, use_postgres: bool) -> None:
+    """Track whether an interview and each submitted turn used voice or text."""
+    _add_columns(
+        cur,
+        "application_ai_interviews",
+        (("modality", _TEXT_DEFAULT_TEXT, _TEXT_DEFAULT_TEXT),),
+        use_postgres,
+    )
+
+
+def _migration_010_interview_invitation_lifecycle(cur, use_postgres: bool) -> None:
+    """Persist an expiry window and invitation reminder/reinvite counts."""
+    _add_columns(
+        cur,
+        "application_ai_interviews",
+        (
+            ("invitation_expires_at", "TIMESTAMPTZ", "TEXT"),
+            ("invite_reminders_sent", "INTEGER NOT NULL DEFAULT 0", "INTEGER NOT NULL DEFAULT 0"),
+            ("reinvite_count", "INTEGER NOT NULL DEFAULT 0", "INTEGER NOT NULL DEFAULT 0"),
+        ),
+        use_postgres,
+    )
+    if use_postgres:
+        cur.execute(
+            "UPDATE application_ai_interviews SET invitation_expires_at = created_at + INTERVAL '7 days' "
+            "WHERE status = 'INTERVIEW_READY' AND invitation_expires_at IS NULL"
+        )
+    else:
+        cur.execute(
+            "UPDATE application_ai_interviews SET invitation_expires_at = datetime(created_at, '+7 days') "
+            "WHERE status = 'INTERVIEW_READY' AND invitation_expires_at IS NULL"
+        )
+    _add_columns(
+        cur,
+        "application_ai_interview_turns",
+        (("answer_source", _TEXT_DEFAULT_TEXT, _TEXT_DEFAULT_TEXT),),
+        use_postgres,
+    )
+
+
 MIGRATIONS: tuple[tuple[int, Migration], ...] = (
     (1, _migration_001_baseline),
     (2, _migration_002_execution_metadata),
@@ -199,6 +264,10 @@ MIGRATIONS: tuple[tuple[int, Migration], ...] = (
     (4, _migration_004_prep_workspace),
     (5, _migration_005_interview_configuration),
     (6, _migration_006_ai_interview_sequence),
+    (7, _migration_007_auth_version),
+    (8, _migration_008_interview_answer_drafts),
+    (9, _migration_009_interview_voice_source),
+    (10, _migration_010_interview_invitation_lifecycle),
 )
 
 

@@ -18,11 +18,26 @@ export type Actor = {
   email: string;
   full_name: string;
   is_platform_admin: boolean;
+  email_verified_at?: string | null;
+  email_verification_required?: boolean;
   impersonated_by?: number | null;
   active_org_id: number | null;
   active_role: string | null;
   capabilities: string[];
   memberships: Membership[];
+};
+
+export type UserNotification = {
+  id: number;
+  org_id: number | null;
+  application_id: number | null;
+  notification_type: string;
+  title: string;
+  body: string;
+  href: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  read_at: string | null;
 };
 
 export type WorkExperience = {
@@ -156,6 +171,7 @@ export type InterviewSettings = {
   technical_question_count: number;
   behavioral_question_count: number;
   max_followups_per_question: number;
+  invitation_window_days: number;
 };
 
 export type CriteriaDraft = Pick<CriteriaResponse, "competencies" | "custom_questions" | "pass_threshold" | "interview_settings">;
@@ -179,6 +195,34 @@ export type ApplicationReportResponse = {
   generated_at: string;
   interview_details: {
     source?: string;
+    requirements_coverage?: Array<{
+      key: string;
+      label: string;
+      kind: "COMPETENCY" | "MUST_HAVE" | "RESUME_CLAIM";
+      status: "DEMONSTRATED" | "PARTIAL" | "CLAIMED_ONLY" | "NOT_ASSESSED" | "GAP";
+      score: number | null;
+      weight: number;
+      evidence: string;
+      resume_evidence?: string;
+    }>;
+    resume_claims?: Array<{
+      claim: string;
+      status: "CONFIRMED_IN_INTERVIEW" | "NOT_PROBED" | "WORTH_FOLLOW_UP";
+      source?: string | null;
+      resume_evidence: string;
+      interview_evidence: string;
+    }>;
+    strengths?: Array<{ text: string; turn_sequence: number; evidence_quote: string }>;
+    concerns?: Array<{ text: string; turn_sequence: number; evidence_quote: string }>;
+    next_round_focus?: Array<{ requirement: string; status: string }>;
+    fit_nudge?: {
+      band: "STRONG_FIT" | "LIKELY_FIT" | "MIXED" | "UNLIKELY_FIT" | "INSUFFICIENT_EVIDENCE";
+      suggested_action: "PROMOTE" | "HOLD";
+      score_threshold: number;
+      evidence_coverage_percent: number;
+      summary: string;
+      calibration: string;
+    };
     screening?: {
       decision?: string;
       score?: number;
@@ -199,6 +243,7 @@ export type ApplicationReportResponse = {
         difficulty: number;
         question: string;
         answer: string | null;
+        answer_source?: "TEXT" | "VOICE";
         assessment: { score?: number; evidence_quote?: string; summary?: string; gaps?: string[] };
       }>;
     };
@@ -213,7 +258,10 @@ export type AIInterviewTurn = {
   competency_key: string;
   difficulty: number;
   question_text: string;
+  draft_answer_text?: string;
+  draft_updated_at?: string | null;
   answer_text: string | null;
+  answer_source?: "TEXT" | "VOICE";
   state: "ASKED" | "ANSWER_QUEUED" | "ASSESSED";
 };
 
@@ -224,7 +272,9 @@ export type CandidateAIInterview = {
   rubric_version: string;
   role_level: string;
   candidate_notice_version: string;
+  modality?: "TEXT" | "VOICE";
   consent_required: boolean;
+  invitation_expires_at?: string | null;
   current_question: AIInterviewTurn | null;
   turns: AIInterviewTurn[];
   message: string;
@@ -254,6 +304,7 @@ export type JobPosting = {
   screening_questions: ScreeningQuestion[];
   status: "DRAFT" | "PUBLISHED" | "CLOSED";
   auto_reject_enabled: boolean;
+  deleted_at?: string | null;
   org_name?: string;
   org_slug?: string;
   created_at: string;
@@ -267,13 +318,14 @@ export type Campaign = {
   org_id: number;
   name: string;
   description: string;
-  status: string;
+  status: "ACTIVE" | "CLOSED";
   department: string;
   hiring_manager: string;
   priority: CampaignPriority;
   target_hires: number | null;
   target_close_date: string | null;
   created_at: string;
+  deleted_at?: string | null;
   posting_count?: number;
   applicant_count?: number;
 };

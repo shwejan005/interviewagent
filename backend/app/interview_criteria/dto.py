@@ -11,6 +11,7 @@ class InterviewSettingsDTO(BaseModel):
     technical_question_count: int = Field(default=2, ge=1, le=5)
     behavioral_question_count: int = Field(default=2, ge=1, le=4)
     max_followups_per_question: int = Field(default=1, ge=0, le=2)
+    invitation_window_days: int = Field(default=7, ge=1, le=30)
 
 
 class CriterionDTO(BaseModel):

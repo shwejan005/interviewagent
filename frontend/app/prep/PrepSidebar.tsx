@@ -1,6 +1,7 @@
 "use client"
 
 import { BookOpen, ChevronDown, CircleCheck, FileCode2, History, ListChecks, LockKeyhole, Sparkles } from "lucide-react"
+import Link from "next/link"
 
 import {
   Sidebar,
@@ -50,13 +51,13 @@ export default function PrepSidebar({
           <SidebarGroupContent>
             <SidebarMenu>
               <SidebarMenuItem>
-                <SidebarMenuButton asChild isActive><a href="/prep"><BookOpen size={15} /> <span>Problem set</span></a></SidebarMenuButton>
+                <SidebarMenuButton asChild isActive><Link href="/prep"><BookOpen size={15} /> <span>Problem set</span></Link></SidebarMenuButton>
               </SidebarMenuItem>
               <SidebarMenuItem>
-                <SidebarMenuButton asChild><a href="/prep/roadmap"><Sparkles size={15} /> <span>Roadmap</span></a></SidebarMenuButton>
+                <SidebarMenuButton asChild><Link href="/prep/roadmap"><Sparkles size={15} /> <span>Roadmap</span></Link></SidebarMenuButton>
               </SidebarMenuItem>
               <SidebarMenuItem>
-                <SidebarMenuButton asChild><a href="/prep/dashboard"><History size={15} /> <span>Insights</span></a></SidebarMenuButton>
+                <SidebarMenuButton asChild><Link href="/prep/dashboard"><History size={15} /> <span>Insights</span></Link></SidebarMenuButton>
               </SidebarMenuItem>
             </SidebarMenu>
           </SidebarGroupContent>

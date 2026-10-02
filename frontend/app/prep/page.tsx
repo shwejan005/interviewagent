@@ -1,7 +1,7 @@
 "use client"
 
 import { Suspense, useEffect, useMemo, useState } from "react"
-import { useRouter, useSearchParams } from "next/navigation"
+import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import {
   ChevronRight,
   CircleCheck,
@@ -13,7 +13,9 @@ import {
 } from "lucide-react"
 
 import CodeEditor, { type EditorSettings } from "./CodeEditor"
+import { usePrepCatalog, type PrepCatalogProblem, type PrepCatalogTestCase, type PrepLanguageKey } from "./prep-catalog-context"
 import { useAuth } from "../../lib/auth-context"
+import { useActivePageRefresh } from "../../lib/use-active-page-refresh"
 import { api, ApiError } from "../../lib/api"
 import {
   SidebarTrigger,
@@ -22,26 +24,10 @@ import { notify } from "../../lib/toast"
 import EditorConsole from "./EditorConsole"
 import PrepHome, { type PrepDashboard } from "./PrepHome"
 
-type Topic = { id: number; slug: string; name: string; description: string; difficulty: string }
-type Problem = {
-  id: number
-  slug: string
-  title: string
-  prompt: string
-  difficulty: string
-  estimated_minutes: number
-  topic_name: string
-  topic_slug: string
-  expected_concepts: string[]
-  constraints: string[]
-  hint: string
-  starter_code: Partial<Record<LanguageKey, string>>
-  available_languages: LanguageKey[]
-  test_cases: TestCase[]
-}
+type Problem = PrepCatalogProblem
 type Roadmap = { id: number; title: string; target_role: string; nodes: Array<{ id: number; topic_name: string; status: string; position: number }> }
-type LanguageKey = "python" | "javascript" | "typescript" | "java" | "cpp"
-type TestCase = { id: number; title: string; input: Record<string, unknown>; expected_output: string; explanation: string; is_hidden: boolean; position: number }
+type LanguageKey = PrepLanguageKey
+type TestCase = PrepCatalogTestCase
 type Submission = { id: number; language: string; status: string; passed: boolean | number; passed_tests: number; total_tests: number; runtime_ms: number | null; memory_kb: number | null; created_at: string }
 type WorkspaceTab = "description" | "solutions" | "submissions"
 type ConsoleTab = "testcase" | "result"
@@ -80,10 +66,10 @@ function difficultyClass(difficulty: string) {
 
 function PrepPageContent() {
   const router = useRouter()
+  const pathname = usePathname()
   const searchParams = useSearchParams()
   const { actor, loading: authLoading } = useAuth()
-  const [topics, setTopics] = useState<Topic[]>([])
-  const [problems, setProblems] = useState<Problem[]>([])
+  const { topics, problems } = usePrepCatalog()
   const [dashboard, setDashboard] = useState<PrepDashboard | null>(null)
   const [selectedProblemId, setSelectedProblemId] = useState<number | null>(null)
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("description")
@@ -105,12 +91,13 @@ function PrepPageContent() {
   const selectedLanguage = LANGUAGES.find((entry) => entry.value === language) ?? LANGUAGES[0]
   const fileExtension = { python: "py", javascript: "js", typescript: "ts", java: "java", cpp: "cpp" }[language]
   useEffect(() => {
-    if (authLoading) return
+    if (pathname !== "/prep" || authLoading) return
     if (!actor) {
       router.push("/login?next=/prep")
       return
     }
     void load()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [actor, authLoading, router])
 
   useEffect(() => {
@@ -149,22 +136,22 @@ function PrepPageContent() {
       .catch((error) => notify.error(error instanceof ApiError ? error.detail : "Failed to load submission history."))
   }, [selectedProblem?.id, workspaceTab])
 
-  async function load() {
-    setLoading(true)
+  async function load(showLoading = true) {
+    if (showLoading) setLoading(true)
     try {
-      const [catalog, progress] = await Promise.all([
-        api.get<{ topics: Topic[]; problems: Problem[] }>("/prep/catalog"),
-        api.get<PrepDashboard>("/prep/me/dashboard"),
-      ])
-      setTopics(catalog.topics)
-      setProblems(catalog.problems)
-      setDashboard(progress)
+      setDashboard(await api.get<PrepDashboard>("/prep/me/dashboard"))
     } catch (error) {
       notify.error(error instanceof ApiError ? error.detail : "Failed to load preparation workspace.")
     } finally {
-      setLoading(false)
+      if (showLoading) setLoading(false)
     }
   }
+
+  useActivePageRefresh(
+    pathname === "/prep",
+    !authLoading && Boolean(actor),
+    () => load(false),
+  )
 
   function resetEditor() {
     if (!selectedProblem) return
@@ -188,7 +175,10 @@ function PrepPageContent() {
       })
       setResult(execution)
       setRunState(execution.status === "Accepted" ? "complete" : "error")
-      if (mode === "submit" && execution.status === "Accepted") notify.success("Solution accepted by the sandbox.")
+      if (mode === "submit" && execution.status === "Accepted") {
+        notify.success("Solution accepted by the sandbox.")
+        void api.get<PrepDashboard>("/prep/me/dashboard").then(setDashboard).catch(() => {})
+      }
     } catch (error) {
       const detail = error instanceof ApiError ? error.detail : "The sandbox could not run this submission."
       setResult({ language, status: "Unavailable", stdout: "", stderr: detail, compile_output: "", time: null, memory: null })

@@ -58,9 +58,11 @@ cd backend
 ../.venv/Scripts/python.exe -m uvicorn main:app --reload --port 8000
 ```
 
+generation, and interview-ready email notifications also require the durable
 The durable command API is available under `/v1` when a worker is running.
 Automatic application screening, interview-answer assessment, report
-generation, and interview-ready email notifications also require the durable
+generation, invitation reminders/expiry, recruiter report notifications,
+end-of-day digests, and human-interview notifications require the durable
 worker. Start it in a second backend terminal:
 
 ```powershell
@@ -68,11 +70,32 @@ cd backend
 ../.venv/Scripts/python.exe -m app.worker.job_worker
 ```
 
-The first application-linked candidate experience is text-only. Real-time
-voice, speech recognition, video, and a live-provider end-to-end smoke test
-are not implemented; a missing/unavailable provider leaves work queued for
-retry and then human review rather than turning the failure into a candidate
-rejection. Email is optional: the application tracker is the source of truth.
+Applications are screened automatically against recruiter-defined posting
+criteria. Candidates who pass see an AI interview invitation in `/interviews`
+with a Join action and expiry window. The AI interview presents questions as
+text and uses browser speech recognition for spoken answers, with live captions
+and a text accommodation path. The recruiter receives an evidence report and
+an advisory fit nudge; the human decision remains explicit. Speech recognition
+availability/retention depends on the candidate's browser and its provider; no
+audio recording is stored by Evalia.
+
+Scheduled human rounds use an in-app peer-to-peer WebRTC room at
+`/meeting/{interviewId}`. The FastAPI backend relays room signaling; audio/video
+media is exchanged directly between browsers. Configure
+`NEXT_PUBLIC_BACKEND_WS_URL` in the frontend deployment to the backend's
+WebSocket origin (for example `ws://127.0.0.1:8000` locally or `wss://...` in
+production). The development fallback uses the page hostname on port 8000.
+Without `TURN_URLS` and `TURN_SHARED_SECRET`, the room falls back to STUN only,
+so restrictive corporate firewalls/NATs may prevent a direct connection. For
+production, configure a coturn-compatible service with REST/HMAC authentication
+and set both backend-only variables in `.env` or a secret store. The API returns
+credentials bound to the user and room that expire after 10 minutes; never put
+the shared secret in a `NEXT_PUBLIC_*` variable. Signaling remains process-local,
+so multi-worker hosting needs sticky routing or a shared signaling service. The
+AI round is a single-candidate voice/text interview UI, not a LiveKit/SFU room;
+speech recognition runs in the candidate browser and model inference in the
+configured backend. Email is optional: in-app notifications and the interview
+agenda remain the source of truth.
 
 The legacy interview routes remain available for compatibility. New clients
 that need process-loss recovery should use `POST /v1/evaluations`,
@@ -103,25 +126,26 @@ Open `http://localhost:3000`. The dev server proxies `/api/*` to
 `http://127.0.0.1:8000` by default (override with the `BACKEND_URL`
 environment variable — see `next.config.js`).
 
+`npm run dev` uses Turbopack for fast incremental route compilation.
+Next.js 14.2 still labels Turbopack as beta; if Fast Refresh becomes
+unreliable on a particular machine, compare the stable Webpack server with
+`npm run dev:webpack`. Stop and restart the dev process after changing modes.
+Playwright uses a separate `.next-playwright` output directory so its server
+on port 3100 cannot overwrite the live dev server's `.next` files. Avoid
+running two Next dev servers against the same output directory.
+
 Candidate preparation is available at `/prep`. It currently provides a
 curated text-first topic/problem catalog, deterministic roadmaps, progress,
 and unverified practice submissions. It does not execute submitted code.
 
-### Known environment issue: `next build` and Google Fonts
+### Production build and performance checks
 
-`app/layout.tsx` uses `next/font/google`, which fetches font files from
-`fonts.googleapis.com` **at build time**. In a network-restricted
-environment (e.g. a sandboxed CI runner or an offline machine), `npm run
-build` will hang/fail with `ECONNRESET` retrying that fetch indefinitely.
-This is an environment limitation, not a code defect. Two ways to make
-progress without full internet access:
-
-- Type-check only: `npm run typecheck` (added in this documentation pass —
-  runs `tsc --noEmit`, no network required).
-- If you must run `next build` without reliable access to Google Fonts,
-  switch `app/layout.tsx` to a locally-bundled font or `next/font/local`.
-  This has not been done in this repository (out of scope for this
-  documentation pass — see [GAP_ANALYSIS.md](GAP_ANALYSIS.md)).
+The current `app/layout.tsx` uses the system font stack from
+`app/globals.css`; it does not import `next/font/google` or fetch Google Fonts
+at build time. The earlier Google Fonts warning was stale and has been
+removed. Development mode compiles routes on demand and is not a production
+performance measurement. To check production behavior, run `npm run build`
+and then `npm run start`; set `BACKEND_URL` to the backend you intend to use.
 
 ### `npx tsc` gotcha
 

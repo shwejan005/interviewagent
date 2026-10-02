@@ -41,7 +41,8 @@ function prefillSummary(unanswered: number): string {
   return `${unanswered} questions need an answer.`;
 }
 
-function applyLabel(applying: boolean, signedIn: boolean): string {
+function applyLabel(applying: boolean, signedIn: boolean, authLoading: boolean): string {
+  if (authLoading) return "Checking account...";
   if (applying) return "Submitting...";
   if (signedIn) return "Submit application";
   return "Log in to apply";
@@ -58,41 +59,67 @@ export default function JobDetailPage() {
   const [form, setForm] = useState<ApplicationForm | null>(null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
+  const [formLoading, setFormLoading] = useState(false);
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [applied, setApplied] = useState(false);
 
   useEffect(() => {
-    void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [postingId, actor]);
-
-  const load = async () => {
+    let cancelled = false;
     setLoading(true);
     setError(null);
-    try {
-      const postingData = await api.get<JobPosting>(`/jobs/${postingId}`);
-      setPosting(postingData);
-
-      if (actor) {
-        try {
-          const formData = await api.get<ApplicationForm>(`/jobs/${postingId}/application-form`);
-          setForm(formData);
-          const prefilled: Record<string, string> = {};
-          formData.questions.forEach((q) => {
-            if (q.prefilled_answer) prefilled[q.key] = q.prefilled_answer;
-          });
-          setAnswers(prefilled);
-        } catch {
-          // Application form is best-effort; posting details still render without it.
+    void api.get<JobPosting>(`/jobs/${postingId}`)
+      .then((postingData) => {
+        if (!cancelled) setPosting(postingData);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setError(err instanceof ApiError ? err.detail : "This job posting could not be found.");
         }
-      }
-    } catch (err) {
-      setError(err instanceof ApiError ? err.detail : "This job posting could not be found.");
-    } finally {
-      setLoading(false);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [postingId]);
+
+  useEffect(() => {
+    if (authLoading) return;
+    if (!actor) {
+      setForm(null);
+      setAnswers({});
+      setFormLoading(false);
+      return;
     }
-  };
+
+    let cancelled = false;
+    setForm(null);
+    setAnswers({});
+    setFormLoading(true);
+    void api.get<ApplicationForm>(`/jobs/${postingId}/application-form`)
+      .then((formData) => {
+        if (cancelled) return;
+        setForm(formData);
+        const prefilled: Record<string, string> = {};
+        formData.questions.forEach((question) => {
+          if (question.prefilled_answer) prefilled[question.key] = question.prefilled_answer;
+        });
+        setAnswers(prefilled);
+      })
+      .catch(() => {
+        // Application form is best-effort; posting details still render without it.
+      })
+      .finally(() => {
+        if (!cancelled) setFormLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [actor, authLoading, postingId]);
 
   const handleApply = async () => {
     if (!actor) {
@@ -122,7 +149,7 @@ export default function JobDetailPage() {
     }
   };
 
-  if (loading || authLoading) {
+  if (loading) {
     return (
       <div className="min-h-screen">
         <Navbar />
@@ -207,7 +234,7 @@ export default function JobDetailPage() {
           <GlassCard elevation="high" padding="lg" className="mt-6">
             <p className="eyebrow">APPLY</p>
 
-            {!actor && (
+            {!authLoading && !actor && (
               <p className="mt-4 text-[13px] text-ink-muted">
                 <Link href={`/login?next=/jobs/${postingId}`} className="text-brand hover:underline">
                   Log in
@@ -228,7 +255,7 @@ export default function JobDetailPage() {
               </div>
             )}
 
-            {actor && !form && !error && (
+            {actor && formLoading && (
               <p className="mt-4 text-[12px] text-ink-subtle">Loading application requirements…</p>
             )}
 
@@ -256,8 +283,8 @@ export default function JobDetailPage() {
               <p className="mt-5 text-[13px] text-[var(--color-error)]">{error}</p>
             )}
 
-            <Button className="mt-6" size="lg" onClick={handleApply} loading={applying} disabled={actor ? !form?.profile_complete : false}>
-              {applyLabel(applying, Boolean(actor))}
+            <Button className="mt-6" size="lg" onClick={handleApply} loading={applying || authLoading} disabled={authLoading || (actor ? !form?.profile_complete : false)}>
+              {applyLabel(applying, Boolean(actor), authLoading)}
             </Button>
           </GlassCard>
         )}

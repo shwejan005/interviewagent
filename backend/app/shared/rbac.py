@@ -113,6 +113,7 @@ _RECRUITER_CAPABILITIES = frozenset(
         Capability.APPLICATION_ADVANCE,
         Capability.APPLICATION_REJECT,
         Capability.INTERVIEW_SCHEDULE,
+        Capability.INTERVIEW_CONDUCT,
         Capability.INTERVIEW_READ_ASSIGNED,
         Capability.CANDIDATE_SEARCH,
         Capability.CANDIDATE_REFER,

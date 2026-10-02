@@ -19,23 +19,33 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 
 logger = logging.getLogger(__name__)
+_SQLITE_BEGIN_IMMEDIATE = "BEGIN IMMEDIATE"
 
 _DB_USER_ID: ContextVar[Optional[int]] = ContextVar("evalia_db_user_id", default=None)
 _DB_ORG_ID: ContextVar[Optional[int]] = ContextVar("evalia_db_org_id", default=None)
 _DB_PLATFORM_ADMIN: ContextVar[bool] = ContextVar("evalia_db_platform_admin", default=False)
+_DB_WORKER_CONTEXT: ContextVar[bool] = ContextVar("evalia_db_worker_context", default=False)
 
 
-def set_request_db_context(*, user_id: Optional[int], org_id: Optional[int], is_platform_admin: bool = False) -> None:
+def set_request_db_context(
+    *,
+    user_id: Optional[int],
+    org_id: Optional[int],
+    is_platform_admin: bool = False,
+    is_worker: bool = False,
+) -> None:
     """Set transaction-local RLS context for connections opened in this request/task."""
     _DB_USER_ID.set(user_id)
     _DB_ORG_ID.set(org_id)
     _DB_PLATFORM_ADMIN.set(bool(is_platform_admin))
+    _DB_WORKER_CONTEXT.set(bool(is_worker))
 
 
 def clear_request_db_context() -> None:
     _DB_USER_ID.set(None)
     _DB_ORG_ID.set(None)
     _DB_PLATFORM_ADMIN.set(False)
+    _DB_WORKER_CONTEXT.set(False)
 
 # ── Dialect detection ────────────────────────────────────────────────
 
@@ -115,11 +125,13 @@ def _get_conn():
             cur.execute(
                 "SELECT set_config('evalia.current_user_id', %s, true), "
                 "set_config('evalia.current_org_id', %s, true), "
-                "set_config('evalia.is_platform_admin', %s, true)",
+                "set_config('evalia.is_platform_admin', %s, true), "
+                "set_config('evalia.is_worker', %s, true)",
                 (
                     str(_DB_USER_ID.get() or ""),
                     str(_DB_ORG_ID.get() or ""),
                     "true" if _DB_PLATFORM_ADMIN.get() else "false",
+                    "true" if _DB_WORKER_CONTEXT.get() else "false",
                 ),
             )
             yield conn, cur
@@ -385,11 +397,24 @@ CREATE TABLE IF NOT EXISTS users (
     is_platform_admin BOOLEAN NOT NULL DEFAULT FALSE,
     status TEXT NOT NULL DEFAULT 'ACTIVE',
     email_verified_at TIMESTAMPTZ,
+    auth_version INTEGER NOT NULL DEFAULT 0,
     last_login_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     deleted_at TIMESTAMPTZ
 );
+
+CREATE TABLE IF NOT EXISTS account_action_tokens (
+    id BIGSERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    purpose TEXT NOT NULL CHECK (purpose IN ('EMAIL_VERIFY', 'PASSWORD_RESET')),
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at TIMESTAMPTZ NOT NULL,
+    consumed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_account_action_tokens_user_purpose
+    ON account_action_tokens(user_id, purpose, created_at);
 
 CREATE TABLE IF NOT EXISTS roles (
     id SERIAL PRIMARY KEY,
@@ -481,11 +506,24 @@ CREATE TABLE IF NOT EXISTS users (
     is_platform_admin INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'ACTIVE',
     email_verified_at TEXT,
+    auth_version INTEGER NOT NULL DEFAULT 0,
     last_login_at TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     deleted_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS account_action_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    purpose TEXT NOT NULL CHECK (purpose IN ('EMAIL_VERIFY', 'PASSWORD_RESET')),
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at TEXT NOT NULL,
+    consumed_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_account_action_tokens_user_purpose
+    ON account_action_tokens(user_id, purpose, created_at);
 
 CREATE TABLE IF NOT EXISTS roles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -685,6 +723,7 @@ def init_db() -> None:
         ai_interview_schema,
         interview_criteria_schema,
         migrations,
+        notifications_schema,
         prep_schema,
         resume_schema,
         review_schema,
@@ -703,6 +742,7 @@ def init_db() -> None:
             cur.execute(review_schema.SCHEMA_PG)
             cur.execute(resume_schema.SCHEMA_PG)
             cur.execute(interview_criteria_schema.SCHEMA_PG)
+            cur.execute(notifications_schema.SCHEMA_PG)
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS schema_migrations ("
                 "version INTEGER PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)"
@@ -726,6 +766,7 @@ def init_db() -> None:
             conn.executescript(review_schema.SCHEMA_SQLITE)
             conn.executescript(resume_schema.SCHEMA_SQLITE)
             conn.executescript(interview_criteria_schema.SCHEMA_SQLITE)
+            conn.executescript(notifications_schema.SCHEMA_SQLITE)
             cur = conn.cursor()
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS schema_migrations ("
@@ -757,6 +798,7 @@ def enqueue_job(
     max_attempts: int = 3,
     idempotency_key: Optional[str] = None,
     tenant_key: Optional[str] = None,
+    delay_seconds: float = 0,
 ) -> int:
     """Persist a job and return its ID.
 
@@ -768,6 +810,8 @@ def enqueue_job(
         raise ValueError("job_type cannot be empty")
     if max_attempts < 1:
         raise ValueError("max_attempts must be at least 1")
+    if delay_seconds < 0:
+        raise ValueError("delay_seconds cannot be negative")
 
     p = _ph()
     serialized_payload = json.dumps(payload, separators=(",", ":"))
@@ -775,11 +819,11 @@ def enqueue_job(
         if USE_POSTGRES:
             cur.execute(
                 f"""INSERT INTO background_jobs
-                    (job_type, payload, max_attempts, idempotency_key, tenant_key)
-                    VALUES ({p}, {p}, {p}, {p}, {p})
+                    (job_type, payload, max_attempts, idempotency_key, tenant_key, available_at)
+                    VALUES ({p}, {p}, {p}, {p}, {p}, CURRENT_TIMESTAMP + ({p} * INTERVAL '1 second'))
                     ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
                     DO NOTHING RETURNING id""",
-                (job_type.strip(), serialized_payload, max_attempts, idempotency_key, tenant_key),
+                (job_type.strip(), serialized_payload, max_attempts, idempotency_key, tenant_key, delay_seconds),
             )
             row = cur.fetchone()
             if row is not None:
@@ -788,9 +832,9 @@ def enqueue_job(
             try:
                 cur.execute(
                     f"""INSERT INTO background_jobs
-                        (job_type, payload, max_attempts, idempotency_key, tenant_key)
-                        VALUES ({p}, {p}, {p}, {p}, {p})""",
-                    (job_type.strip(), serialized_payload, max_attempts, idempotency_key, tenant_key),
+                        (job_type, payload, max_attempts, idempotency_key, tenant_key, available_at)
+                        VALUES ({p}, {p}, {p}, {p}, {p}, datetime('now', {p}))""",
+                    (job_type.strip(), serialized_payload, max_attempts, idempotency_key, tenant_key, f"+{delay_seconds} seconds"),
                 )
                 return int(cur.lastrowid)
             except _IntegrityError:
@@ -869,7 +913,7 @@ def claim_job(job_id: int, worker_id: str, *, lease_seconds: int = 300) -> Optio
             )
             row = _row_to_dict(cur.fetchone())
         else:
-            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(_SQLITE_BEGIN_IMMEDIATE)
             stale_after = f"-{lease_seconds} seconds"
             cur.execute(
                 f"""UPDATE background_jobs
@@ -942,7 +986,7 @@ def claim_next_job(worker_id: str, *, lease_seconds: int = 300) -> Optional[dict
             )
             row = _row_to_dict(cur.fetchone())
         else:
-            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(_SQLITE_BEGIN_IMMEDIATE)
             stale_after = f"-{lease_seconds} seconds"
             cur.execute(
                 f"""UPDATE background_jobs
@@ -1571,7 +1615,7 @@ def normalize_email(email: str) -> str:
 
 _USER_PUBLIC_COLUMNS = (
     "id, email, full_name, is_platform_admin, status, "
-    "email_verified_at, last_login_at, created_at, updated_at"
+    "email_verified_at, auth_version, last_login_at, created_at, updated_at"
 )
 
 
@@ -1605,6 +1649,158 @@ def create_user(
             return cur.lastrowid
     except _IntegrityError as exc:
         raise DuplicateEmailError(f"An account already exists for {email}.") from exc
+
+
+def mark_user_email_verified(user_id: int) -> bool:
+    """Mark an active user verified without overwriting the original timestamp."""
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"UPDATE users SET email_verified_at = COALESCE(email_verified_at, {_now_sql()}), "
+            f"updated_at = {_now_sql()} WHERE id = {p} AND status = 'ACTIVE' AND deleted_at IS NULL",
+            (user_id,),
+        )
+        return cur.rowcount == 1
+
+
+def get_account_recovery_user(email: str) -> Optional[dict]:
+    """Return only the fields needed for verification/reset delivery."""
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"SELECT id, email, email_verified_at, status FROM users "
+            f"WHERE email_normalized = {p} AND status = 'ACTIVE' AND deleted_at IS NULL",
+            (normalize_email(email),),
+        )
+        return _row_to_dict(cur.fetchone())
+
+
+def create_account_token(
+    user_id: int,
+    purpose: str,
+    token_hash: str,
+    expires_at: str,
+    *,
+    hourly_limit: int = 5,
+) -> bool:
+    """Persist a one-time account token hash, with per-account issue throttling."""
+    if purpose not in {"EMAIL_VERIFY", "PASSWORD_RESET"}:
+        raise ValueError("Unsupported account token purpose")
+    if not token_hash or hourly_limit < 1:
+        raise ValueError("Invalid account token parameters")
+
+    p = _ph()
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    recent_cutoff = (now - timedelta(hours=1)).isoformat()
+    with _get_conn() as (conn, cur):
+        if not USE_POSTGRES:
+            conn.execute(_SQLITE_BEGIN_IMMEDIATE)
+        lock = " FOR UPDATE" if USE_POSTGRES else ""
+        cur.execute(f"SELECT id FROM users WHERE id = {p} AND status = 'ACTIVE' AND deleted_at IS NULL{lock}", (user_id,))
+        if cur.fetchone() is None:
+            return False
+
+        if USE_POSTGRES:
+            cur.execute(
+                f"SELECT COUNT(*) AS token_count FROM account_action_tokens "
+                f"WHERE user_id = {p} AND purpose = {p} AND created_at > {p}",
+                (user_id, purpose, recent_cutoff),
+            )
+        else:
+            cur.execute(
+                f"SELECT COUNT(*) AS token_count FROM account_action_tokens "
+                f"WHERE user_id = {p} AND purpose = {p} AND datetime(created_at) > datetime({p})",
+                (user_id, purpose, recent_cutoff),
+            )
+        if int(cur.fetchone()["token_count"]) >= hourly_limit:
+            return False
+
+        cur.execute(
+            f"UPDATE account_action_tokens SET consumed_at = {_now_sql()} "
+            f"WHERE user_id = {p} AND purpose = {p} AND consumed_at IS NULL",
+            (user_id, purpose),
+        )
+        if USE_POSTGRES:
+            cur.execute(
+                f"DELETE FROM account_action_tokens WHERE expires_at <= {p} AND user_id = {p}",
+                (now_iso, user_id),
+            )
+        else:
+            cur.execute(
+                f"DELETE FROM account_action_tokens WHERE datetime(expires_at) <= datetime({p}) AND user_id = {p}",
+                (now_iso, user_id),
+            )
+        cur.execute(
+            f"INSERT INTO account_action_tokens (user_id, purpose, token_hash, expires_at) "
+            f"VALUES ({p}, {p}, {p}, {p})",
+            (user_id, purpose, token_hash, expires_at),
+        )
+        return True
+
+
+def consume_account_token(token_hash: str, purpose: str, *, password_hash: Optional[str] = None) -> Optional[int]:
+    """Consume a valid token once and atomically apply its account action."""
+    if purpose not in {"EMAIL_VERIFY", "PASSWORD_RESET"}:
+        raise ValueError("Unsupported account token purpose")
+    if purpose == "PASSWORD_RESET" and not password_hash:
+        raise ValueError("A password hash is required for password reset")
+
+    p = _ph()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with _get_conn() as (conn, cur):
+        if not USE_POSTGRES:
+            conn.execute(_SQLITE_BEGIN_IMMEDIATE)
+        lock = " FOR UPDATE" if USE_POSTGRES else ""
+        if USE_POSTGRES:
+            cur.execute(
+                f"SELECT id, user_id FROM account_action_tokens "
+                f"WHERE token_hash = {p} AND purpose = {p} AND consumed_at IS NULL "
+                f"AND expires_at > {p}{lock}",
+                (token_hash, purpose, now_iso),
+            )
+        else:
+            cur.execute(
+                f"SELECT id, user_id FROM account_action_tokens "
+                f"WHERE token_hash = {p} AND purpose = {p} AND consumed_at IS NULL "
+                f"AND datetime(expires_at) > datetime({p})",
+                (token_hash, purpose, now_iso),
+            )
+        token = cur.fetchone()
+        if token is None:
+            return None
+
+        token_id = int(token["id"])
+        user_id = int(token["user_id"])
+        cur.execute(
+            f"UPDATE account_action_tokens SET consumed_at = {_now_sql()} "
+            f"WHERE id = {p} AND consumed_at IS NULL",
+            (token_id,),
+        )
+        if cur.rowcount != 1:
+            return None
+
+        if purpose == "EMAIL_VERIFY":
+            cur.execute(
+                f"UPDATE users SET email_verified_at = COALESCE(email_verified_at, {_now_sql()}), "
+                f"updated_at = {_now_sql()} WHERE id = {p} AND status = 'ACTIVE' AND deleted_at IS NULL",
+                (user_id,),
+            )
+        else:
+            cur.execute(
+                f"UPDATE users SET password_hash = {p}, auth_version = auth_version + 1, "
+                f"updated_at = {_now_sql()} WHERE id = {p} AND status = 'ACTIVE' AND deleted_at IS NULL",
+                (password_hash, user_id),
+            )
+        if cur.rowcount != 1:
+            return None
+
+        cur.execute(
+            f"UPDATE account_action_tokens SET consumed_at = COALESCE(consumed_at, {_now_sql()}) "
+            f"WHERE user_id = {p} AND purpose = {p} AND consumed_at IS NULL",
+            (user_id, purpose),
+        )
+        return user_id
 
 
 def get_user_by_email(email: str) -> Optional[dict]:
@@ -1649,6 +1845,21 @@ def export_user_data(user_id: int) -> dict:
         )
         applications = [_row_to_dict(row) for row in cur.fetchall()]
         cur.execute(
+            f"SELECT id, application_id, attempt_no, rubric_version, status, phase, modality, "
+            f"invitation_expires_at, consent_version, consent_at, created_at, updated_at, started_at, completed_at "
+            f"FROM application_ai_interviews WHERE candidate_user_id = {p} ORDER BY application_id, attempt_no",
+            (user_id,),
+        )
+        ai_interviews = [_row_to_dict(row) for row in cur.fetchall()]
+        for ai_interview in ai_interviews:
+            cur.execute(
+                f"SELECT sequence_no, phase, question_type, competency_key, difficulty, question_text, "
+                f"draft_answer_text, draft_updated_at, answer_text, answer_source, state, created_at, answered_at "
+                f"FROM application_ai_interview_turns WHERE interview_id = {p} ORDER BY sequence_no",
+                (ai_interview["id"],),
+            )
+            ai_interview["turns"] = [_row_to_dict(row) for row in cur.fetchall()]
+        cur.execute(
             f"SELECT i.id, i.org_id, i.application_id, i.title, i.scheduled_start, "
             f"i.scheduled_end, i.timezone, i.meeting_url, i.status "
             f"FROM interviews i JOIN interview_participants ip ON ip.interview_id = i.id "
@@ -1661,6 +1872,12 @@ def export_user_data(user_id: int) -> dict:
             (user_id,),
         )
         evaluations = [_row_to_dict(row) for row in cur.fetchall()]
+        cur.execute(
+            f"SELECT id, org_id, application_id, notification_type, title, body, href, "
+            f"metadata_json, created_at, read_at FROM user_notifications WHERE user_id = {p}",
+            (user_id,),
+        )
+        notifications = [_row_to_dict(row) for row in cur.fetchall()]
 
     profile = candidate_db.get_full_profile(user_id)
     return {
@@ -1669,8 +1886,10 @@ def export_user_data(user_id: int) -> dict:
         "profile": profile,
         "memberships": memberships,
         "applications": applications,
+        "ai_interviews": ai_interviews,
         "interviews": interviews,
         "evaluations": evaluations,
+        "notifications": notifications,
     }
 
 
@@ -1689,10 +1908,17 @@ def active_owner_memberships(user_id: int) -> list[dict]:
 
 def anonymize_user_data(user_id: int) -> None:
     """Remove candidate-owned data while retaining audit and referential history."""
+    from app.ai_interview.repository import cancel_for_account_deletion
+
     p = _ph()
     deleted_email = f"deleted-{user_id}@invalid.local"
     with _get_conn() as (conn, cur):
+        cur.execute(f"SELECT id FROM applications WHERE candidate_user_id = {p}", (user_id,))
+        for application in cur.fetchall():
+            cancel_for_account_deletion(cur, int(application["id"]))
         statements = [
+            ("DELETE FROM account_action_tokens WHERE user_id = {p}", (user_id,)),
+            ("DELETE FROM user_notifications WHERE user_id = {p}", (user_id,)),
             ("DELETE FROM prep_xp_events WHERE user_id = {p}", (user_id,)),
             ("DELETE FROM prep_submissions WHERE user_id = {p}", (user_id,)),
             ("DELETE FROM prep_roadmap_nodes WHERE roadmap_id IN (SELECT id FROM prep_roadmaps WHERE user_id = {p})", (user_id,)),
@@ -1852,21 +2078,84 @@ def list_memberships(user_id: int) -> list[dict]:
 
 
 def list_org_members(org_id: int) -> list[dict]:
-    """All active members of an organization."""
+    """All active members plus interview availability/profile metadata."""
     p = _ph()
+    schedule_window = (
+        "i2.scheduled_start >= CURRENT_TIMESTAMP AND i2.scheduled_start < CURRENT_TIMESTAMP + INTERVAL '7 days'"
+        if USE_POSTGRES
+        else "datetime(i2.scheduled_start) >= datetime('now') AND datetime(i2.scheduled_start) < datetime('now', '+7 days')"
+    )
     with _get_conn() as (conn, cur):
         cur.execute(
             f"SELECT m.id, m.user_id, m.status, r.name AS role_name, "
-            f"u.email, u.full_name "
+            f"u.email, u.full_name, ip.job_title, ip.interview_skills_json, ip.timezone AS interview_timezone, "
+            f"ip.weekly_capacity, ip.available_for_interviews, "
+            f"(SELECT COUNT(DISTINCT i2.id) FROM interview_participants ip2 JOIN interviews i2 ON i2.id = ip2.interview_id "
+            f"WHERE ip2.user_id = m.user_id AND i2.org_id = m.org_id AND ip2.participant_role = 'INTERVIEWER' "
+            f"AND i2.status = 'SCHEDULED' AND {schedule_window}) AS scheduled_this_week "
             f"FROM org_memberships m "
             f"JOIN roles r ON r.id = m.role_id "
             f"JOIN users u ON u.id = m.user_id "
+            f"LEFT JOIN interviewer_profiles ip ON ip.org_id = m.org_id AND ip.user_id = m.user_id "
             f"WHERE m.org_id = {p} AND m.deleted_at IS NULL "
             f"AND m.status = 'ACTIVE' AND u.deleted_at IS NULL "
             f"ORDER BY u.full_name, u.email",
             (org_id,),
         )
-        return [_row_to_dict(r) for r in cur.fetchall()]
+        members = [_row_to_dict(r) for r in cur.fetchall()]
+    for member in members:
+        member["interview_skills"] = json.loads(member.pop("interview_skills_json", None) or "[]")
+        member["interview_timezone"] = member.get("interview_timezone") or "UTC"
+        member["weekly_capacity"] = member.get("weekly_capacity") if member.get("weekly_capacity") is not None else 5
+        available = member.get("available_for_interviews")
+        member["available_for_interviews"] = True if available is None else bool(available)
+        member["scheduled_this_week"] = int(member.get("scheduled_this_week") or 0)
+    return members
+
+
+def upsert_interviewer_profile(
+    org_id: int,
+    user_id: int,
+    *,
+    job_title: str,
+    interview_skills: list[str],
+    timezone_name: str,
+    weekly_capacity: int,
+    available_for_interviews: bool,
+    updated_by: int,
+) -> dict:
+    p = _ph()
+    fields = (
+        org_id, user_id, job_title.strip(), json.dumps(interview_skills, ensure_ascii=False),
+        timezone_name, weekly_capacity, (available_for_interviews if USE_POSTGRES else int(available_for_interviews)), updated_by,
+    )
+    with _get_conn() as (conn, cur):
+        if USE_POSTGRES:
+            cur.execute(
+                f"INSERT INTO interviewer_profiles "
+                f"(org_id, user_id, job_title, interview_skills_json, timezone, weekly_capacity, "
+                f"available_for_interviews, updated_by) VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}) "
+                f"ON CONFLICT (org_id, user_id) DO UPDATE SET job_title = EXCLUDED.job_title, "
+                f"interview_skills_json = EXCLUDED.interview_skills_json, timezone = EXCLUDED.timezone, "
+                f"weekly_capacity = EXCLUDED.weekly_capacity, available_for_interviews = EXCLUDED.available_for_interviews, "
+                f"updated_by = EXCLUDED.updated_by, updated_at = CURRENT_TIMESTAMP",
+                fields,
+            )
+        else:
+            cur.execute(
+                f"INSERT INTO interviewer_profiles "
+                f"(org_id, user_id, job_title, interview_skills_json, timezone, weekly_capacity, "
+                f"available_for_interviews, updated_by) VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}) "
+                f"ON CONFLICT (org_id, user_id) DO UPDATE SET job_title = excluded.job_title, "
+                f"interview_skills_json = excluded.interview_skills_json, timezone = excluded.timezone, "
+                f"weekly_capacity = excluded.weekly_capacity, available_for_interviews = excluded.available_for_interviews, "
+                f"updated_by = excluded.updated_by, updated_at = datetime('now')",
+                fields,
+            )
+    refreshed = next((member for member in list_org_members(org_id) if int(member["user_id"]) == user_id), None)
+    if refreshed is None:
+        raise LookupError("Organization member not found.")
+    return refreshed
 
 
 def create_invitation(
@@ -1956,7 +2245,7 @@ def accept_invitation(token: str, user_id: int) -> dict:
     now = datetime.now(timezone.utc)
     with _get_conn() as (conn, cur):
         if not USE_POSTGRES:
-            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(_SQLITE_BEGIN_IMMEDIATE)
         lock_suffix = " FOR UPDATE" if USE_POSTGRES else ""
         cur.execute(
             f"SELECT i.*, r.name AS role_name FROM invitations i "

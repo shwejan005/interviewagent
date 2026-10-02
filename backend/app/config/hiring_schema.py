@@ -217,6 +217,20 @@ CREATE TABLE IF NOT EXISTS campaign_members (
     UNIQUE (campaign_id, user_id)
 );
 
+CREATE TABLE IF NOT EXISTS interviewer_profiles (
+    org_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    job_title TEXT NOT NULL DEFAULT '',
+    interview_skills_json TEXT NOT NULL DEFAULT '[]',
+    timezone TEXT NOT NULL DEFAULT 'UTC',
+    weekly_capacity INTEGER NOT NULL DEFAULT 5,
+    available_for_interviews BOOLEAN NOT NULL DEFAULT TRUE,
+    updated_by INTEGER REFERENCES users(id),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (org_id, user_id),
+    CHECK (weekly_capacity BETWEEN 0 AND 40)
+);
+
 CREATE TABLE IF NOT EXISTS job_postings (
     id SERIAL PRIMARY KEY,
     org_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
@@ -310,6 +324,20 @@ CREATE TABLE IF NOT EXISTS interview_participants (
     UNIQUE (interview_id, user_id)
 );
 
+CREATE TABLE IF NOT EXISTS interview_scorecards (
+    id SERIAL PRIMARY KEY,
+    org_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    interview_id INTEGER NOT NULL REFERENCES interviews(id) ON DELETE CASCADE,
+    interviewer_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    ratings_json TEXT NOT NULL DEFAULT '[]',
+    recommendation TEXT NOT NULL DEFAULT 'ADVANCE',
+    notes TEXT NOT NULL DEFAULT '',
+    submitted_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (interview_id, interviewer_user_id),
+    CHECK (recommendation IN ('ADVANCE', 'HOLD'))
+);
+CREATE INDEX IF NOT EXISTS idx_interview_scorecards_org ON interview_scorecards(org_id, submitted_at);
+
 CREATE TABLE IF NOT EXISTS referrals (
     id SERIAL PRIMARY KEY,
     org_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
@@ -373,6 +401,19 @@ CREATE TABLE IF NOT EXISTS campaign_members (
     member_role TEXT NOT NULL DEFAULT 'RECRUITER',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (campaign_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS interviewer_profiles (
+    org_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    job_title TEXT NOT NULL DEFAULT '',
+    interview_skills_json TEXT NOT NULL DEFAULT '[]',
+    timezone TEXT NOT NULL DEFAULT 'UTC',
+    weekly_capacity INTEGER NOT NULL DEFAULT 5 CHECK (weekly_capacity BETWEEN 0 AND 40),
+    available_for_interviews INTEGER NOT NULL DEFAULT 1,
+    updated_by INTEGER REFERENCES users(id),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (org_id, user_id)
 );
 
 CREATE TABLE IF NOT EXISTS job_postings (
@@ -462,6 +503,19 @@ CREATE TABLE IF NOT EXISTS interview_participants (
     participant_role TEXT NOT NULL,
     UNIQUE (interview_id, user_id)
 );
+
+CREATE TABLE IF NOT EXISTS interview_scorecards (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    interview_id INTEGER NOT NULL REFERENCES interviews(id) ON DELETE CASCADE,
+    interviewer_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    ratings_json TEXT NOT NULL DEFAULT '[]',
+    recommendation TEXT NOT NULL DEFAULT 'ADVANCE' CHECK (recommendation IN ('ADVANCE', 'HOLD')),
+    notes TEXT NOT NULL DEFAULT '',
+    submitted_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (interview_id, interviewer_user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_interview_scorecards_org ON interview_scorecards(org_id, submitted_at);
 
 CREATE TABLE IF NOT EXISTS referrals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

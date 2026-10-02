@@ -33,6 +33,7 @@ materially change behavior:
 | `CORS_ORIGINS` | Comma-separated allowlist. Defaults to `localhost:3000`/`127.0.0.1:3000` only. |
 | `APP_ENV` | `production` enables extra startup warnings (SQLite fallback, missing `GEMINI_API_KEY`, insecure CORS) — added this pass. Does not change any other runtime behavior (it does not, for example, disable API docs or change log verbosity). |
 | `RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS` | Basic in-memory per-IP rate limiting — added this pass. `RATE_LIMIT_REQUESTS=0` disables it. See [SECURITY.md](SECURITY.md) for scope/limits. |
+| `TURN_URLS` / `TURN_SHARED_SECRET` | Optional human-call relay. Configure a coturn REST/HMAC relay; the API returns short-lived credentials and never returns the shared secret. |
 
 ## What's missing before a real production deployment
 
@@ -48,9 +49,11 @@ This list is deliberately blunt — it is the honest complement to
 2. **Local containerization exists; cloud deployment does not** —
    `backend/Dockerfile` and the compose backend service are present, but the
    image has not been published or deployed to a cloud target.
-3. **No production-grade database validation** — the automated test suite
-   runs against SQLite only; PostgreSQL concurrency/contract behavior has
-   only been exercised manually, not continuously tested (see
+3. **Production database validation remains incomplete** — the full backend
+   business suite uses isolated SQLite, while `.github/workflows/ci.yml` now
+   runs a PostgreSQL 17 RLS/concurrency contract including the AI interview
+   and scorecard tables. That synthetic contract is not a production backup,
+   migration rehearsal, load test, or answer/withdraw/report race test (see
    [TESTING.md](TESTING.md)).
 4. **No secrets management integration** — `.env`/environment variables
    only; no integration with a secrets manager (AWS Secrets Manager,
@@ -65,9 +68,11 @@ This list is deliberately blunt — it is the honest complement to
    backend instance/worker behind a load balancer means each instance
    enforces its own independent limit, not a shared one (see
    [SECURITY.md](SECURITY.md)).
-8. **`next build` requires outbound network access** (Google Fonts fetch at
-   build time) — confirm your build environment/CI runner has it, or switch
-   to a locally bundled font first (see [SETUP.md](SETUP.md)).
+8. **No cloud deployment or operational load exercise** — the local container
+   definitions do not select a production host, shared WebSocket signaling
+   service, or managed TURN endpoint. The frontend currently uses a system
+   font stack; build does not depend on downloading Google Fonts (see
+   [SETUP.md](SETUP.md)).
 
 ## Runtime probes and worker shutdown
 

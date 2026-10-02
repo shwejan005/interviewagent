@@ -18,8 +18,9 @@ The ledger records each ordered migration exactly once. Version 1 marks the
 pre-ledger baseline; version 2 adds execution metadata and tenant-aware job
 fields; version 3 makes `CANCELLED` a valid durable-job state while preserving
 legacy job rows and indexes; version 4 adds preparation-workspace metadata;
-version 5 adds posting interview settings and report details; and version 6
-adds `next_turn_sequence` to existing application interview sessions.
+version 5 adds posting interview settings and report details; version 6 adds
+`next_turn_sequence`; version 9 records interview/answer modality; and version
+10 adds invitation expiry/reminder state.
 `init_db()` runs the ledger after the base schema and additive compatibility
 helpers, so a restart is idempotent.
 
@@ -134,14 +135,18 @@ resumes).
 organization-wide roles can read the organization's campaigns. `invitations`
 stores hashed, expiring one-time tokens. `interviews` and
 `interview_participants` provide the initial scheduled-interview model with
-organization, application, candidate, and interviewer links. Application-
-linked AI interviews use the tables below and do not require per-candidate
-meeting scheduling.
+organization, application, candidate, and interviewer links.
+`interviewer_profiles` stores optional job title, interview-skill tags,
+timezone, weekly capacity, and availability. `interview_scorecards` stores one
+independent anchored rating/recommendation per assigned interviewer and
+interview; peer scorecards stay hidden until the panel is complete. Human call
+media is peer-to-peer WebRTC and is not stored in SQL.
 
 ## Application-linked AI interviews
 
-The first application-linked release is a **durable text interview**. It does
-not persist audio/video, use a microphone, or connect to a speech provider.
+The application-linked AI interview is a **durable voice-answer/text-question
+interview**. Browser speech recognition provides the text transcript; Evalia
+stores the transcript and answer source, not raw audio or camera video.
 Schema definitions are in `backend/app/config/ai_interview_schema.py`; the
 posting criteria and one-row-per-application report schema is in
 `backend/app/config/interview_criteria_schema.py`.
@@ -152,10 +157,10 @@ One row per application attempt, with a partial unique index preventing more
 than one active attempt for an application. The row pins the posting rubric
 version and full policy snapshot at application time, and stores screening
 input/result, technical/behavioral core questions, current phase/question,
-consent notice version/time, worker error state, lifecycle timestamps, and an
-optional linked legacy `evaluations` row. The application and this row are
-created together with the idempotent screening job in the application
-transaction.
+consent notice version/time, modality, expiry/reminder/re-invite counters,
+worker error state, lifecycle timestamps, and an optional linked legacy
+`evaluations` row. The application and this row are created together with the
+idempotent screening job in the application transaction.
 
 Session states include `SCREENING_QUEUED`, `SCREENING`, `REVIEW_REQUIRED`,
 `INTERVIEW_READY`, `INTERVIEW_IN_PROGRESS`, `ANSWER_PROCESSING`,
@@ -164,7 +169,10 @@ only when the typed assessment, exact source-quote checks, deterministic
 posting constraints, and configured threshold all pass. Ambiguity, missing
 evidence, invalid model output, or exhausted job retries is routed to human
 review; the model cannot reject an applicant. Candidate-start consent records
-acknowledgement of the versioned notice and the current `TEXT` modality.
+acknowledgement of the versioned notice and selected `VOICE` modality (or
+`TEXT` accommodation). Delayed durable jobs send reminders and expire an
+unstarted invite into the recruiter review queue; a recruiter re-invite resets
+the window and increments the idempotency generation.
 
 ### `application_ai_interview_turns`
 
@@ -172,9 +180,9 @@ One persisted question/answer/assessment per row. A unique
 `(interview_id, sequence_no)` constraint and the session's monotonic
 `next_turn_sequence` make turn ordering durable. `question_type` distinguishes
 `CORE` from bounded `FOLLOW_UP`; `phase`, `competency_key`, and difficulty band
-record technical/behavioral coverage. Answers are admitted once and assessed
-by a durable job; an exact replay is idempotent, while a conflicting or
-out-of-order answer is rejected.
+record technical/behavioral coverage. `answer_source` is `VOICE` or `TEXT`.
+Answers are admitted once and assessed by a durable job; an exact replay is
+idempotent, while a conflicting or out-of-order answer is rejected.
 
 ### Posting criteria and `application_interview_reports`
 
@@ -182,19 +190,20 @@ out-of-order answer is rejected.
 categories, pass threshold, role level, question counts, bounded follow-up
 settings, and a rubric version. Each interview keeps the versioned policy
 snapshot it used, so later posting edits do not rewrite an in-flight run.
-`application_interview_reports` currently remains one row per application
-(not per-session report history) and stores per-competency scores/evidence,
-screening evidence, interview turns/provenance, the pinned rubric version, and
 the human-review recommendation. The adaptive-path weighted total is
-intentionally `NULL` until comparable paths have been calibrated. New AI
-reports are advisory and do not make a hiring decision.
+`application_interview_reports` currently remains one row per application
+(not per-session report history) and stores competency scores, weighted
+coverage, requirement coverage, resume/profile claim checks, strengths,
+concerns, next-round focus, the pinned rubric, and the human-review
+recommendation. The fit band and score are explicitly uncalibrated advisory
+signals and do not make a hiring decision.
 
 Candidate reads are scoped to their own application; recruiter reads require
-organization capability and campaign assignment. PostgreSQL RLS policies
-also cover the application, answer, session, and turn records. Withdrawal
-cancels pending AI-interview work and clears the frozen screening input; a
-comprehensive retention/expiry policy for completed reports and transcripts
-is still an open product/security requirement.
+organization capability and campaign assignment. PostgreSQL RLS also covers
+the application, answer, session, turn, report, posting-criteria, interviewer
+profile, and scorecard records. Withdrawal cancels pending AI-interview work
+and clears the frozen screening input; a comprehensive retention policy for
+completed reports and transcripts remains an open product/security requirement.
 
 ## Preparation additions
 
@@ -355,6 +364,25 @@ instead of corrupting pipeline history. Terminal stages (`HIRED`, `REJECTED`,
 `PENDING_REVIEW` is where uncertain screening evidence or a completed AI
 interview report awaits human review. It can transition in either direction,
 because the recruiter retains the application decision.
+
+### Campaign and posting lifecycle
+
+`campaigns.deleted_at` and `job_postings.deleted_at` are soft-archive markers;
+the recruiter card “delete” action never issues a destructive SQL delete.
+Archived campaigns and roles are hidden from normal listings, while the
+`include_archived` management views can still retrieve them for restoration.
+Applications, answers, events, interview sessions, and reports remain linked
+to their original posting for review/audit. The public job board requires both
+an unarchived `ACTIVE` campaign and a non-archived `PUBLISHED` posting.
+
+Closing a campaign atomically changes its status to `CLOSED` and closes all
+published postings. Restoring a campaign restores its row as `CLOSED`; it does
+not republish any role. A role archive closes a published posting before
+setting `deleted_at`; restoring it does not republish it. Campaign/posting
+status edits and soft-archive operations are org-scoped and require the
+campaign assignment check at the controller boundary. These rules are
+deliberate safeguards against a stale archived job accepting new applicants
+or a recruiter accidentally deleting hiring history.
 
 ## Matching, sourcing & referrals (Phase 2)
 

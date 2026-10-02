@@ -11,22 +11,27 @@ structurally safe.
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from app.ai_interview import repository as interview_db
 from app.candidate import repository as cdb, service as matching
 from app.config import database as db
 from app.evaluation.runner import AgentOutputError, run_screening
 from app.hiring import repository as hdb
 from app.hiring.dto import (
     CampaignRequest,
+    CampaignUpdateRequest,
     CampaignMemberRequest,
     PostingRequest,
     PostingStatusRequest,
     PostingUpdateRequest,
     ReferralRequest,
     InterviewCreateRequest,
+    InterviewScorecardRequest,
+    ApplicationDecisionRequest,
     TransitionRequest,
 )
 from app.shared import audit, notifications
@@ -41,6 +46,43 @@ _NOT_FOUND = "Not found."
 
 async def _db(func, *args, **kwargs):
     return await asyncio.to_thread(func, *args, **kwargs)
+
+
+async def _enqueue_interview_notifications(interview: dict, application_id: int, org_id: int, posting_title: str) -> None:
+    for participant in interview.get("participants", []):
+        await _db(
+            db.enqueue_job,
+            "human_interview_scheduled_notification",
+            {
+                "interview_id": interview["id"],
+                "application_id": application_id,
+                "org_id": org_id,
+                "user_id": int(participant["user_id"]),
+                "participant_role": participant["participant_role"],
+                "interview_title": interview["title"],
+                "posting_title": posting_title,
+                "scheduled_start": interview["scheduled_start"],
+            },
+            idempotency_key=f"human-interview-scheduled:{interview['id']}:{participant['user_id']}",
+            tenant_key=f"org:{org_id}",
+        )
+
+
+async def _application_interview_history(application_id: int, org_id: int, viewer_user_id: int) -> list[dict]:
+    interviews = await _db(hdb.list_interviews_for_application, application_id, org_id)
+    for interview in interviews:
+        assigned = any(
+            int(participant["user_id"]) == viewer_user_id and participant["participant_role"] == "INTERVIEWER"
+            for participant in interview.get("participants", [])
+        )
+        interview["scorecard_summary"] = await _db(
+            hdb.get_interview_scorecards,
+            int(interview["id"]),
+            org_id,
+            viewer_user_id,
+            assigned_interviewer=assigned,
+        )
+    return interviews
 
 
 def _client_ip(request: Request) -> Optional[str]:
@@ -107,12 +149,13 @@ async def list_campaigns(
     actor: Actor = Depends(requires(Capability.CAMPAIGN_READ_ASSIGNED)),
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    include_archived: bool = Query(default=False),
 ):
     _require_org(actor, org_id)
     assigned_user_id = None if actor.has(Capability.CAMPAIGN_READ_ORG) else actor.user_id
     return {
         "campaigns": await _db(
-            hdb.list_campaigns, org_id, limit, offset, assigned_user_id
+            hdb.list_campaigns, org_id, limit, offset, assigned_user_id, include_archived
         )
     }
 
@@ -134,15 +177,60 @@ async def get_campaign(
 async def update_campaign(
     org_id: int,
     campaign_id: int,
-    req: CampaignRequest,
+    req: CampaignUpdateRequest,
     request: Request,
     actor: Actor = Depends(requires(Capability.CAMPAIGN_UPDATE)),
 ):
     await _require_campaign_access(actor, org_id, campaign_id)
-    if not await _db(hdb.update_campaign, campaign_id, org_id, **req.model_dump()):
+    payload = req.model_dump(exclude_unset=True)
+    if not payload:
+        raise HTTPException(status_code=422, detail="Provide at least one campaign field to update.")
+    try:
+        updated = await _db(hdb.update_campaign, campaign_id, org_id, **payload)
+    except hdb.HiringLifecycleConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not updated:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
     audit.record_from_actor(
         actor, "campaign.updated",
+        actor_ip=_client_ip(request),
+        resource_type="campaign", resource_id=campaign_id, resource_org_id=org_id,
+        detail={"fields": sorted(payload.keys()), "status": payload.get("status")},
+    )
+    return await _db(hdb.get_campaign, campaign_id, org_id)
+
+
+@router.delete("/campaigns/{campaign_id}", status_code=204)
+async def archive_campaign(
+    org_id: int,
+    campaign_id: int,
+    request: Request,
+    actor: Actor = Depends(requires(Capability.CAMPAIGN_UPDATE)),
+):
+    """Archive a campaign without deleting its postings or applicant history."""
+    await _require_campaign_access(actor, org_id, campaign_id)
+    if not await _db(hdb.archive_campaign, campaign_id, org_id):
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    audit.record_from_actor(
+        actor, "campaign.archived",
+        actor_ip=_client_ip(request),
+        resource_type="campaign", resource_id=campaign_id, resource_org_id=org_id,
+    )
+
+
+@router.post("/campaigns/{campaign_id}/restore")
+async def restore_campaign(
+    org_id: int,
+    campaign_id: int,
+    request: Request,
+    actor: Actor = Depends(requires(Capability.CAMPAIGN_UPDATE)),
+):
+    """Restore visibility as CLOSED; roles remain closed until reopened individually."""
+    await _require_campaign_access(actor, org_id, campaign_id)
+    if not await _db(hdb.restore_campaign, campaign_id, org_id):
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    audit.record_from_actor(
+        actor, "campaign.restored",
         actor_ip=_client_ip(request),
         resource_type="campaign", resource_id=campaign_id, resource_org_id=org_id,
     )
@@ -188,21 +276,29 @@ async def create_posting(
     await _require_campaign_access(actor, org_id, req.campaign_id)
 
     # Verified org-scoped, so a posting cannot be attached to another tenant's campaign.
-    if await _db(hdb.get_campaign, req.campaign_id, org_id) is None:
+    campaign = await _db(hdb.get_campaign, req.campaign_id, org_id)
+    if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found.")
+    if campaign.get("deleted_at") is not None or campaign.get("status") != "ACTIVE":
+        raise HTTPException(status_code=409, detail="Reopen the campaign before adding a role.")
 
     if (req.min_experience is not None and req.max_experience is not None
             and req.min_experience > req.max_experience):
         raise HTTPException(status_code=400, detail="min_experience cannot exceed max_experience.")
+    if req.salary_min is not None and req.salary_max is not None and req.salary_min > req.salary_max:
+        raise HTTPException(status_code=400, detail="salary_min cannot exceed salary_max.")
 
     payload = req.model_dump()
     payload["screening_questions"] = [q.model_dump() for q in req.screening_questions]
     campaign_id = payload.pop("campaign_id")
     title = payload.pop("title")
 
-    posting_id = await _db(
-        hdb.create_posting, org_id, campaign_id, title, actor.user_id, **payload
-    )
+    try:
+        posting_id = await _db(
+            hdb.create_posting, org_id, campaign_id, title, actor.user_id, **payload
+        )
+    except hdb.HiringLifecycleConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     audit.record_from_actor(
         actor, "posting.created",
         actor_ip=_client_ip(request),
@@ -220,6 +316,7 @@ async def list_postings(
     status: Optional[str] = Query(default=None, pattern="^(DRAFT|PUBLISHED|CLOSED)$"),
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    include_archived: bool = Query(default=False),
 ):
     _require_org(actor, org_id)
     if campaign_id is not None:
@@ -227,7 +324,8 @@ async def list_postings(
     assigned_user_id = None if actor.has(Capability.CAMPAIGN_READ_ORG) else actor.user_id
     return {
         "postings": await _db(
-            hdb.list_postings, org_id, campaign_id, status, limit, offset, assigned_user_id
+            hdb.list_postings, org_id, campaign_id, status, limit, offset, assigned_user_id,
+            include_archived,
         )
     }
 
@@ -252,9 +350,23 @@ async def update_posting(
     actor: Actor = Depends(requires(Capability.CAMPAIGN_UPDATE)),
 ):
     await _campaign_id_for_posting(actor, org_id, posting_id)
-    payload = req.model_dump(exclude_none=True)
+    current = await _db(hdb.get_posting, posting_id, org_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    if current.get("deleted_at") is not None:
+        raise HTTPException(status_code=409, detail="Restore this archived role before editing it.")
+    payload = req.model_dump(exclude_unset=True)
     if req.screening_questions is not None:
         payload["screening_questions"] = [q.model_dump() for q in req.screening_questions]
+
+    min_experience = payload.get("min_experience", current.get("min_experience"))
+    max_experience = payload.get("max_experience", current.get("max_experience"))
+    if min_experience is not None and max_experience is not None and min_experience > max_experience:
+        raise HTTPException(status_code=400, detail="min_experience cannot exceed max_experience.")
+    salary_min = payload.get("salary_min", current.get("salary_min"))
+    salary_max = payload.get("salary_max", current.get("salary_max"))
+    if salary_min is not None and salary_max is not None and salary_min > salary_max:
+        raise HTTPException(status_code=400, detail="salary_min cannot exceed salary_max.")
 
     if not await _db(hdb.update_posting, posting_id, org_id, **payload):
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
@@ -281,12 +393,67 @@ async def set_posting_status(
     Publishing makes the posting visible on the public job board, so it is
     gated on its own capability and audited separately from editing.
     """
-    await _campaign_id_for_posting(actor, org_id, posting_id)
-    if not await _db(hdb.set_posting_status, posting_id, org_id, req.status):
+    campaign_id = await _campaign_id_for_posting(actor, org_id, posting_id)
+    posting = await _db(hdb.get_posting, posting_id, org_id)
+    if posting is None:
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    if posting.get("deleted_at") is not None:
+        raise HTTPException(status_code=409, detail="Restore this archived role before changing its status.")
+    campaign = await _db(hdb.get_campaign, campaign_id, org_id)
+    if req.status == "PUBLISHED" and campaign and (
+        campaign.get("deleted_at") is not None or campaign.get("status") != "ACTIVE"
+    ):
+        raise HTTPException(status_code=409, detail="Reopen the campaign before publishing this role.")
+    try:
+        updated = await _db(hdb.set_posting_status, posting_id, org_id, req.status)
+    except hdb.HiringLifecycleConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not updated:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
 
     audit.record_from_actor(
         actor, f"posting.{req.status.casefold()}",
+        actor_ip=_client_ip(request),
+        resource_type="job_posting", resource_id=posting_id, resource_org_id=org_id,
+    )
+    return await _db(hdb.get_posting, posting_id, org_id)
+
+
+@router.delete("/postings/{posting_id}", status_code=204)
+async def archive_posting(
+    org_id: int,
+    posting_id: int,
+    request: Request,
+    actor: Actor = Depends(requires(Capability.CAMPAIGN_UPDATE)),
+):
+    """Archive a role while preserving its applications, reports, and audit history."""
+    await _campaign_id_for_posting(actor, org_id, posting_id)
+    if not await _db(hdb.archive_posting, posting_id, org_id):
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    audit.record_from_actor(
+        actor, "posting.archived",
+        actor_ip=_client_ip(request),
+        resource_type="job_posting", resource_id=posting_id, resource_org_id=org_id,
+    )
+
+
+@router.post("/postings/{posting_id}/restore")
+async def restore_posting(
+    org_id: int,
+    posting_id: int,
+    request: Request,
+    actor: Actor = Depends(requires(Capability.CAMPAIGN_UPDATE)),
+):
+    """Restore a role without automatically reopening or republishing it."""
+    await _campaign_id_for_posting(actor, org_id, posting_id)
+    try:
+        restored = await _db(hdb.restore_posting, posting_id, org_id)
+    except hdb.HiringLifecycleConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not restored:
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    audit.record_from_actor(
+        actor, "posting.restored",
         actor_ip=_client_ip(request),
         resource_type="job_posting", resource_id=posting_id, resource_org_id=org_id,
     )
@@ -348,6 +515,7 @@ async def get_application(
         "application": application,
         "answers": await _db(hdb.get_application_answers, application_id),
         "timeline": await _db(hdb.list_application_events, application_id),
+        "interviews": await _application_interview_history(application_id, org_id, actor.user_id),
     }
 
 
@@ -375,6 +543,8 @@ async def transition_application(
             status_code=403,
             detail="You do not have permission to reject applications.",
         )
+    if req.to_stage == str(hdb.ApplicationStage.REJECTED) and len(req.note.strip()) < 10:
+        raise HTTPException(status_code=422, detail="Please provide a rejection reason of at least 10 characters.")
 
     try:
         result = await _db(
@@ -398,6 +568,148 @@ async def transition_application(
         detail={"from": result["from_stage"], "to": result["to_stage"], "note": req.note},
     )
     return result
+
+
+def _validate_report_decision(req: ApplicationDecisionRequest, actor: Actor, suggested_action: str) -> str:
+    reason = req.reason.strip()
+    if req.action in {"HOLD", "REJECT"} and len(reason) < 10:
+        raise HTTPException(status_code=422, detail="Please provide a decision reason of at least 10 characters.")
+    if req.action == "PROMOTE" and suggested_action != "PROMOTE" and len(reason) < 10:
+        raise HTTPException(status_code=422, detail="A reason is required to go against the report's suggested action.")
+    if req.action == "REJECT" and not actor.has(Capability.APPLICATION_REJECT):
+        raise HTTPException(status_code=403, detail="You do not have permission to reject applications.")
+    return reason
+
+
+def _report_decision_audit(action: str) -> tuple[str, audit.AuditTier, str | None]:
+    if action == "REJECT":
+        return "application.rejected", audit.AuditTier.SECURITY, str(hdb.ApplicationStage.REJECTED)
+    if action == "PROMOTE":
+        return "application.promoted_after_ai_report", audit.AuditTier.MUTATION, None
+    return "application.held_after_ai_report", audit.AuditTier.MUTATION, None
+
+
+async def _application_report_for_decision(org_id: int, application_id: int, actor: Actor) -> tuple[dict, object]:
+    _require_org(actor, org_id)
+    application = await _db(hdb.get_application, application_id, org_id)
+    if application is None:
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    await _campaign_id_for_posting(actor, org_id, application["posting_id"])
+    if application["current_stage"] != str(hdb.ApplicationStage.PENDING_REVIEW):
+        raise HTTPException(status_code=409, detail="This application is not awaiting a report decision.")
+    from app.interview_criteria.service import ReportService
+
+    report = await _db(ReportService().get, application_id)
+    if report is None:
+        raise HTTPException(status_code=409, detail="An interview report is required before this decision.")
+    return application, report
+
+
+async def _effective_report_action(report: object, application_id: int, org_id: int, viewer_user_id: int) -> str:
+    interviews = await _db(hdb.list_interviews_for_application, application_id, org_id)
+    completed = sorted(
+        (interview for interview in interviews if interview.get("status") == "COMPLETED"),
+        key=lambda interview: str(interview.get("scheduled_start") or ""),
+        reverse=True,
+    )
+    if completed:
+        panel = await _db(
+            hdb.get_interview_scorecards,
+            int(completed[0]["id"]),
+            org_id,
+            viewer_user_id,
+            assigned_interviewer=False,
+        )
+        if panel["complete"] and panel["scorecards"]:
+            return "PROMOTE" if all(card["recommendation"] == "ADVANCE" for card in panel["scorecards"]) else "HOLD"
+    return ((getattr(report, "interview_details", {}) or {}).get("fit_nudge") or {}).get("suggested_action", "HOLD")
+
+
+def _scheduled_round_payload(req: ApplicationDecisionRequest, actor: Actor) -> dict | None:
+    if req.action != "PROMOTE" or req.target_stage == "OFFER":
+        return None
+    if not req.scheduled_start or not req.scheduled_end:
+        raise HTTPException(status_code=422, detail="Choose a time for the next human interview when promoting the candidate.")
+    parsed_start = hdb._parse_ts(req.scheduled_start)
+    if parsed_start is None or parsed_start <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=422, detail="Choose a future start time for the next human interview.")
+    return {
+        "title": f"{req.target_stage.replace('_', ' ').title()} interview",
+        "scheduled_start": req.scheduled_start,
+        "scheduled_end": req.scheduled_end,
+        "timezone_name": req.timezone,
+        "meeting_url": "",
+        "interviewer_user_ids": req.interviewer_user_ids or [actor.user_id],
+    }
+
+
+async def _persist_human_decision(
+    application_id: int,
+    org_id: int,
+    actor: Actor,
+    req: ApplicationDecisionRequest,
+    reason: str,
+    target_stage: str | None,
+    scheduled_interview: dict | None,
+) -> dict:
+    try:
+        if req.action == "HOLD":
+            return await _db(hdb.record_application_hold, application_id, org_id, actor.user_id, reason)
+        if req.action == "PROMOTE" and req.target_stage == "OFFER":
+            return await _db(hdb.record_application_offer, application_id, org_id, actor.user_id, reason)
+        return await _db(
+            hdb.transition_application,
+            application_id,
+            org_id,
+            str(target_stage),
+            actor.user_id,
+            reason,
+            False,
+            scheduled_interview,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=_NOT_FOUND) from exc
+    except (hdb.InvalidTransitionError, hdb.DuplicateInterviewError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/applications/{application_id}/decision")
+async def decide_application(
+    org_id: int,
+    application_id: int,
+    req: ApplicationDecisionRequest,
+    request: Request,
+    actor: Actor = Depends(requires(Capability.APPLICATION_ADVANCE)),
+):
+    """Record the recruiter's explicit human decision after an AI report."""
+    application, report = await _application_report_for_decision(org_id, application_id, actor)
+    fit_nudge = (report.interview_details or {}).get("fit_nudge") or {}
+    suggested_action = await _effective_report_action(report, application_id, org_id, actor.user_id)
+    reason = _validate_report_decision(req, actor, suggested_action)
+    audit_action, audit_tier, rejection_stage = _report_decision_audit(req.action)
+    target_stage = rejection_stage or req.target_stage
+    scheduled_interview = _scheduled_round_payload(req, actor)
+    result = await _persist_human_decision(
+        application_id, org_id, actor, req, reason, target_stage, scheduled_interview,
+    )
+
+    audit.record_from_actor(
+        actor,
+        audit_action,
+        tier=audit_tier,
+        actor_ip=_client_ip(request),
+        resource_type="application",
+        resource_id=application_id,
+        resource_org_id=org_id,
+        detail={"action": req.action, "target_stage": target_stage, "reason": reason, "fit_band": fit_nudge.get("band"), "suggested_action": suggested_action},
+    )
+    if result.get("interview_id") is not None:
+        scheduled = await _db(hdb.get_interview, result["interview_id"], org_id)
+        if scheduled is not None:
+            await _enqueue_interview_notifications(scheduled, application_id, org_id, application.get("posting_title", "this role"))
+    return {**result, "action": req.action}
 
 
 @router.post("/applications/{application_id}/screen")
@@ -537,6 +849,10 @@ async def schedule_interview(
 ):
     """Schedule a candidate interview with explicit organization participants."""
     _require_org(actor, org_id)
+    application = await _db(hdb.get_application, application_id, org_id)
+    if application is None:
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    await _campaign_id_for_posting(actor, org_id, application["posting_id"])
     try:
         interview = await _db(
             hdb.create_interview,
@@ -554,6 +870,14 @@ async def schedule_interview(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (LookupError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    application = await _db(hdb.get_application, application_id, org_id)
+    await _enqueue_interview_notifications(
+        interview,
+        application_id,
+        org_id,
+        (application or {}).get("posting_title", req.title),
+    )
 
     audit.record_from_actor(
         actor,
@@ -575,9 +899,7 @@ async def list_application_interviews(
 ):
     _require_org(actor, org_id)
     return {
-        "interviews": await _db(
-            hdb.list_interviews_for_application, application_id, org_id
-        )
+        "interviews": await _application_interview_history(application_id, org_id, actor.user_id)
     }
 
 
@@ -600,6 +922,86 @@ async def cancel_scheduled_interview(
         resource_org_id=org_id,
     )
     return {"interview_id": interview_id, "status": "CANCELLED"}
+
+
+@router.post("/interviews/{interview_id}/scorecard")
+async def submit_human_interview_scorecard(
+    org_id: int,
+    interview_id: int,
+    req: InterviewScorecardRequest,
+    request: Request,
+    actor: Actor = Depends(requires(Capability.INTERVIEW_CONDUCT)),
+):
+    _require_org(actor, org_id)
+    try:
+        result = await _db(
+            hdb.submit_interview_scorecard,
+            interview_id,
+            org_id,
+            actor.user_id,
+            ratings=[rating.model_dump() for rating in req.ratings],
+            recommendation=req.recommendation,
+            notes=req.notes,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=_NOT_FOUND) from exc
+    except hdb.InterviewScorecardConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit.record_from_actor(
+        actor,
+        "interview.scorecard_submitted",
+        actor_ip=_client_ip(request),
+        resource_type="interview",
+        resource_id=interview_id,
+        resource_org_id=org_id,
+        detail={"recommendation": req.recommendation, "complete": result["complete"]},
+    )
+    if result["complete"]:
+        interview = await _db(hdb.get_interview, interview_id, org_id)
+        await _db(
+            db.enqueue_job,
+            "human_interview_scorecards_ready_notification",
+            {"interview_id": interview_id, "application_id": interview["application_id"], "org_id": org_id},
+            idempotency_key=f"human-interview-scorecards-ready:{interview_id}",
+            tenant_key=f"org:{org_id}",
+        )
+    return result
+
+
+@router.get("/interviews/{interview_id}/scorecards")
+async def get_human_interview_scorecards(
+    org_id: int,
+    interview_id: int,
+    actor: Actor = Depends(requires(Capability.APPLICATION_READ)),
+):
+    _require_org(actor, org_id)
+    interview = await _db(hdb.get_interview, interview_id, org_id)
+    if interview is None:
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    is_assigned_interviewer = any(
+        int(participant["user_id"]) == actor.user_id and participant["participant_role"] == "INTERVIEWER"
+        for participant in interview.get("participants", [])
+    )
+    if actor.role == str(SystemRole.INTERVIEWER) and not is_assigned_interviewer:
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    if not is_assigned_interviewer:
+        await _campaign_id_for_posting(actor, org_id, interview["posting_id"])
+    from app.interview_criteria.service import ReportService
+
+    ai_status = await _db(interview_db.get_recruiter_view, interview["application_id"], org_id)
+    ai_report = await _db(ReportService().get, interview["application_id"])
+    interview_evidence = (ai_report.interview_details or {}).get("interview", {}).get("turns", []) if ai_report else []
+    return await _db(
+        hdb.get_interview_scorecards,
+        interview_id,
+        org_id,
+        actor.user_id,
+        assigned_interviewer=is_assigned_interviewer,
+        interview_evidence=interview_evidence,
+        screening_evidence=(ai_status or {}).get("screening_result", {}).get("evidence", []),
+    )
 
 
 # ── Candidate sourcing ───────────────────────────────────────────────

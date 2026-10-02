@@ -95,13 +95,13 @@ def verify_password(password: str, password_hash: str) -> bool:
 # ── Tokens ───────────────────────────────────────────────────────────
 
 
-def create_access_token(user_id: int, *, ttl: Optional[timedelta] = None) -> str:
+def create_access_token(user_id: int, *, ttl: Optional[timedelta] = None, auth_version: int = 0) -> str:
     """Issue a signed access token identifying a user.
 
     The token intentionally carries no org or capability claims — those are
     resolved per-request so that revocation is immediate.
     """
-    return create_access_token_with_provenance(user_id, ttl=ttl)
+    return create_access_token_with_provenance(user_id, ttl=ttl, auth_version=auth_version)
 
 
 def create_access_token_with_provenance(
@@ -109,6 +109,7 @@ def create_access_token_with_provenance(
     *,
     ttl: Optional[timedelta] = None,
     impersonated_by: Optional[int] = None,
+    auth_version: int = 0,
 ) -> str:
     """Issue a token and optionally preserve the real actor behind impersonation."""
     now = datetime.now(timezone.utc)
@@ -117,14 +118,15 @@ def create_access_token_with_provenance(
         "iat": int(now.timestamp()),
         "exp": int((now + (ttl or ACCESS_TOKEN_TTL)).timestamp()),
         "jti": secrets.token_urlsafe(16),
+        "av": max(0, int(auth_version)),
     }
     if impersonated_by is not None:
         payload["impersonated_by"] = str(impersonated_by)
     return jwt.encode(payload, _jwt_secret(), algorithm=_JWT_ALGORITHM)
 
 
-def decode_access_token_details(token: str) -> tuple[int, Optional[int]]:
-    """Return the user and optional impersonating admin IDs from a token."""
+def decode_access_token_details(token: str) -> tuple[int, Optional[int], int]:
+    """Return the user ID, optional impersonating admin, and auth version."""
     try:
         payload = jwt.decode(token, _jwt_secret(), algorithms=[_JWT_ALGORITHM])
     except jwt.ExpiredSignatureError as exc:
@@ -146,12 +148,72 @@ def decode_access_token_details(token: str) -> tuple[int, Optional[int]]:
             impersonated_by = int(impersonated_by)
         except (TypeError, ValueError) as exc:
             raise TokenError("Token impersonation claim is invalid.") from exc
-    return user_id, impersonated_by
+    try:
+        auth_version = int(payload.get("av", 0))
+    except (TypeError, ValueError) as exc:
+        raise TokenError("Token authentication version is invalid.") from exc
+    if auth_version < 0:
+        raise TokenError("Token authentication version is invalid.")
+    return user_id, impersonated_by, auth_version
 
 
 def decode_access_token(token: str) -> int:
     """Return the user ID carried by a valid token, or raise TokenError."""
     return decode_access_token_details(token)[0]
+
+
+def create_meeting_room_ticket(
+    user_id: int,
+    interview_id: int,
+    org_id: int,
+    *,
+    auth_version: int = 0,
+    ttl: timedelta = timedelta(minutes=2),
+) -> str:
+    """Sign a short-lived ticket scoped to exactly one in-app interview room."""
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": str(user_id),
+        "iat": int(now.timestamp()),
+        "exp": int((now + ttl).timestamp()),
+        "jti": secrets.token_urlsafe(16),
+        "av": max(0, auth_version),
+        "purpose": "in_app_interview_room",
+        "interview_id": int(interview_id),
+        "org_id": int(org_id),
+    }
+    return jwt.encode(payload, _jwt_secret(), algorithm=_JWT_ALGORITHM)
+
+
+def decode_meeting_room_ticket(token: str) -> dict:
+    """Validate a short-lived meeting ticket and return only its scoped claims."""
+    try:
+        payload = jwt.decode(token, _jwt_secret(), algorithms=[_JWT_ALGORITHM])
+    except jwt.ExpiredSignatureError as exc:
+        raise TokenError("Meeting ticket has expired.") from exc
+    except jwt.InvalidTokenError as exc:
+        raise TokenError("Meeting ticket is invalid.") from exc
+    if payload.get("purpose") != "in_app_interview_room":
+        raise TokenError("Meeting ticket purpose is invalid.")
+    try:
+        return {
+            "user_id": int(payload["sub"]),
+            "auth_version": int(payload["av"]),
+            "interview_id": int(payload["interview_id"]),
+            "org_id": int(payload["org_id"]),
+        }
+    except (KeyError, TypeError, ValueError) as exc:
+        raise TokenError("Meeting ticket is missing required scope.") from exc
+
+
+def generate_account_token() -> str:
+    """Generate an opaque, high-entropy email-verification or reset token."""
+    return secrets.token_urlsafe(32)
+
+
+def hash_account_token(token: str) -> str:
+    """Hash an account token before storing it, never persisting the bearer value."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def generate_invite_token() -> str:

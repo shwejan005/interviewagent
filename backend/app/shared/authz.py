@@ -16,6 +16,7 @@ request for something the caller has no right to know about.
 
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Optional
 
 from fastapi import Depends, Header, HTTPException, Request
@@ -41,6 +42,8 @@ class Actor:
     email: str
     full_name: str
     is_platform_admin: bool
+    auth_version: int = 0
+    email_verified_at: Optional[datetime | str] = None
     org_id: Optional[int] = None
     role: Optional[str] = None
     capabilities: frozenset[Capability] = field(default_factory=frozenset)
@@ -66,13 +69,15 @@ async def _load_actor(token: str, org_id: Optional[int], ip: Optional[str]) -> A
     import asyncio
 
     try:
-        user_id, impersonated_by = security.decode_access_token_details(token)
+        user_id, impersonated_by, token_auth_version = security.decode_access_token_details(token)
     except TokenError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
     user = await asyncio.to_thread(db.get_user, user_id)
     if user is None or user.get("status") != "ACTIVE":
         raise HTTPException(status_code=401, detail="Account is not active.")
+    if int(user.get("auth_version", 0)) != token_auth_version:
+        raise HTTPException(status_code=401, detail="Session is no longer valid.")
 
     is_admin = bool(user.get("is_platform_admin"))
 
@@ -85,6 +90,8 @@ async def _load_actor(token: str, org_id: Optional[int], ip: Optional[str]) -> A
             email=user["email"],
             full_name=user.get("full_name", ""),
             is_platform_admin=is_admin,
+            auth_version=int(user.get("auth_version", 0)),
+            email_verified_at=user.get("email_verified_at"),
             org_id=None,
             role=str(role),
             capabilities=capabilities or capabilities_for_role(str(role)),
@@ -105,6 +112,8 @@ async def _load_actor(token: str, org_id: Optional[int], ip: Optional[str]) -> A
         email=user["email"],
         full_name=user.get("full_name", ""),
         is_platform_admin=is_admin,
+        auth_version=int(user.get("auth_version", 0)),
+        email_verified_at=user.get("email_verified_at"),
         org_id=org_id,
         role=membership["role_name"],
         capabilities=capabilities or capabilities_for_role(membership["role_name"]),
@@ -170,7 +179,7 @@ def requires(*capabilities: Capability):
     information, and a burst of them is a meaningful attack signal.
     """
 
-    async def _dependency(actor: Actor = Depends(current_actor)) -> Actor:
+    def _dependency(actor: Actor = Depends(current_actor)) -> Actor:
         missing = [c for c in capabilities if not actor.has(c)]
         if missing:
             audit.record_from_actor(

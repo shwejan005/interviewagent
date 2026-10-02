@@ -8,6 +8,7 @@ import signal
 import socket
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable, Mapping
 
 from dotenv import load_dotenv
@@ -28,7 +29,9 @@ from app.evaluation.pipeline import (
 )
 from app.evaluation.runner import AgentOutputError, run_hiring_committee, run_hiring_recommendation
 from app.evaluation.service import finalize_evaluation
+from app.hiring import repository as hiring_db
 from app.shared.observability import configure_logging, log_execution_event
+from app.shared import notification_repository as notification_db
 from app.shared.notifications import send_application_interview_ready_email
 
 logger = logging.getLogger(__name__)
@@ -41,6 +44,12 @@ APPLICATION_SCREENING_JOB = "application_screening"
 APPLICATION_INTERVIEW_ANSWER_JOB = "application_interview_answer"
 APPLICATION_INTERVIEW_REPORT_JOB = "application_interview_report"
 APPLICATION_INTERVIEW_READY_NOTIFICATION_JOB = "application_interview_ready_notification"
+APPLICATION_AI_INVITATION_REMINDER_JOB = "application_ai_interview_invitation_reminder"
+APPLICATION_AI_INVITATION_EXPIRY_JOB = "application_ai_interview_invitation_expiry"
+HUMAN_INTERVIEW_SCHEDULED_NOTIFICATION_JOB = "human_interview_scheduled_notification"
+APPLICATION_INTERVIEW_REPORT_READY_NOTIFICATION_JOB = "application_interview_report_ready_notification"
+APPLICATION_AI_INTERVIEW_DAILY_DIGEST_JOB = "application_ai_interview_daily_digest"
+CANDIDATE_INTERVIEW_AGENDA_HREF = "/interviews"
 RETRY_BASE_DELAY_SECONDS = float(os.getenv("JOB_RETRY_BASE_DELAY_SECONDS", "5"))
 RETRY_MAX_DELAY_SECONDS = float(os.getenv("JOB_RETRY_MAX_DELAY_SECONDS", "900"))
 RETRY_JITTER_RATIO = float(os.getenv("JOB_RETRY_JITTER_RATIO", "0.2"))
@@ -57,7 +66,7 @@ async def _handle_final_decision(payload: dict) -> None:
 
 
 async def _with_org_context(payload: dict, operation: Callable[[], Awaitable[None]]) -> None:
-    db.set_request_db_context(user_id=None, org_id=int(payload["org_id"]))
+    db.set_request_db_context(user_id=None, org_id=int(payload["org_id"]), is_worker=True)
     try:
         await operation()
     finally:
@@ -92,17 +101,196 @@ async def _handle_application_interview_ready_notification(payload: dict) -> Non
         if user is None or org is None:
             logger.warning("AI interview notification skipped: recipient or organization missing.")
             return
+        await asyncio.to_thread(
+            notification_db.create_notification,
+            int(payload["candidate_user_id"]),
+            "AI_INTERVIEW_READY",
+            "Your next interview step is ready",
+            f"Your AI interview for {payload.get('role', 'this role')} is ready. Questions are text; answers are by voice.",
+            href=CANDIDATE_INTERVIEW_AGENDA_HREF,
+            org_id=int(payload["org_id"]),
+            application_id=int(payload["application_id"]),
+            dedupe_key=f"ai-interview-ready:{payload['application_id']}:{payload['interview_id']}:{payload.get('invitation_round', 0)}",
+        )
         delivery = await asyncio.to_thread(
             send_application_interview_ready_email,
             user["email"],
             str(payload.get("role", "the role")),
             org["name"],
-            int(payload["application_id"]),
         )
         if delivery == "failed":
             raise RuntimeError("AI interview notification delivery failed; retry this notification job")
 
     await _with_org_context(payload, send)
+
+
+async def _handle_ai_interview_invitation_reminder(payload: dict) -> None:
+    async def remind() -> None:
+        current = await asyncio.to_thread(
+            ai_interview_db.record_invitation_reminder,
+            int(payload["interview_id"]),
+            int(payload["reminder_number"]),
+            int(payload.get("invitation_round", 0)),
+        )
+        if current is None:
+            return
+        await asyncio.to_thread(
+            notification_db.create_notification,
+            int(current["candidate_user_id"]),
+            "AI_INTERVIEW_REMINDER",
+            "Your AI interview invitation is waiting",
+            f"Join the AI interview for {payload.get('role', 'this role')} before the invitation expires.",
+            href=CANDIDATE_INTERVIEW_AGENDA_HREF,
+            org_id=int(current["org_id"]),
+            application_id=int(current["application_id"]),
+            dedupe_key=f"ai-interview-invitation-reminder:{payload['interview_id']}:{payload.get('invitation_round', 0)}:{payload['reminder_number']}",
+        )
+
+    await _with_org_context(payload, remind)
+
+
+async def _handle_ai_interview_invitation_expiry(payload: dict) -> None:
+    async def expire() -> None:
+        changed = await asyncio.to_thread(
+            ai_interview_db.expire_invitation,
+            int(payload["interview_id"]),
+            int(payload.get("invitation_round", 0)),
+        )
+        if not changed:
+            return
+        application = await asyncio.to_thread(
+            hiring_db.get_application,
+            int(payload["application_id"]),
+            int(payload["org_id"]),
+        )
+        members = await asyncio.to_thread(db.list_org_members, int(payload["org_id"]))
+        recruiter_roles = {"org_owner", "org_admin", "recruiter", "hiring_manager"}
+        for member in members:
+            if member.get("role_name") not in recruiter_roles:
+                continue
+            await asyncio.to_thread(
+                notification_db.create_notification,
+                int(member["user_id"]),
+                "AI_INTERVIEW_EXPIRED",
+                "AI interview invitation expired",
+                f"The candidate's AI interview invitation for {payload.get('role', 'this role')} expired without a start. Review or re-invite them.",
+                href=f"/org/postings/{int(application['posting_id'])}" if application else "/org",
+                org_id=int(payload["org_id"]),
+                application_id=int(payload["application_id"]),
+                dedupe_key=f"ai-interview-invitation-expired:{payload['interview_id']}:{payload.get('invitation_round', 0)}:{member['user_id']}",
+            )
+
+    await _with_org_context(payload, expire)
+
+
+async def _handle_human_interview_scheduled_notification(payload: dict) -> None:
+    async def notify_participant() -> None:
+        body = (
+            f"Your {payload.get('participant_role', 'INTERVIEWER').lower()} interview for "
+            f"{payload.get('posting_title', 'this role')} is scheduled for "
+            f"{payload.get('scheduled_start', 'the selected time')}. Join from your interview agenda in the app."
+        )
+        await asyncio.to_thread(
+            notification_db.create_notification,
+            int(payload["user_id"]),
+            "HUMAN_INTERVIEW_SCHEDULED",
+            "An in-app interview is scheduled",
+            body,
+            href=CANDIDATE_INTERVIEW_AGENDA_HREF,
+            org_id=int(payload["org_id"]),
+            application_id=int(payload["application_id"]),
+            dedupe_key=f"human-interview-scheduled:{payload['interview_id']}:{payload['user_id']}",
+        )
+
+    await _with_org_context(payload, notify_participant)
+
+
+async def _handle_human_interview_scorecards_ready_notification(payload: dict) -> None:
+    async def notify_recruiters() -> None:
+        interview = await asyncio.to_thread(hiring_db.get_interview, int(payload["interview_id"]), int(payload["org_id"]))
+        if interview is None:
+            return
+        members = await asyncio.to_thread(db.list_org_members, int(payload["org_id"]))
+        recruiter_roles = {"org_owner", "org_admin", "recruiter", "hiring_manager"}
+        for member in members:
+            if member.get("role_name") not in recruiter_roles:
+                continue
+            await asyncio.to_thread(
+                notification_db.create_notification,
+                int(member["user_id"]),
+                "HUMAN_INTERVIEW_SCORECARDS_READY",
+                "Human interview scorecards ready",
+                "All assigned interviewers submitted independent scorecards. Review the panel and decide the next step.",
+                href=f"/org/postings/{int(interview['posting_id'])}",
+                org_id=int(payload["org_id"]),
+                application_id=int(payload["application_id"]),
+                dedupe_key=f"human-interview-scorecards-ready:{payload['interview_id']}:{member['user_id']}",
+            )
+
+    await _with_org_context(payload, notify_recruiters)
+
+
+async def _handle_application_interview_report_ready_notification(payload: dict) -> None:
+    async def notify_recruiters() -> None:
+        application = await asyncio.to_thread(
+            hiring_db.get_application,
+            int(payload["application_id"]),
+            int(payload["org_id"]),
+        )
+        members = await asyncio.to_thread(db.list_org_members, int(payload["org_id"]))
+        roles = {"org_owner", "org_admin", "recruiter", "hiring_manager"}
+        for member in members:
+            if member.get("role_name") not in roles:
+                continue
+            await asyncio.to_thread(
+                notification_db.create_notification,
+                int(member["user_id"]),
+                "AI_INTERVIEW_REPORT_READY",
+                "AI interview report ready for review",
+                "The evidence report and advisory fit nudge are ready. A human recruiter must decide the next step.",
+                href=f"/org/postings/{int(application['posting_id'])}" if application else "/org",
+                org_id=int(payload["org_id"]),
+                application_id=int(payload["application_id"]),
+                dedupe_key=f"ai-interview-report-ready:{payload['application_id']}:{member['user_id']}",
+            )
+
+    await _with_org_context(payload, notify_recruiters)
+
+
+async def _handle_application_ai_interview_daily_digest(payload: dict) -> None:
+    async def deliver_digest() -> None:
+        digest_end = datetime.fromisoformat(str(payload["digest_day"])).replace(hour=17, tzinfo=timezone.utc)
+        digest_start = digest_end - timedelta(days=1)
+        reports = await asyncio.to_thread(
+            hiring_db.list_reports_ready_for_digest,
+            int(payload["org_id"]),
+            digest_start.isoformat(),
+            digest_end.isoformat(),
+        )
+        if not reports:
+            return
+        members = await asyncio.to_thread(db.list_org_members, int(payload["org_id"]))
+        roles = {"org_owner", "org_admin", "recruiter", "hiring_manager"}
+        role_titles = list(dict.fromkeys(str(report["posting_title"]) for report in reports))
+        title_summary = ", ".join(role_titles[:4])
+        if len(role_titles) > 4:
+            title_summary = f"{title_summary}, and {len(role_titles) - 4} more roles"
+        body = f"{len(reports)} AI interview report(s) were prepared in the last day for: {title_summary}. Review the evidence and record a human decision."
+        for member in members:
+            if member.get("role_name") not in roles:
+                continue
+            await asyncio.to_thread(
+                notification_db.create_notification,
+                int(member["user_id"]),
+                "AI_INTERVIEW_DAILY_DIGEST",
+                "Daily AI interview report digest",
+                body,
+                href="/org",
+                org_id=int(payload["org_id"]),
+                dedupe_key=f"ai-interview-daily-digest:{payload['org_id']}:{payload['digest_day']}:{member['user_id']}",
+            )
+
+    await _with_org_context(payload, deliver_digest)
 
 
 DEFAULT_HANDLERS: Mapping[str, JobHandler] = {
@@ -114,6 +302,12 @@ DEFAULT_HANDLERS: Mapping[str, JobHandler] = {
     APPLICATION_INTERVIEW_ANSWER_JOB: _handle_application_interview_answer,
     APPLICATION_INTERVIEW_REPORT_JOB: _handle_application_interview_report,
     APPLICATION_INTERVIEW_READY_NOTIFICATION_JOB: _handle_application_interview_ready_notification,
+    APPLICATION_AI_INVITATION_REMINDER_JOB: _handle_ai_interview_invitation_reminder,
+    APPLICATION_AI_INVITATION_EXPIRY_JOB: _handle_ai_interview_invitation_expiry,
+    HUMAN_INTERVIEW_SCHEDULED_NOTIFICATION_JOB: _handle_human_interview_scheduled_notification,
+    APPLICATION_INTERVIEW_REPORT_READY_NOTIFICATION_JOB: _handle_application_interview_report_ready_notification,
+    APPLICATION_AI_INTERVIEW_DAILY_DIGEST_JOB: _handle_application_ai_interview_daily_digest,
+    "human_interview_scorecards_ready_notification": _handle_human_interview_scorecards_ready_notification,
 }
 
 
@@ -293,7 +487,7 @@ async def _mark_ai_interview_job_for_review(job: dict) -> None:
     }:
         return
     try:
-        db.set_request_db_context(user_id=None, org_id=int(job["payload"]["org_id"]))
+        db.set_request_db_context(user_id=None, org_id=int(job["payload"]["org_id"]), is_worker=True)
         await asyncio.to_thread(
             ai_interview_db.mark_job_failure,
             int(job["payload"]["interview_id"]),

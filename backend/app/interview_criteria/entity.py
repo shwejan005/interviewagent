@@ -17,6 +17,7 @@ class PostingCriteria:
         "technical_question_count": 2,
         "behavioral_question_count": 2,
         "max_followups_per_question": 1,
+        "invitation_window_days": 7,
     })
     rubric_version: str = "posting-v1"
     updated_by: Optional[int] = None
@@ -37,6 +38,7 @@ class PostingCriteria:
                 "technical_question_count": 2,
                 "behavioral_question_count": 2,
                 "max_followups_per_question": 1,
+                "invitation_window_days": 7,
             },
             rubric_version=row["rubric_version"],
             updated_by=row.get("updated_by"),

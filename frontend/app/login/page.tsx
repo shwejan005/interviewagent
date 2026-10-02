@@ -21,13 +21,18 @@ function LoginForm() {
 
   const next = searchParams.get("next");
   const registerHref = next ? `/register?next=${encodeURIComponent(next)}` : "/register";
+  const passwordResetHref = email ? `/password-reset?email=${encodeURIComponent(email)}` : "/password-reset";
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     try {
       const signedInActor = await login(email, password);
-      router.push(next || (signedInActor.memberships.length > 0 ? "/org" : "/jobs"));
+      if (signedInActor.email_verification_required && !signedInActor.email_verified_at) {
+        router.push(`/verify-email?email=${encodeURIComponent(signedInActor.email)}`);
+      } else {
+        router.push(next || (signedInActor.memberships.length > 0 ? "/org" : "/jobs"));
+      }
     } catch (err) {
       notify.error(err instanceof ApiError ? err.detail : "Something went wrong.");
     } finally {
@@ -71,6 +76,10 @@ function LoginForm() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                 />
+
+                <Link href={passwordResetHref} className="-mt-2 self-end text-[12px] text-brand hover:underline">
+                  Forgot password?
+                </Link>
 
                 <Button type="submit" size="lg" fullWidth loading={loading}>
                   {loading ? "Logging in..." : "Log in"}

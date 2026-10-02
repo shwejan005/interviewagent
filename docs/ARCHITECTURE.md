@@ -2,18 +2,21 @@
 
 ## System overview
 
-Evalia is a multi-tenant candidate/recruiter hiring platform with two distinct
-evaluation paths: the legacy generic five-stage evaluation, and a new
-application-rooted automatic screening plus persisted AI interview. The
-application path uses a deterministic FastAPI state controller, durable
 database-backed jobs, a candidate-facing text interview, and recruiter-scoped
 evidence reports. PostgreSQL is the production target; SQLite is used for
-local development and most automated tests. The feature does not yet provide
-live voice, transcription, or video.
+Evalia is a multi-tenant candidate/recruiter hiring platform with two distinct
+evaluation paths: the legacy generic five-stage evaluation, and an
+application-rooted screening plus persisted AI and human interviews. The
+application path uses a deterministic FastAPI state controller, durable
+database-backed jobs, browser speech recognition for AI interview answers,
+evidence reports, and recruiter-owned stage decisions. Scheduled human rounds
+use authenticated in-app WebRTC calls with independent panel scorecards.
+PostgreSQL is the production target; SQLite is used for local development and
+most automated tests.
 
 ```mermaid
 flowchart LR
-    Browser["Browser\n(Next.js app)"] -->|"/api/* rewrite"| NextProxy["next.config.js\nrewrites() proxy"]
+    Browser["Browser\n(Next.js app, mic/camera)"] -->|"/api/* rewrite"| NextProxy["next.config.js\nrewrites() proxy"]
     NextProxy --> FastAPI["FastAPI app\n(auth + domain routers)"]
     FastAPI --> Hiring["Candidate / hiring\napplication services"]
     Hiring --> AIInterview["ai_interview\nstate + evidence validation"]
@@ -24,6 +27,8 @@ flowchart LR
     DB --> Worker["Durable job worker\nscreen / assess / report / notify"]
     Worker --> AIInterview
     Worker --> Legacy
+    Browser <-->|"WebRTC media\n(human interviews)"| Browser
+    Browser <-->|"short-lived ticket +\nWebSocket signaling"| Meetings["FastAPI meeting relay\nprocess-local peer registry"]
     AIInterview --> Verdicts["Application-scoped<br/>interview turns + report"]
     Agents --> LLM["Configured model provider"]
     AIInterview --> LLM
@@ -34,12 +39,13 @@ anonymous sandbox and is not the application pipeline. Its older synchronous
 routes remain for compatibility. Application screening, answer assessment,
 report generation, and candidate notification use the durable worker and
 `background_jobs`; the job payload carries IDs, while candidate evidence is
-loaded from application-scoped storage. Hiring calendar records remain a
-separate feature. See [AI_INTERVIEW_ARCHITECTURE_PLAN.md](AI_INTERVIEW_ARCHITECTURE_PLAN.md)
+loaded from application-scoped storage. Reminder, expiry, report-ready,
+daily-digest, interview-scheduled, and panel-scorecard-ready notifications use
+the same durable worker. See [AI_INTERVIEW_ARCHITECTURE_PLAN.md](AI_INTERVIEW_ARCHITECTURE_PLAN.md)
 and [SECURITY.md](SECURITY.md) for the implemented boundary and outstanding
 release requirements.
 
-## Application-linked AI interview (text-only release)
+## Application screening and AI interview
 
 `POST /jobs/{posting_id}/apply` requires a ready profile, freezes profile and
 application-answer evidence, snapshots the posting criteria, and commits the
@@ -51,22 +57,50 @@ configured threshold. Only a validated clear pass advances the application to
 evidence and execution failures are routed to `REVIEW_REQUIRED`; the model
 cannot reject or make a hiring decision.
 
-The core technical/behavioral question plan is deterministic from the pinned
-rubric. Candidate consent and text answers are submitted through
-application-owned routes. Answer assessments may request a bounded
-follow-up or a one-band difficulty change, but the server owns turn order and
-validates the result. Each question, answer, evidence assessment, and
 difficulty is persisted in `application_ai_interview_turns`. Report generation
-runs as a durable job; report, linked evaluation completion, and
-`REPORT_READY` publication commit atomically. The application moves to
-`PENDING_REVIEW` only if it is still at `AI_INTERVIEW`, so report publication
-cannot undo a recruiter's subsequent decision or terminal state.
+Recruiter-set minimum experience and must-have skill checks are applied before
+the model evidence screen. Explicit below-minimum or unclear cases enter a
+human-review queue; the system does not auto-reject. A clear pass creates a
+seven-day AI interview invitation, delayed reminder/expiry jobs, and an entry
+in the single candidate `/interviews` agenda without per-candidate recruiter
+scheduling.
 
-This release is text-only: it has no microphone streaming, speech recognition,
-video, or live voice provider. Provider-backed model calls have not been
-validated end-to-end for this workflow. A clear report remains advisory and
-requires human review; the cross-path weighted score is withheld pending
-calibration.
+The AI interviewer presents questions as text. The candidate speaks and the
+browser SpeechRecognition API transcribes the answer into live captions; the
+candidate submits the transcript as a voice-sourced turn. The existing server
+state machine performs structured assessment and produces the next question.
+The camera is not requested. A text-answer accommodation remains available.
+Evalia persists transcript text and answer source, not raw audio. Browser
+speech recognition itself is a browser/provider service and is not represented
+as a managed Evalia STT stream.
+
+Report publication atomically stores per-competency scores, interview and
+screening evidence, job-requirement coverage, resume/profile claim checks,
+strengths, concerns, next-round focus, and a deterministic advisory fit band.
+The band is uncalibrated and never advances or rejects a candidate. A recruiter
+must promote, hold, or reject with a reason. Promotion to a human round picks a
+future time and assigned teammate(s) in the same transaction as the application
+stage change.
+
+## In-app human interviews and scorecards
+
+The human call page requests camera and microphone only after the user joins.
+Authenticated participants receive room-scoped, two-minute JWT tickets. A
+FastAPI WebSocket relay forwards only SDP offers/answers and ICE candidates;
+the media is peer-to-peer and is not stored by Evalia. The relay's peer registry
+is process-local. STUN is the development fallback. When backend-only
+`TURN_URLS` and `TURN_SHARED_SECRET` are configured, the API adds coturn
+REST/HMAC credentials bound to the user and room with a 10-minute TTL; the
+shared secret is never sent to the browser. Production still needs a deployed
+TURN service, sticky routing or shared signaling, and multi-network validation
+before the call is considered production-ready.
+
+Each assigned interviewer submits an independent anchored scorecard.
+Individual ratings remain hidden from peers and recruiters until all assigned
+interviewers have submitted; then the combined panel view is available. The
+application returns to `PENDING_REVIEW` and the recruiter decides the next
+round, offer, hold, or rejection. Recruiter and interviewer scorecard/API
+access remains scoped by org and explicit assignment.
 
 ## Legacy generic five-agent pipeline
 
@@ -193,12 +227,13 @@ fallback substituted for a failed validation.
 
 ## Rate limiting
 
-`main.py` wires in `rate_limit.InMemoryRateLimitMiddleware` (added in this
+`main.py` wires in `app.shared.rate_limit.InMemoryRateLimitMiddleware` (added in this
 documentation/hardening pass — see [CHANGELOG.md](CHANGELOG.md)): a
-fixed-window, per-client-IP request counter held in process memory,
+sliding-window, per-client-IP request log held in process memory,
 defaulting to 60 requests per 60-second window per IP, configurable via
 `RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS`, and disabled entirely
-when `RATE_LIMIT_REQUESTS=0`. This is deliberately simple and **is not** a
+when `RATE_LIMIT_REQUESTS=0`. Expired per-IP buckets are periodically pruned.
+This is deliberately simple and **is not** a
 distributed rate limiter — running more than one backend process/instance
 means each one enforces its own independent limit. See
 [SECURITY.md](SECURITY.md) for the full honest scope of this control.

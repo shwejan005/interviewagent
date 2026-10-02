@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { usePathname } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "../../lib/auth-context";
+import { useActivePageRefresh } from "../../lib/use-active-page-refresh";
 import { api } from "../../lib/api";
 import type { JobPosting, JobRecommendation } from "../../lib/types";
 import Navbar from "../components/Navbar";
@@ -123,6 +125,7 @@ function PostingTable({ postings }: Readonly<{ postings: JobPosting[] }>) {
 
 export default function JobsPage() {
   const { actor, loading: authLoading } = useAuth();
+  const pathname = usePathname();
   const [tab, setTab] = useState<Tab>("all");
   const [postings, setPostings] = useState<JobPosting[]>([]);
   const [recommendations, setRecommendations] = useState<JobRecommendation[]>([]);
@@ -131,17 +134,19 @@ export default function JobsPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!authLoading && actor) setTab("recommended");
+    if (authLoading) return;
+    setTab(actor ? "recommended" : "all");
   }, [authLoading, actor]);
 
   useEffect(() => {
-    if (tab === "all") searchJobs();
-    else if (tab === "recommended" && actor) loadRecommendations();
+    if (pathname !== "/jobs" || authLoading) return;
+    if (actor && tab === "recommended") void loadRecommendations();
+    else if (!actor && tab === "all") void searchJobs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, actor]);
+  }, [tab, actor, authLoading]);
 
-  const searchJobs = async () => {
-    setLoading(true);
+  const searchJobs = async (showLoading = true) => {
+    if (showLoading) setLoading(true);
     try {
       const params = new URLSearchParams();
       if (query.trim()) params.set("q", query.trim());
@@ -151,21 +156,26 @@ export default function JobsPage() {
     } catch {
       notify.error("Failed to load jobs.");
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   };
 
-  const loadRecommendations = async () => {
-    setLoading(true);
+  const loadRecommendations = async (showLoading = true) => {
+    if (showLoading) setLoading(true);
     try {
       const data = await api.get<{ recommendations: JobRecommendation[] }>("/me/recommended-jobs");
       setRecommendations(data.recommendations);
     } catch {
       notify.error("Failed to load recommendations.");
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   };
+
+  useActivePageRefresh(pathname === "/jobs", !authLoading, () => {
+    if (actor && tab === "recommended") return loadRecommendations(false);
+    if (!actor && tab === "all") return searchJobs(false);
+  });
 
   return (
     <div className="min-h-screen">
@@ -198,7 +208,7 @@ export default function JobsPage() {
               wrapperClassName="min-w-[220px] flex-[2]"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && searchJobs()}
+              onKeyDown={(e) => e.key === "Enter" && void searchJobs()}
               placeholder="Search titles or descriptions..."
               aria-label="Search titles or descriptions"
             />
@@ -206,11 +216,11 @@ export default function JobsPage() {
               wrapperClassName="min-w-[150px] flex-1"
               value={location}
               onChange={(e) => setLocation(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && searchJobs()}
+              onKeyDown={(e) => e.key === "Enter" && void searchJobs()}
               placeholder="Location"
               aria-label="Location"
             />
-            <Button variant="secondary" onClick={searchJobs}>
+            <Button variant="secondary" onClick={() => void searchJobs()}>
               Search
             </Button>
           </div>

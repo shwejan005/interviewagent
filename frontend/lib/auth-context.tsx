@@ -29,6 +29,11 @@ type TokenResponse = {
   expires_in: number;
 };
 
+type RegistrationResponse = {
+  message: string;
+  verification_required: boolean;
+};
+
 type AuthContextValue = {
   actor: Actor | null;
   loading: boolean;
@@ -37,7 +42,7 @@ type AuthContextValue = {
   sessionExpiresAt: number | null;
   sessionRefreshing: boolean;
   login: (email: string, password: string) => Promise<Actor>;
-  register: (email: string, password: string, fullName: string) => Promise<Actor>;
+  register: (email: string, password: string, fullName: string) => Promise<RegistrationResponse>;
   logout: () => void;
   refreshActor: () => Promise<Actor | null>;
   extendSession: () => Promise<void>;
@@ -124,19 +129,13 @@ export function AuthProvider({ children }: Readonly<{ children: ReactNode }>) {
     return resolvedActor;
   }, [refreshActor]);
 
-  const register = useCallback(async (email: string, password: string, fullName: string): Promise<Actor> => {
-    const res = await api.post<TokenResponse>(
+  const register = useCallback(async (email: string, password: string, fullName: string): Promise<RegistrationResponse> => {
+    return api.post<RegistrationResponse>(
       "/auth/register",
       { email: email.trim(), password, full_name: fullName.trim() },
       { skipAuth: true },
     );
-    setToken(res.access_token, res.expires_in);
-    setSessionExpiresAt(getTokenExpiresAt());
-    promptedForExpiry.current = null;
-    const resolvedActor = await refreshActor();
-    if (!resolvedActor) throw new Error("Unable to load the new account.");
-    return resolvedActor;
-  }, [refreshActor]);
+  }, []);
 
   const extendSession = useCallback(async () => {
     setSessionRefreshing(true);

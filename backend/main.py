@@ -51,6 +51,7 @@ from app.resume.controller import router as resume_router  # noqa: E402
 from app.interview_criteria.controller import router as interview_criteria_router  # noqa: E402
 from app.ai_interview.controller import candidate_router as ai_interview_candidate_router  # noqa: E402
 from app.ai_interview.controller import recruiter_router as ai_interview_recruiter_router  # noqa: E402
+from app.meetings.controller import router as meetings_router  # noqa: E402
 
 # Configure logging
 configure_logging()
@@ -145,6 +146,10 @@ async def clear_database_request_context(request: Request, call_next):
 
 RATE_LIMIT_REQUESTS = int(os.getenv("RATE_LIMIT_REQUESTS", "60"))
 RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
+if RATE_LIMIT_REQUESTS > 0 and RATE_LIMIT_WINDOW_SECONDS <= 0:
+    raise ValueError(
+        "RATE_LIMIT_WINDOW_SECONDS must be positive when RATE_LIMIT_REQUESTS is enabled."
+    )
 
 app.add_middleware(
     InMemoryRateLimitMiddleware,
@@ -208,6 +213,7 @@ app.include_router(recruiter_router)
 app.include_router(interview_criteria_router)
 app.include_router(ai_interview_candidate_router)
 app.include_router(ai_interview_recruiter_router)
+app.include_router(meetings_router)
 app.include_router(prep_router)
 app.include_router(durable_router)
 app.include_router(review_router)

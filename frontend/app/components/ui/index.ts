@@ -34,6 +34,8 @@ export type { PageShellProps } from "./PageShell"
 export { Modal } from "./Modal"
 export type { ModalProps } from "./Modal"
 
+export { ConfirmActionModal } from "./ConfirmActionModal"
+
 export { SidePanel } from "./SidePanel"
 export type { SidePanelProps } from "./SidePanel"
 

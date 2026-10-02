@@ -55,7 +55,8 @@ class CriteriaService:
                 }
                 for item in existing.competencies
             ]
-            return replace(existing, competencies=competencies)
+            settings = {"invitation_window_days": 7, **(existing.interview_settings or {})}
+            return replace(existing, competencies=competencies, interview_settings=settings)
 
         posting = hdb.get_posting(posting_id, org_id)
         required_skills = (posting or {}).get("required_skills") or []
@@ -97,6 +98,7 @@ class CriteriaService:
                 "technical_question_count": 2,
                 "behavioral_question_count": 2,
                 "max_followups_per_question": 1,
+                "invitation_window_days": 7,
             },
             rubric_version="posting-v1",
             updated_by=None,

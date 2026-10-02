@@ -4,17 +4,23 @@
 
 | Suite | Location | What it covers | Live LLM calls? | Last verified run |
 |---|---|---|---|---|
-| Backend automated tests | `backend/tests/` (pytest) | Output parsing/validation, database PII/uniqueness/batching, identity/RBAC, marketplace, automatic application screening, AI-interview worker/session/report flow, withdrawal and terminal-state guards, interview criteria, durable jobs, prep suite, data export/deletion, health/readiness, retries/cancellation, structured event redaction | No | 260 passed, 0 failed, 31 warnings (SQLite; 2026-10-01) |
-| Frontend type-check | `frontend/` (`npm run typecheck`) | TypeScript type safety across the whole app/components tree | N/A | 0 errors (2026-10-01) |
-| PostgreSQL contract | `backend/scripts/verify_postgres.py` | RLS policy coverage and atomic concurrent job claims | No | PASS against local PostgreSQL 17.4 (2026-09-30, before AI-interview changes; not rerun for the new tables) |
-| Browser suite | `frontend/tests/` (`npx playwright test`) | Application submit/status, candidate text interview/consent/answer flow, recruiter review, profile/criteria, scheduling picker, route roles, and prep recovery/navigation | No | 10 passed (2026-10-01) |
-| Live agent smoke test | Ad hoc, not checked in (see below) | The actual CrewAI agents against a real LLM endpoint, end-to-end | **Yes** | Full happy path (PASS→PASS→PASS→HIRE) + reject path, verified manually 2026-09-27; not automated/repeatable as a checked-in test |
+| Backend automated tests | `backend/tests/` (pytest) | Output parsing/validation, database PII/uniqueness/batching, identity/RBAC, marketplace, campaign/posting close/archive/restore and edit flows, applicant-history preservation, automatic application screening, AI-interview worker/session/report flow, retries/cancellation, prep suite, health/readiness | No | 288 passed, 31 dependency/deprecation warnings (SQLite; 2026-10-02; the changed scorecard-evidence integration case also passed focused verification) |
+| Frontend type-check | `frontend/` (`npm run typecheck`) | TypeScript type safety across the whole app/components tree | N/A | 0 errors (2026-10-02) |
+| PostgreSQL contract | `backend/scripts/verify_postgres.py` | Tenant/user RLS for campaigns, AI-interview sessions/turns/reports/notifications, cross-user update denial, worker context, and atomic concurrent job claims | No | Runs in PostgreSQL 17 CI; not run locally in this session |
+| Browser suite | `frontend/tests/` (`npm run test:e2e`) | Application submit/status, candidate consent, speech transcript correction and text accommodation, draft save/return/recovery, human meeting/scorecards, posting/team and prep flows | No | 24 passed (2026-10-02; includes focused rerun of changed scorecard and accommodation tests) |
+| Live AI-interview provider smoke | `backend/scripts/smoke_ai_interview_provider.py` | Synthetic screening and answer-assessment calls through the configured CrewAI provider; schema and evidence-gate checks | **Yes** | Opt-in only; not run because provider credentials/network were not supplied |
 
 The AI-interview tests use deterministic mocked model calls and mocked browser
 API responses. They verify orchestration and UI behavior, not the quality of
-a live provider response. The earlier PostgreSQL contract run predates the
-AI-interview tables/policies; SQLite success is not proof of PostgreSQL RLS
-or concurrency behavior.
+a live provider response. The PostgreSQL contract now runs in CI and exercises
+synthetic AI-interview rows under a non-owner role. SQLite success alone is
+not proof of PostgreSQL RLS or concurrency behavior.
+
+The offline suite also replays deterministic core questions and checks that
+the structured minimum-criteria gate is invariant to synthetic changes in
+unrelated identity fields. This is a narrow regression check, not a fairness
+audit or a substitute for role-specific, human-adjudicated, cross-model
+evaluation.
 
 ## Running the backend suite
 
@@ -40,10 +46,27 @@ $env:DATABASE_URL="postgresql://user:password@localhost:5432/interviewtest"
 python backend/scripts/verify_postgres.py
 ```
 
-The verifier initializes the schema, checks tenant RLS visibility using a
-temporary non-owner role, and races two workers against one durable job to
-prove that exactly one claim wins. It creates synthetic rows and removes them
-before exiting. CI runs the same contract against a PostgreSQL service.
+The verifier initializes the schema, checks organization and candidate RLS
+visibility for synthetic AI-interview sessions, turns, and reports using a
+temporary non-owner role, verifies cross-candidate update denial and worker
+organization context, and races two workers against one durable job to prove
+that exactly one claim wins. It removes synthetic rows before exiting. CI runs
+the same contract against PostgreSQL 17.
+
+### Opt-in live AI-interview provider smoke
+
+The default suite never makes paid model calls. To validate the configured
+provider with synthetic (not real candidate) content, configure
+`GEMINI_API_KEY` or `AGENT_BASE_URL` and explicitly opt in:
+
+```powershell
+$env:RUN_LIVE_AI_INTERVIEW_SMOKE = '1'
+python backend/scripts/smoke_ai_interview_provider.py
+```
+
+This makes two provider calls and prints only schema/grounding status, not
+prompts, answers, provider output, or credentials. It does not establish hiring
+quality, fairness, latency, retention compliance, or production readiness.
 
 ### Why the suite never calls a live LLM
 
@@ -109,13 +132,20 @@ means:
 - `tests/test_invitations_and_interviews.py` — invitation acceptance, email
   matching, scheduled interview participants, candidate agenda, duplicate
   scheduling, and cancellation.
+- `tests/test_hiring.py` — campaign close/archive/restore, posting edit/archive/
+  restore, public job visibility, and preserving applications and interview
+  history during lifecycle changes.
 - `tests/test_durable_pipeline.py` — 202 responses, durable screening
   admission, worker advancement, and scoped status access.
 - `tests/test_ai_interview.py` — profile-first application admission, automatic
   screening, exact-evidence and threshold gates, human review/override,
   candidate ownership, consent/version checks, idempotent answers, persisted
   technical/behavioral turns, report publication, and late-report guards for
-  recruiter advancement, terminal rejection, and withdrawal.
+  recruiter advancement, terminal rejection, withdrawal, and posting-edit
+  isolation from an already submitted interview's pinned context.
+- `frontend/tests/recruiter-lifecycle.spec.ts` — recruiter card editing,
+  campaign close/archive/restore, posting-question editing, role archive/restore,
+  and explicit republish workflows with mocked API responses.
 - `tests/test_prep.py` — topic catalog, roadmap ownership, progress XP, and
   explicit unverified submission behavior.
 - `tests/test_data_subject.py` — authenticated export, last-owner protection,

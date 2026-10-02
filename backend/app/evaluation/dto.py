@@ -5,6 +5,7 @@ These models define the exact JSON structure each agent must produce,
 ensuring deterministic, parseable, and validateable outputs.
 """
 
+from datetime import datetime
 from typing import Optional
 
 from pydantic import BaseModel, EmailStr, Field
@@ -158,6 +159,27 @@ class RegisterRequest(BaseModel):
     full_name: str = Field(default="", max_length=200)
 
 
+class RegistrationResponse(BaseModel):
+    message: str
+    verification_required: bool = False
+
+
+class AccountEmailRequest(BaseModel):
+    email: NormalizedEmail
+
+
+class AccountTokenRequest(BaseModel):
+    token: str = Field(min_length=20, max_length=200)
+
+
+class PasswordResetRequest(AccountEmailRequest):
+    pass
+
+
+class PasswordResetConfirmRequest(AccountTokenRequest):
+    new_password: str = Field(min_length=12, max_length=256)
+
+
 class LoginRequest(BaseModel):
     email: NormalizedEmail
     password: str = Field(min_length=1, max_length=256)
@@ -182,6 +204,8 @@ class ActorResponse(BaseModel):
     email: str
     full_name: str
     is_platform_admin: bool
+    email_verified_at: Optional[datetime] = None
+    email_verification_required: bool = False
     impersonated_by: Optional[int] = None
     active_org_id: Optional[int] = None
     active_role: Optional[str] = None
@@ -214,6 +238,14 @@ class AddMemberRequest(BaseModel):
 
 class SetMemberRoleRequest(BaseModel):
     role: str = Field(description="One of the org-scoped system role names")
+
+
+class InterviewProfileRequest(BaseModel):
+    job_title: str = Field(default="", max_length=120)
+    interview_skills: list[str] = Field(default_factory=list, max_length=30)
+    timezone: str = Field(default="UTC", min_length=1, max_length=80)
+    weekly_capacity: int = Field(default=5, ge=0, le=40)
+    available_for_interviews: bool = True
 
 
 class AcceptInvitationRequest(BaseModel):

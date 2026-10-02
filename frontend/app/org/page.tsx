@@ -1,13 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { motion } from "framer-motion";
-import { Briefcase, Building2, Mail, Plus, Users } from "lucide-react";
+import { Briefcase, Building2, Mail, Pencil, Plus, RotateCcw, Trash2, Users } from "lucide-react";
 
 import Navbar from "../components/Navbar";
 import {
   Button,
+  ConfirmActionModal,
   EmptyState,
   GlassCard,
   Input,
@@ -21,6 +22,7 @@ import {
 } from "../components/ui";
 import type { PillTone } from "../components/ui";
 import { useAuth } from "../../lib/auth-context";
+import { useActivePageRefresh } from "../../lib/use-active-page-refresh";
 import { api, ApiError } from "../../lib/api";
 import { notify } from "../../lib/toast";
 import type { Campaign, CampaignPriority } from "../../lib/types";
@@ -136,6 +138,7 @@ type CampaignFormState = {
   department: string;
   hiring_manager: string;
   priority: CampaignPriority;
+  status: "ACTIVE" | "CLOSED";
   target_hires: string;
   target_close_date: string;
 };
@@ -146,18 +149,45 @@ const EMPTY_CAMPAIGN_FORM: CampaignFormState = {
   department: "",
   hiring_manager: "",
   priority: "MEDIUM",
+  status: "ACTIVE",
   target_hires: "",
   target_close_date: "",
 };
 
-function CreateCampaignModal({
+function campaignSubmitLabel(isEditing: boolean, saving: boolean): string {
+  if (isEditing) return saving ? "Saving..." : "Save changes";
+  return saving ? "Creating..." : "Create campaign";
+}
+
+function CampaignFormModal({
   open,
   onClose,
   orgId,
-  onCreated,
-}: Readonly<{ open: boolean; onClose: () => void; orgId: number; onCreated: () => Promise<void> }>) {
+  campaign,
+  onSaved,
+}: Readonly<{
+  open: boolean;
+  onClose: () => void;
+  orgId: number;
+  campaign: Campaign | null;
+  onSaved: () => Promise<void>;
+}>) {
   const [form, setForm] = useState<CampaignFormState>(EMPTY_CAMPAIGN_FORM);
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    setForm(campaign ? {
+      name: campaign.name,
+      description: campaign.description,
+      department: campaign.department,
+      hiring_manager: campaign.hiring_manager,
+      priority: campaign.priority,
+      status: campaign.status,
+      target_hires: campaign.target_hires?.toString() ?? "",
+      target_close_date: campaign.target_close_date?.slice(0, 10) ?? "",
+    } : EMPTY_CAMPAIGN_FORM);
+  }, [campaign, open]);
 
   const set = <K extends keyof CampaignFormState>(key: K, value: CampaignFormState[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -166,19 +196,24 @@ function CreateCampaignModal({
     e.preventDefault();
     setSaving(true);
     try {
-      await api.post(`/orgs/${orgId}/campaigns`, {
+      const payload = {
         name: form.name,
         description: form.description,
         department: form.department,
         hiring_manager: form.hiring_manager,
         priority: form.priority,
+        status: form.status,
         target_hires: form.target_hires ? Number(form.target_hires) : null,
         target_close_date: form.target_close_date || null,
-      });
-      setForm(EMPTY_CAMPAIGN_FORM);
-      await onCreated();
+      };
+      if (campaign) {
+        await api.patch(`/orgs/${orgId}/campaigns/${campaign.id}`, payload);
+      } else {
+        await api.post(`/orgs/${orgId}/campaigns`, payload);
+      }
+      await onSaved();
       onClose();
-      notify.success("Campaign created.");
+      notify.success(campaign ? "Campaign updated." : "Campaign created.");
     } catch (err) {
       notify.error(err instanceof ApiError ? err.detail : "Failed to create campaign.");
     } finally {
@@ -187,13 +222,13 @@ function CreateCampaignModal({
   };
 
   return (
-    <Modal open={open} onClose={onClose} titleId="create-campaign-title" maxWidthClassName="max-w-[620px]">
+    <Modal open={open} onClose={onClose} titleId="campaign-form-title" maxWidthClassName="max-w-[620px]">
       <GlassCard elevation="high" padding="lg">
         <div className="flex items-center justify-between gap-4">
           <div>
-            <p className="eyebrow">NEW HIRING CAMPAIGN</p>
-            <p id="create-campaign-title" className="mt-1 text-[17px] font-semibold text-ink-heading">
-              Set up a campaign
+            <p className="eyebrow">{campaign ? "EDIT HIRING CAMPAIGN" : "NEW HIRING CAMPAIGN"}</p>
+            <p id="campaign-form-title" className="mt-1 text-[17px] font-semibold text-ink-heading">
+              {campaign ? "Update campaign details" : "Set up a campaign"}
             </p>
           </div>
           <Button size="sm" variant="ghost" onClick={onClose}>Close</Button>
@@ -255,9 +290,20 @@ function CreateCampaignModal({
               onChange={(e) => set("target_close_date", e.target.value)}
             />
           </div>
+          {campaign && (
+            <Select
+              label="CAMPAIGN STATUS"
+              value={form.status}
+              onChange={(e) => set("status", e.target.value as CampaignFormState["status"])}
+              hint={form.status === "CLOSED" ? "Closing a campaign also closes its published roles. Reopen roles individually when needed." : "Active campaigns can accept new roles and publish eligible postings."}
+            >
+              <option value="ACTIVE">Active</option>
+              <option value="CLOSED">Closed</option>
+            </Select>
+          )}
 
           <Button type="submit" className="self-start" loading={saving} disabled={!form.name.trim()}>
-            {saving ? "Creating..." : "Create campaign"}
+            {campaignSubmitLabel(Boolean(campaign), saving)}
           </Button>
         </form>
       </GlassCard>
@@ -285,24 +331,56 @@ function StatCard({
   );
 }
 
-function CampaignCard({ campaign, onOpen }: Readonly<{ campaign: Campaign; onOpen: () => void }>) {
+function CampaignCard({
+  campaign,
+  onOpen,
+  onEdit,
+  onArchive,
+  onRestore,
+  restoring,
+}: Readonly<{
+  campaign: Campaign;
+  onOpen: () => void;
+  onEdit: () => void;
+  onArchive: () => void;
+  onRestore: () => void;
+  restoring: boolean;
+}>) {
+  const archived = Boolean(campaign.deleted_at);
   return (
-    <motion.button
+    <motion.article
       variants={staggerItem}
       whileHover={{ y: -4 }}
-      whileTap={{ y: 0 }}
-      onClick={onOpen}
-      className="glass glass-interactive block w-full p-5 text-left no-underline"
+      className="glass glass-interactive block w-full p-5 text-left"
     >
       <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="truncate text-[15px] font-semibold text-ink-heading">{campaign.name}</p>
+        <button type="button" onClick={onOpen} className="min-w-0 flex-1 text-left">
+          <p className="truncate text-[15px] font-semibold text-ink-heading hover:text-brand">{campaign.name}</p>
           <p className="mt-1 text-[12px] text-ink-subtle">
             {campaign.department || "No department set"}
             {campaign.hiring_manager && ` · ${campaign.hiring_manager}`}
           </p>
+        </button>
+        <div className="flex shrink-0 items-center gap-1">
+          {!archived && (
+            <>
+              <Button type="button" size="sm" variant="ghost" className="!h-8 !w-8 !px-0" title={`Edit ${campaign.name}`} aria-label={`Edit campaign ${campaign.name}`} onClick={onEdit}>
+                <Pencil size={14} />
+              </Button>
+              <Button type="button" size="sm" variant="ghost" className="!h-8 !w-8 !px-0 text-[var(--color-error)]" title={`Archive ${campaign.name}`} aria-label={`Archive campaign ${campaign.name}`} onClick={onArchive}>
+                <Trash2 size={14} />
+              </Button>
+            </>
+          )}
+          {archived && (
+            <Button type="button" size="sm" variant="ghost" className="!h-8 !w-8 !px-0" title={`Restore ${campaign.name}`} aria-label={`Restore campaign ${campaign.name}`} onClick={onRestore} disabled={restoring}>
+              <RotateCcw size={14} />
+            </Button>
+          )}
+          <StatusPill tone={archived ? "muted" : PRIORITY_TONE[campaign.priority] ?? "muted"}>
+            {archived ? "ARCHIVED" : campaign.priority}
+          </StatusPill>
         </div>
-        <StatusPill tone={PRIORITY_TONE[campaign.priority] ?? "muted"}>{campaign.priority}</StatusPill>
       </div>
 
       <div className="mt-5 grid grid-cols-2 gap-3">
@@ -317,14 +395,16 @@ function CampaignCard({ campaign, onOpen }: Readonly<{ campaign: Campaign; onOpe
       </div>
 
       <div className="mt-4 flex items-center justify-between border-t border-subtle pt-3">
-        <StatusPill tone={campaign.status === "ACTIVE" ? "success" : "muted"}>{campaign.status}</StatusPill>
+        <StatusPill tone={!archived && campaign.status === "ACTIVE" ? "success" : "muted"}>
+          {archived ? "ARCHIVED" : campaign.status}
+        </StatusPill>
         {campaign.target_close_date && (
           <span className="mono text-[11px] text-ink-subtle">
             Target: {new Date(campaign.target_close_date).toLocaleDateString()}
           </span>
         )}
       </div>
-    </motion.button>
+    </motion.article>
   );
 }
 
@@ -333,11 +413,19 @@ function CampaignResults({
   campaigns,
   onCreate,
   onOpen,
+  onEdit,
+  onArchive,
+  onRestore,
+  restoringCampaignId,
 }: Readonly<{
   loading: boolean;
   campaigns: Campaign[];
   onCreate: () => void;
   onOpen: (campaignId: number) => void;
+  onEdit: (campaign: Campaign) => void;
+  onArchive: (campaign: Campaign) => void;
+  onRestore: (campaign: Campaign) => void;
+  restoringCampaignId: number | null;
 }>) {
   if (loading) return <SkeletonList count={3} />;
   if (campaigns.length === 0) {
@@ -358,7 +446,15 @@ function CampaignResults({
       className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3"
     >
       {campaigns.map((campaign) => (
-        <CampaignCard key={campaign.id} campaign={campaign} onOpen={() => onOpen(campaign.id)} />
+        <CampaignCard
+          key={campaign.id}
+          campaign={campaign}
+          onOpen={() => onOpen(campaign.id)}
+          onEdit={() => onEdit(campaign)}
+          onArchive={() => onArchive(campaign)}
+          onRestore={() => onRestore(campaign)}
+          restoring={restoringCampaignId === campaign.id}
+        />
       ))}
     </motion.div>
   );
@@ -366,14 +462,20 @@ function CampaignResults({
 
 export default function OrgHomePage() {
   const router = useRouter();
+  const pathname = usePathname();
   const { actor, loading: authLoading, activeOrgId, refreshActor } = useAuth();
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState<"ACTIVE" | "CLOSED">("ACTIVE");
+  const [tab, setTab] = useState<"ACTIVE" | "CLOSED" | "ARCHIVED">("ACTIVE");
   const [createOpen, setCreateOpen] = useState(false);
+  const [editingCampaign, setEditingCampaign] = useState<Campaign | null>(null);
+  const [archiveTarget, setArchiveTarget] = useState<Campaign | null>(null);
+  const [archiving, setArchiving] = useState(false);
+  const [restoringCampaignId, setRestoringCampaignId] = useState<number | null>(null);
   const [inviteOpen, setInviteOpen] = useState(false);
 
   useEffect(() => {
+    if (pathname !== "/org") return;
     if (authLoading) return;
     if (!actor) {
       router.push("/login?next=/org");
@@ -384,27 +486,66 @@ export default function OrgHomePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, actor, activeOrgId]);
 
-  const loadCampaigns = async () => {
-    setLoading(true);
+  const loadCampaigns = async (showLoading = true) => {
+    if (showLoading) setLoading(true);
     try {
-      const data = await api.get<{ campaigns: Campaign[] }>(`/orgs/${activeOrgId}/campaigns`);
+      const data = await api.get<{ campaigns: Campaign[] }>(`/orgs/${activeOrgId}/campaigns?include_archived=true`);
       setCampaigns(data.campaigns);
     } catch (err) {
       notify.error(err instanceof ApiError ? err.detail : "Failed to load campaigns.");
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
+    }
+  };
+
+  useActivePageRefresh(
+    pathname === "/org",
+    !authLoading && Boolean(actor) && Boolean(activeOrgId),
+    () => loadCampaigns(false),
+  );
+
+  const handleArchiveCampaign = async () => {
+    if (!activeOrgId || !archiveTarget) return;
+    setArchiving(true);
+    try {
+      await api.delete(`/orgs/${activeOrgId}/campaigns/${archiveTarget.id}`);
+      setArchiveTarget(null);
+      await loadCampaigns();
+      notify.success("Campaign archived. Its published roles were closed and applicant history was preserved.");
+    } catch (err) {
+      notify.error(err instanceof ApiError ? err.detail : "Failed to archive campaign.");
+    } finally {
+      setArchiving(false);
+    }
+  };
+
+  const handleRestoreCampaign = async (campaign: Campaign) => {
+    if (!activeOrgId) return;
+    setRestoringCampaignId(campaign.id);
+    try {
+      await api.post(`/orgs/${activeOrgId}/campaigns/${campaign.id}/restore`);
+      await loadCampaigns();
+      notify.success("Campaign restored as closed. Reopen it and any roles you want to publish.");
+    } catch (err) {
+      notify.error(err instanceof ApiError ? err.detail : "Failed to restore campaign.");
+    } finally {
+      setRestoringCampaignId(null);
     }
   };
 
   const filtered = useMemo(
-    () => campaigns.filter((c) => (tab === "ACTIVE" ? c.status !== "CLOSED" : c.status === "CLOSED")),
+    () => campaigns.filter((campaign) => {
+      if (tab === "ARCHIVED") return Boolean(campaign.deleted_at);
+      if (campaign.deleted_at) return false;
+      return tab === "ACTIVE" ? campaign.status === "ACTIVE" : campaign.status === "CLOSED";
+    }),
     [campaigns, tab],
   );
 
   const totals = useMemo(
     () => ({
-      roles: campaigns.reduce((sum, c) => sum + (c.posting_count ?? 0), 0),
-      applicants: campaigns.reduce((sum, c) => sum + (c.applicant_count ?? 0), 0),
+      roles: campaigns.filter((campaign) => !campaign.deleted_at).reduce((sum, c) => sum + (c.posting_count ?? 0), 0),
+      applicants: campaigns.filter((campaign) => !campaign.deleted_at).reduce((sum, c) => sum + (c.applicant_count ?? 0), 0),
     }),
     [campaigns],
   );
@@ -478,26 +619,57 @@ export default function OrgHomePage() {
         <div className="mt-10 flex items-center justify-between">
           <div className="flex gap-2">
             <Button size="sm" variant={tab === "ACTIVE" ? "primary" : "secondary"} onClick={() => setTab("ACTIVE")}>
-              Active ({campaigns.filter((c) => c.status !== "CLOSED").length})
+              Active ({campaigns.filter((c) => !c.deleted_at && c.status === "ACTIVE").length})
             </Button>
             <Button size="sm" variant={tab === "CLOSED" ? "primary" : "secondary"} onClick={() => setTab("CLOSED")}>
-              Closed ({campaigns.filter((c) => c.status === "CLOSED").length})
+              Closed ({campaigns.filter((c) => !c.deleted_at && c.status === "CLOSED").length})
+            </Button>
+            <Button size="sm" variant={tab === "ARCHIVED" ? "primary" : "secondary"} onClick={() => setTab("ARCHIVED")}>
+              Archived ({campaigns.filter((campaign) => Boolean(campaign.deleted_at)).length})
             </Button>
           </div>
         </div>
 
         <div className="mt-6">
-          <CampaignResults loading={loading} campaigns={filtered} onCreate={() => setCreateOpen(true)} onOpen={(campaignId) => router.push(`/org/campaigns/${campaignId}`)} />
+          <CampaignResults
+            loading={loading}
+            campaigns={filtered}
+            onCreate={() => setCreateOpen(true)}
+            onOpen={(campaignId) => router.push(`/org/campaigns/${campaignId}`)}
+            onEdit={setEditingCampaign}
+            onArchive={setArchiveTarget}
+            onRestore={(campaign) => void handleRestoreCampaign(campaign)}
+            restoringCampaignId={restoringCampaignId}
+          />
         </div>
 
         {activeOrgId !== null && (
-          <CreateCampaignModal
+          <CampaignFormModal
             open={createOpen}
             onClose={() => setCreateOpen(false)}
             orgId={activeOrgId}
-            onCreated={loadCampaigns}
+            campaign={null}
+            onSaved={loadCampaigns}
           />
         )}
+        {activeOrgId !== null && (
+          <CampaignFormModal
+            open={editingCampaign !== null}
+            onClose={() => setEditingCampaign(null)}
+            orgId={activeOrgId}
+            campaign={editingCampaign}
+            onSaved={loadCampaigns}
+          />
+        )}
+        <ConfirmActionModal
+          open={archiveTarget !== null}
+          onClose={() => setArchiveTarget(null)}
+          onConfirm={() => void handleArchiveCampaign()}
+          title={`Archive ${archiveTarget?.name ?? "campaign"}?`}
+          description="This hides the campaign from active operations and closes its published roles. Applications, interview reports, and history are preserved. You can restore the campaign later; roles will stay closed until you reopen them."
+          confirmLabel="Archive campaign"
+          busy={archiving}
+        />
         {activeOrgId !== null && <InviteMemberModal open={inviteOpen} onClose={() => setInviteOpen(false)} orgId={activeOrgId} />}
       </PageShell>
     </div>

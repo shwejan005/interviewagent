@@ -88,9 +88,9 @@ What is still missing is listed under "Explicitly open gaps" below.
 These were not present at `CODEBASE_REVIEW.md`'s review date and are new as
 of 2026-09-27:
 
-- **Basic in-memory rate limiting** (`backend/rate_limit.py`,
-  `InMemoryRateLimitMiddleware`): a fixed-window, per-client-IP request
-  counter, default 60 requests/60s, configurable via `RATE_LIMIT_REQUESTS`
+- **Basic in-memory rate limiting** (`backend/app/shared/rate_limit.py`,
+  `InMemoryRateLimitMiddleware`): a sliding-window, per-client-IP request
+   log with periodic expired-key cleanup, default 60 requests/60s, configurable via `RATE_LIMIT_REQUESTS`
   / `RATE_LIMIT_WINDOW_SECONDS`, disableable via `RATE_LIMIT_REQUESTS=0`.
   **Honest scope:** single-process only (no shared state across multiple
   backend workers/instances); not a substitute for authentication, per-user

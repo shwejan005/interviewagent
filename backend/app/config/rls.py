@@ -20,9 +20,16 @@ def apply_policies(cur) -> None:
     """Install idempotent policies on tables with a stable tenant/user boundary."""
     org = "NULLIF(current_setting('evalia.current_org_id', true), '')::bigint"
     user = "NULLIF(current_setting('evalia.current_user_id', true), '')::bigint"
+    worker = "COALESCE(current_setting('evalia.is_worker', true), 'false') = 'true'"
 
-    for table in ("campaigns", "interviews", "referrals"):
+    for table in ("campaigns", "referrals", "interview_scorecards"):
         _policy(cur, table, f"org_id = {org}")
+    _policy(cur, "interviewer_profiles", f"org_id = {org}")
+    _policy(
+        cur,
+        "interviews",
+        f"org_id = {org} OR id IN (SELECT interview_id FROM interview_participants WHERE user_id = {user})",
+    )
     # Public job discovery must work for candidates without an active org. A
     # published posting is readable, but creating/updating postings remains
     # tenant-scoped through WITH CHECK.
@@ -42,6 +49,14 @@ def apply_policies(cur) -> None:
     )
     for table in ("application_ai_interviews", "application_ai_interview_turns"):
         _policy(cur, table, f"org_id = {org} OR candidate_user_id = {user}")
+    _policy(cur, "application_interview_reports", f"org_id = {org}")
+    _policy(
+        cur,
+        "posting_evaluation_criteria",
+        f"org_id = {org} OR EXISTS (SELECT 1 FROM job_postings jp "
+        f"WHERE jp.id = posting_evaluation_criteria.posting_id AND jp.status = 'PUBLISHED')",
+        check_expression=f"org_id = {org}",
+    )
 
     _policy(
         cur,
@@ -51,6 +66,12 @@ def apply_policies(cur) -> None:
     )
     _policy(cur, "org_memberships", f"org_id = {org} OR user_id = {user}")
     _policy(cur, "campaign_members", f"campaign_id IN (SELECT id FROM campaigns WHERE org_id = {org}) OR user_id = {user}")
+    _policy(
+        cur,
+        "user_notifications",
+        f"user_id = {user} OR ({worker} AND org_id = {org} AND org_id IS NOT NULL)",
+        check_expression=f"user_id = {user} OR ({worker} AND org_id = {org})",
+    )
 
     _policy(cur, "candidate_profiles", f"user_id = {user}")
     for table in ("work_experiences", "education_entries", "skill_claims", "job_preferences", "answer_vault_entries"):
@@ -66,6 +87,10 @@ def protected_tables() -> tuple[str, ...]:
         "organizations", "org_memberships", "campaigns", "campaign_members",
         "job_postings", "applications", "application_answers", "application_events", "interviews", "referrals",
         "application_ai_interviews", "application_ai_interview_turns",
+        "application_interview_reports", "posting_evaluation_criteria",
+        "interviewer_profiles",
+        "interview_scorecards",
+        "user_notifications",
         "candidate_profiles", "work_experiences", "education_entries", "skill_claims",
         "job_preferences", "answer_vault_entries", "prep_roadmaps", "prep_roadmap_nodes",
         "prep_submissions", "prep_code_submissions", "prep_goals", "prep_gamification", "prep_xp_events",

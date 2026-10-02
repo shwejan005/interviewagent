@@ -32,6 +32,7 @@ backend/verdicts/*.json
 *.swo
 
 .next
+frontend/.next-playwright/
 node_modules
 *.tsbuildinfo
 /.DS_Store

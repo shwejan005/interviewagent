@@ -125,7 +125,7 @@ repository, even though they don't map to a single named task ID:
 - A real, executable, 38-test backend regression suite (`backend/tests/`) —
   zero automated tests existed before this pass.
 - A CI workflow (`.github/workflows/ci.yml`) — none existed before.
-- A basic in-memory rate limiter (`backend/rate_limit.py`) and startup
+- A basic in-memory rate limiter (`backend/app/shared/rate_limit.py`) and startup
   config validation (`main.py`).
 - Removal of three git-tracked, sensitive-looking generated files.
 - Several concrete, low-risk accessibility and marketing-copy-accuracy

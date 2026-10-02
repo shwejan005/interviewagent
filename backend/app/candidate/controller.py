@@ -11,10 +11,12 @@ import asyncio
 import logging
 import os
 from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from app.ai_interview import repository as interview_db
 from app.candidate import repository as cdb, service as matching
 from app.config import database as db
 from app.hiring import repository as hdb
@@ -28,7 +30,8 @@ from app.hiring.dto import (
     SkillsRequest,
     VaultAnswerRequest,
 )
-from app.shared import audit
+from app.shared import audit, notifications
+from app.shared import notification_repository as notification_db
 from app.shared.authz import Actor, current_actor
 
 logger = logging.getLogger(__name__)
@@ -45,6 +48,14 @@ async def _db(func, *args, **kwargs):
 
 def _client_ip(request: Request) -> Optional[str]:
     return request.client.host if request.client else None
+
+
+def _require_verified_email(actor: Actor) -> None:
+    if notifications.email_verification_required() and not actor.email_verified_at:
+        raise HTTPException(
+            status_code=403,
+            detail="Verify your email address before submitting an application.",
+        )
 
 
 def _profile_readiness(profile: Optional[dict]) -> tuple[bool, list[str]]:
@@ -258,6 +269,7 @@ async def apply_to_job(
     actor: Actor = Depends(current_actor),
 ):
     """Submit an application, auto-filling from the vault."""
+    _require_verified_email(actor)
     posting = await _db(hdb.get_published_posting, posting_id)
     if posting is None:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
@@ -333,6 +345,10 @@ async def apply_to_job(
         )
     except hdb.DuplicateApplicationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except hdb.HiringLifecycleConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=_NOT_FOUND) from exc
 
     # Newly answered questions go back into the vault, so the next application
     # is cheaper than this one. This is the compounding value of the vault.
@@ -368,15 +384,81 @@ async def list_my_applications(
     return {"applications": applications, "limit": limit, "offset": offset}
 
 
+@router.get("/notifications")
+async def list_my_notifications(
+    actor: Actor = Depends(current_actor),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+):
+    return await _db(notification_db.list_notifications, actor.user_id, limit=limit, offset=offset)
+
+
+@router.post("/notifications/read-all")
+async def mark_all_my_notifications_read(actor: Actor = Depends(current_actor)):
+    count = await _db(notification_db.mark_all_notifications_read, actor.user_id)
+    return {"marked_read": count}
+
+
+@router.post("/notifications/{notification_id}/read")
+async def mark_my_notification_read(notification_id: int, actor: Actor = Depends(current_actor)):
+    updated = await _db(notification_db.mark_notification_read, actor.user_id, notification_id)
+    if not updated:
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    return {"notification_id": notification_id, "read": True}
+
+
 @router.get("/interviews")
 async def list_my_interviews(
     actor: Actor = Depends(current_actor),
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ):
-    """Candidate and interviewer agenda, scoped by participant identity."""
+    """Unified agenda for AI interview invitations and scheduled conversations."""
+    fetch_limit = min(limit + offset, 200)
+    human_interviews = await _db(hdb.list_interviews_for_user, actor.user_id, fetch_limit, 0)
+    ai_interviews = await _db(interview_db.list_candidate_agenda, actor.user_id, fetch_limit, 0)
+    agenda = []
+    now = datetime.now(timezone.utc)
+    for item in human_interviews:
+        start = hdb._parse_ts(item.get("scheduled_start"))
+        end = hdb._parse_ts(item.get("scheduled_end"))
+        room_open = bool(
+            start and end
+            and start - timedelta(minutes=15) <= now <= end + timedelta(minutes=30)
+            and item.get("status") == "SCHEDULED"
+        )
+        agenda.append({
+            **item,
+            "kind": "HUMAN",
+            "join_href": item.get("meeting_url") or f"/meeting/{item['id']}",
+            "can_join": bool(item.get("meeting_url")) and item.get("status") == "SCHEDULED" or room_open,
+            "room_opens_at": (start - timedelta(minutes=15)).isoformat() if start else None,
+        })
+    for item in ai_interviews:
+        status = item["status"]
+        invitation_expires_at = item.get("invitation_expires_at")
+        can_join = status in {"INTERVIEW_READY", "INTERVIEW_IN_PROGRESS", "ANSWER_PROCESSING"}
+        if status == "INTERVIEW_READY" and invitation_expires_at:
+            expiry = hdb._parse_ts(invitation_expires_at)
+            can_join = expiry is None or expiry > datetime.now(timezone.utc)
+        agenda.append({
+            **item,
+            "id": f"ai-{item['application_id']}",
+            "kind": "AI",
+            "title": "AI interview",
+            "scheduled_start": None,
+            "scheduled_end": None,
+            "timezone": "",
+            "meeting_url": "",
+            "join_href": f"/ai-interview/{item['application_id']}",
+            "can_join": can_join,
+        })
+    agenda.sort(
+        key=lambda item: str(item.get("scheduled_start") or item.get("updated_at") or item.get("created_at") or ""),
+        reverse=True,
+    )
     return {
-        "interviews": await _db(hdb.list_interviews_for_user, actor.user_id, limit, offset),
+        "interviews": agenda[offset:offset + limit],
         "limit": limit,
         "offset": offset,
     }

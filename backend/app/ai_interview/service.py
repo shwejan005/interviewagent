@@ -54,6 +54,116 @@ def _screening_source_texts(profile: dict, resume_text: str, application_answers
     }
 
 
+def _candidate_profile_claims(profile: dict) -> list[dict[str, Any]]:
+    claims = []
+    seen: set[str] = set()
+    for item in profile.get("skills", []):
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("skill", "")).strip()
+        normalized = _normalize(label)
+        if not label or normalized in seen:
+            continue
+        claims.append({"claim": label, "years": item.get("years"), "source": "PROFILE"})
+        seen.add(normalized)
+    years = profile.get("years_experience")
+    if years is not None:
+        claims.append({"claim": "Years of experience", "years": years, "source": "PROFILE"})
+    return claims
+
+
+def _minimum_experience_check(policy: dict, profile: dict) -> list[dict[str, Any]]:
+    minimum = policy.get("minimum_experience")
+    years = profile.get("years_experience")
+    if minimum is None:
+        return []
+    if years is None:
+        state = "UNCLEAR"
+        reason = "Years of experience are not available in the structured profile."
+    elif float(years) < float(minimum):
+        state = "BELOW_MINIMUM"
+        reason = f"The profile lists {years} years; the posting requires at least {minimum}."
+    else:
+        state = "MET"
+        reason = f"The profile lists {years} years; the posting requires at least {minimum}."
+    return [{"criterion_key": "minimum_experience", "state": state, "expected": minimum, "observed": years, "reason": reason}]
+
+
+def _required_skill_checks(policy: dict, profile: dict, resume_text: str) -> list[dict[str, Any]]:
+    skills = policy.get("required_skills") or []
+    profile_skills = {
+        _normalize(str(skill.get("skill", "")))
+        for skill in profile.get("skills", [])
+        if isinstance(skill, dict) and skill.get("skill")
+    }
+    normalized_resume = _normalize(resume_text)
+    checks = []
+    for index, skill in enumerate(skills, start=1):
+        normalized_skill = _normalize(str(skill))
+        in_profile = normalized_skill in profile_skills
+        in_resume = bool(normalized_skill and normalized_skill in normalized_resume)
+        state = "MET" if in_profile or in_resume else "UNCLEAR"
+        checks.append({
+            "criterion_key": f"required_skill_{index}",
+            "requirement": str(skill),
+            "state": state,
+            "reason": "Found in submitted profile or resume." if state == "MET" else "Not found in structured skills or resume; evidence review is required.",
+        })
+    return checks
+
+
+def _minimum_gate_status(checks: list[dict]) -> str:
+    states = {check.get("state") for check in checks}
+    if "BELOW_MINIMUM" in states:
+        return "BELOW_MINIMUM"
+    if "UNCLEAR" in states:
+        return "NEEDS_EVIDENCE"
+    return "MEETS_MINIMUM"
+
+
+def deterministic_minimum_criteria_gate(policy: dict, profile: dict, resume_text: str) -> dict:
+    """Check only explicit recruiter-set facts; uncertainty never becomes a fail."""
+    checks = _minimum_experience_check(policy, profile)
+    checks.extend(_required_skill_checks(policy, profile, resume_text))
+    return {
+        "status": _minimum_gate_status(checks),
+        "checks": checks,
+        "decision_owner": "HUMAN",
+    }
+
+
+def _resolve_minimum_criteria_gate(
+    gate: dict,
+    assessment: ApplicationScreeningAssessment,
+    profile: dict,
+    resume_text: str,
+    application_answers: list[dict],
+) -> dict:
+    """Resolve profile-only unknowns only when the LLM supplies a grounded exact quote."""
+    resolved = {**gate, "checks": [dict(check) for check in gate.get("checks", [])]}
+    sources = _screening_source_texts(profile, resume_text, application_answers)
+    evidence_by_key = {item.criterion_key: item for item in assessment.evidence}
+    for check in resolved["checks"]:
+        if check["state"] != "UNCLEAR":
+            continue
+        evidence_key = "experience_years" if check["criterion_key"] == "minimum_experience" else check["criterion_key"]
+        evidence = evidence_by_key.get(evidence_key)
+        if (
+            evidence is not None
+            and evidence.status == "MET"
+            and evidence.quote
+            and evidence.quote in sources.get(evidence.source or "", "")
+        ):
+            check.update({
+                "state": "MET",
+                "source": evidence.source,
+                "quote": evidence.quote,
+                "observed": evidence.value if evidence.value is not None else check.get("observed"),
+            })
+    resolved["status"] = _minimum_gate_status(resolved["checks"])
+    return resolved
+
+
 def _screening_citation_gaps(assessment: ApplicationScreeningAssessment, sources: dict[str, str]) -> list[str]:
     return [
         f"Evidence for {item.criterion_key} was not found in its cited source."
@@ -226,13 +336,45 @@ async def run_application_screening(interview_id: int) -> None:
     policy = run["policy_snapshot"]
     screening_input = run["screening_input"]
     profile = screening_input.get("profile_snapshot") or {}
+    resume_text = screening_input.get("resume_text") or ""
+    gate = deterministic_minimum_criteria_gate(policy, profile, resume_text)
+    if gate["status"] == "BELOW_MINIMUM":
+        reasons = [check["reason"] for check in gate["checks"] if check["state"] == "BELOW_MINIMUM"]
+        summary = {
+            "decision": "REVIEW_REQUIRED",
+            "summary": "A recruiter-defined minimum criterion needs human review.",
+            "constraint_gaps": reasons,
+            "minimum_criteria": gate,
+            "candidate_claims": _candidate_profile_claims(profile),
+        }
+        await _db(
+            interview_db.mark_review_required,
+            interview_id,
+            "MINIMUM_CRITERIA_REVIEW",
+            " ".join(reasons),
+            summary,
+        )
+        return
+
     verdict, raw_output = await _assess_application_evidence(interview_id, run, policy, screening_input, profile)
+    gate = _resolve_minimum_criteria_gate(
+        gate,
+        verdict,
+        profile,
+        resume_text,
+        screening_input.get("application_answers") or [],
+    )
     screening_summary, verdict, decision, raw_output = await _persist_screening_verdict(
         evaluation_id, run, verdict, raw_output, policy, profile, screening_input
     )
+    screening_summary["minimum_criteria"] = gate
+    screening_summary["candidate_claims"] = _candidate_profile_claims(profile)
     issues = screening_summary.get("constraint_gaps", [])
     threshold = float(policy.get("pass_threshold", 6.0))
-    if _screening_needs_review(decision, verdict.score, threshold, issues):
+    if _screening_needs_review(decision, verdict.score, threshold, issues) or gate["status"] != "MEETS_MINIMUM":
+        issues = list(issues)
+        if gate["status"] != "MEETS_MINIMUM":
+            issues.extend(check["reason"] for check in gate["checks"] if check["state"] == "UNCLEAR")
         reasons = issues or [f"Screening outcome requires review ({decision}, score {verdict.score:g})."]
         await _db(
             interview_db.mark_review_required,
@@ -380,6 +522,299 @@ async def assess_application_answer(interview_id: int, turn_id: int) -> None:
     )
 
 
+def _build_competency_scores(policy: dict, turns: list[dict]) -> list[dict]:
+    rows = []
+    for competency in policy.get("competencies", []):
+        key = competency.get("key", "")
+        evidence_turns = [
+            turn for turn in turns
+            if turn.get("competency_key") == key
+            and turn.get("state") == "ASSESSED"
+            and turn.get("assessment", {}).get("evidence_quote")
+        ]
+        scores = [float(turn["assessment"]["score"]) for turn in evidence_turns]
+        evidence = "\n".join(
+            f"[{turn['phase'].title()} · level {turn['difficulty']}] “{turn['assessment']['evidence_quote']}” — "
+            f"{turn['assessment']['summary']}"
+            for turn in evidence_turns
+        )
+        rows.append({
+            "key": key,
+            "label": competency.get("label", key),
+            "weight": float(competency.get("weight", 0)),
+            "score": round(sum(scores) / len(scores), 2) if scores else None,
+            "evidence": evidence or "Insufficient grounded interview evidence for this competency.",
+        })
+    return rows
+
+
+def _weighted_interview_score(policy: dict, competency_rows: list[dict]) -> tuple[float | None, float, list[dict]]:
+    assessed_rows = [row for row in competency_rows if row["score"] is not None]
+    scored_weight = sum(row["weight"] for row in assessed_rows)
+    total_weight = sum(float(item.get("weight", 0)) for item in policy.get("competencies", []))
+    overall = round(sum(row["score"] * row["weight"] for row in assessed_rows) / scored_weight, 2) if scored_weight else None
+    coverage = round((scored_weight / total_weight) * 100, 1) if total_weight else 0.0
+    return overall, coverage, assessed_rows
+
+
+def _coverage_status(score: float | None, threshold: float) -> str:
+    if score is None:
+        return "NOT_ASSESSED"
+    if score < threshold - 1:
+        return "GAP"
+    if score >= threshold + 1:
+        return "DEMONSTRATED"
+    return "PARTIAL"
+
+
+def _matching_competency_key(skill: str, competencies: dict) -> str | None:
+    normalized_skill = _normalize(skill)
+    for key, competency in competencies.items():
+        label = _normalize(str(competency.get("label", "")))
+        if normalized_skill in label or normalized_skill == _normalize(str(key)):
+            return key
+    return None
+
+
+def _screening_evidence_index(screening: dict) -> dict:
+    return {
+        item.get("criterion_key"): item
+        for item in screening.get("evidence", [])
+        if isinstance(item, dict)
+    }
+
+
+def _skill_coverage_row(
+    skill: str,
+    competency_by_key: dict,
+    score_by_key: dict,
+    threshold: float,
+    source: str,
+    resume_evidence: str,
+    evidence_status: str,
+) -> tuple[dict, dict, str]:
+    matching_key = _matching_competency_key(skill, competency_by_key)
+    score_row = score_by_key.get(matching_key) if matching_key else None
+    if score_row is None or score_row["score"] is None:
+        claim_status = "NOT_PROBED"
+        coverage_status = "CLAIMED_ONLY" if evidence_status == "MET" else "NOT_ASSESSED"
+    elif score_row["score"] >= threshold:
+        claim_status, coverage_status = "CONFIRMED_IN_INTERVIEW", "DEMONSTRATED"
+    else:
+        claim_status, coverage_status = "WORTH_FOLLOW_UP", "GAP"
+    interview_evidence = score_row["evidence"] if score_row else "Not assessed in the interview."
+    resume_text = resume_evidence or f"Candidate profile lists: {skill}."
+    claim = {
+        "claim": skill,
+        "status": claim_status,
+        "source": source,
+        "resume_evidence": resume_text,
+        "interview_evidence": interview_evidence,
+    }
+    row = {
+        "key": "claim_" + re.sub(r"[^a-z0-9]+", "_", _normalize(skill)).strip("_"),
+        "label": skill,
+        "kind": "RESUME_CLAIM",
+        "status": coverage_status,
+        "score": score_row["score"] if score_row else None,
+        "weight": score_row["weight"] if score_row else 0,
+        "evidence": interview_evidence,
+        "resume_evidence": resume_text,
+    }
+    return row, claim, coverage_status
+
+
+def _required_skill_coverage(
+    policy: dict,
+    evidence_by_key: dict,
+    competency_by_key: dict,
+    score_by_key: dict,
+    threshold: float,
+) -> tuple[list[dict], list[dict], list[str], set[str]]:
+    rows, claims, statuses, seen = [], [], [], set()
+    for index, skill in enumerate(policy.get("required_skills") or [], start=1):
+        item = evidence_by_key.get(f"required_skill_{index}", {})
+        row, claim, status = _skill_coverage_row(
+            str(skill), competency_by_key, score_by_key, threshold,
+            str(item.get("source") or "RESUME"), item.get("quote", ""), item.get("status", "UNCLEAR"),
+        )
+        row.update({"key": f"required_skill_{index}", "kind": "MUST_HAVE"})
+        rows.append(row)
+        claims.append(claim)
+        statuses.append(status)
+        seen.add(_normalize(str(skill)))
+    return rows, claims, statuses, seen
+
+
+def _profile_claim_coverage(
+    screening: dict,
+    competency_by_key: dict,
+    score_by_key: dict,
+    threshold: float,
+    seen_claims: set[str],
+) -> tuple[list[dict], list[dict]]:
+    rows, claims = [], []
+    for candidate_claim in screening.get("candidate_claims", []):
+        if not isinstance(candidate_claim, dict):
+            continue
+        claim = str(candidate_claim.get("claim", "")).strip()
+        normalized = _normalize(claim)
+        if not claim or normalized in seen_claims:
+            continue
+        source = str(candidate_claim.get("source") or "PROFILE")
+        years = candidate_claim.get("years")
+        evidence = f"Candidate profile lists {years} years of experience." if claim == "Years of experience" else ""
+        row, claim_row, _status = _skill_coverage_row(
+            claim, competency_by_key, score_by_key, threshold, source, evidence, "MET",
+        )
+        rows.append(row)
+        claims.append(claim_row)
+        seen_claims.add(normalized)
+    return rows, claims
+
+
+def _build_requirements_coverage(
+    policy: dict,
+    screening: dict,
+    competency_rows: list[dict],
+    threshold: float,
+) -> tuple[list[dict], list[dict], list[str]]:
+    coverage = [{
+        "key": row["key"],
+        "label": row["label"],
+        "kind": "COMPETENCY",
+        "status": _coverage_status(row["score"], threshold),
+        "score": row["score"],
+        "weight": row["weight"],
+        "evidence": row["evidence"],
+    } for row in competency_rows]
+    screening_by_key = _screening_evidence_index(screening)
+    competency_by_key = {item.get("key"): item for item in policy.get("competencies", [])}
+    score_by_key = {row["key"]: row for row in competency_rows}
+    required_rows, claims, must_have_statuses, seen_claims = _required_skill_coverage(
+        policy, screening_by_key, competency_by_key, score_by_key, threshold,
+    )
+    profile_rows, profile_claims = _profile_claim_coverage(
+        screening, competency_by_key, score_by_key, threshold, seen_claims,
+    )
+    coverage.extend(required_rows)
+    coverage.extend(profile_rows)
+    claims.extend(profile_claims)
+    return coverage, claims, must_have_statuses
+
+
+def _assessment_highlights(turns: list[dict]) -> tuple[list[dict], list[dict]]:
+    highlights: dict[str, list[dict]] = {"strengths": [], "concerns": []}
+    seen: dict[str, set[str]] = {"strengths": set(), "concerns": set()}
+    for turn in turns:
+        if turn.get("state") != "ASSESSED":
+            continue
+        assessment = turn.get("assessment", {})
+        quote = assessment.get("evidence_quote", "")
+        for target, field in (("strengths", "strengths"), ("concerns", "gaps")):
+            for text in assessment.get(field, []):
+                key = _normalize(str(text))
+                if key and key not in seen[target]:
+                    highlights[target].append({"text": text, "turn_sequence": turn["sequence_no"], "evidence_quote": quote})
+                    seen[target].add(key)
+    return highlights["strengths"], highlights["concerns"]
+
+
+def _build_fit_nudge(
+    overall: float | None,
+    score_coverage: float,
+    threshold: float,
+    competency_rows: list[dict],
+    must_have_statuses: list[str],
+) -> dict:
+    if overall is None or score_coverage < 50:
+        band = "INSUFFICIENT_EVIDENCE"
+    elif overall < threshold - 1:
+        band = "UNLIKELY_FIT"
+    elif overall < threshold:
+        band = "MIXED"
+    elif overall >= threshold + 1 and all(status == "DEMONSTRATED" for status in must_have_statuses):
+        band = "STRONG_FIT"
+    elif overall >= threshold and not any(status == "GAP" for status in must_have_statuses):
+        band = "LIKELY_FIT"
+    else:
+        band = "MIXED"
+    return {
+        "band": band,
+        "suggested_action": "PROMOTE" if band in {"STRONG_FIT", "LIKELY_FIT"} else "HOLD",
+        "score_threshold": threshold,
+        "evidence_coverage_percent": score_coverage,
+        "summary": (
+            f"The available job-related evidence leans toward {band.replace('_', ' ').lower()} "
+            f"({sum(row['score'] is not None for row in competency_rows)} of {len(competency_rows)} competencies assessed). "
+            "Review the cited examples and gaps; this is an advisory, not a hiring decision."
+        ),
+        "calibration": "UNVALIDATED_ADVISORY",
+    }
+
+
+def _report_turns(turns: list[dict]) -> list[dict]:
+    return [{
+        "sequence_no": turn["sequence_no"],
+        "phase": turn["phase"],
+        "question_type": turn["question_type"],
+        "competency_key": turn["competency_key"],
+        "difficulty": turn["difficulty"],
+        "question": turn["question_text"],
+        "answer": turn.get("answer_text"),
+        "answer_source": turn.get("answer_source", "TEXT"),
+        "assessment": turn.get("assessment", {}),
+    } for turn in turns]
+
+
+def _build_report_details(
+    run: dict,
+    turns: list[dict],
+    screening: dict,
+    policy: dict,
+    requirements_coverage: list[dict],
+    resume_claims: list[dict],
+    strengths: list[dict],
+    concerns: list[dict],
+    score_coverage: float,
+    fit_nudge: dict,
+) -> dict:
+    next_round_focus = [
+        {"requirement": item["label"], "status": item["status"]}
+        for item in requirements_coverage
+        if item["status"] in {"PARTIAL", "CLAIMED_ONLY", "NOT_ASSESSED", "GAP"}
+    ]
+    return {
+        "source": "application_ai_interview_v2",
+        "posting_description": policy.get("posting_description", ""),
+        "requirements_coverage": requirements_coverage,
+        "resume_claims": resume_claims,
+        "strengths": strengths,
+        "concerns": concerns,
+        "next_round_focus": next_round_focus,
+        "fit_nudge": fit_nudge,
+        "screening": {
+            "decision": screening.get("decision", "PASS"),
+            "score": screening.get("score"),
+            "policy_version": run["rubric_version"],
+            "constraint_gaps": screening.get("constraint_gaps", []),
+            "minimum_criteria": screening.get("minimum_criteria", {}),
+            "evidence": screening.get("evidence", []),
+        },
+        "interview": {
+            "status": run["status"],
+            "phase": run["phase"],
+            "role_level": (policy.get("interview_settings") or {}).get("role_level", "MID"),
+            "turn_count": len(turns),
+            "weighted_score_status": "ADVISORY_UNCALIBRATED",
+            "score_coverage_percent": score_coverage,
+            "turns": _report_turns(turns),
+            "model_recommendation": "HUMAN_REVIEW_REQUIRED",
+            "human_decision_required": True,
+        },
+    }
+
+
 async def generate_application_report(interview_id: int) -> None:
     run = await _db(interview_db.get_internal_by_id, interview_id)
     if run is None:
@@ -391,68 +826,19 @@ async def generate_application_report(interview_id: int) -> None:
 
     policy = run["policy_snapshot"]
     turns = await _db(interview_db.list_turns_internal, interview_id)
-    competency_rows = []
-    for competency in policy.get("competencies", []):
-        key = competency.get("key", "")
-        weight = float(competency.get("weight", 0))
-        evidence_turns = [
-            turn for turn in turns
-            if turn.get("competency_key") == key
-            and turn.get("state") == "ASSESSED"
-            and turn.get("assessment", {}).get("evidence_quote")
-        ]
-        scores = [float(turn["assessment"]["score"]) for turn in evidence_turns]
-        score = round(sum(scores) / len(scores), 2) if scores else None
-        evidence = "\n".join(
-            f"[{turn['phase'].title()} · level {turn['difficulty']}] “{turn['assessment']['evidence_quote']}” — "
-            f"{turn['assessment']['summary']}"
-            for turn in evidence_turns
-        )
-        competency_rows.append({
-            "key": key,
-            "label": competency.get("label", key),
-            "weight": weight,
-            "score": score,
-            "evidence": evidence or "Insufficient grounded interview evidence for this competency.",
-        })
-
-    # Core questions are consistent, but follow-up/difficulty paths vary by
-    # answer. Do not publish a candidate-ranking total until those paths have
-    # been validated/calibrated; preserve per-competency evidence instead.
-    overall = None
     screening = run.get("screening_result") or {}
-    details = {
-        "source": "application_ai_interview_v1",
-        "screening": {
-            "decision": screening.get("decision", "PASS"),
-            "score": screening.get("score"),
-            "policy_version": run["rubric_version"],
-            "constraint_gaps": screening.get("constraint_gaps", []),
-            "evidence": screening.get("evidence", []),
-        },
-        "interview": {
-            "status": run["status"],
-            "phase": run["phase"],
-            "role_level": (policy.get("interview_settings") or {}).get("role_level", "MID"),
-            "turn_count": len(turns),
-            "weighted_score_status": "WITHHELD_PENDING_ADAPTIVE_PATH_CALIBRATION",
-            "turns": [
-                {
-                    "sequence_no": turn["sequence_no"],
-                    "phase": turn["phase"],
-                    "question_type": turn["question_type"],
-                    "competency_key": turn["competency_key"],
-                    "difficulty": turn["difficulty"],
-                    "question": turn["question_text"],
-                    "answer": turn.get("answer_text"),
-                    "assessment": turn.get("assessment", {}),
-                }
-                for turn in turns
-            ],
-            "model_recommendation": "HUMAN_REVIEW_REQUIRED",
-            "human_decision_required": True,
-        },
-    }
+    competency_rows = _build_competency_scores(policy, turns)
+    overall, score_coverage, _assessed_rows = _weighted_interview_score(policy, competency_rows)
+    threshold = float(policy.get("pass_threshold", 6.0))
+    requirements_coverage, resume_claims, must_have_statuses = _build_requirements_coverage(
+        policy, screening, competency_rows, threshold
+    )
+    strengths, concerns = _assessment_highlights(turns)
+    fit_nudge = _build_fit_nudge(overall, score_coverage, threshold, competency_rows, must_have_statuses)
+    details = _build_report_details(
+        run, turns, screening, policy, requirements_coverage, resume_claims,
+        strengths, concerns, score_coverage, fit_nudge,
+    )
     if run.get("evaluation_id") is None:
         await _db(interview_db.ensure_evaluation, interview_id)
 

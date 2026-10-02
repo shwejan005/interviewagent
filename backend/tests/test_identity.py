@@ -10,7 +10,7 @@ CI gate — a failure here is a data breach, not a bug.
 import pytest
 
 from app.config import database as db
-from app.shared import security
+from app.shared import notifications, security
 from app.shared.rbac import Capability, SystemRole, capabilities_for_role
 
 
@@ -19,8 +19,10 @@ def _register(client, email, password="correct-horse-battery", name="Test User")
         "/auth/register",
         json={"email": email, "password": password, "full_name": name},
     )
-    assert resp.status_code == 201, resp.text
-    return resp.json()["access_token"]
+    assert resp.status_code == 202, resp.text
+    login = client.post("/auth/login", json={"email": email, "password": password})
+    assert login.status_code == 200, login.text
+    return login.json()["access_token"]
 
 
 def _auth(token, org_id=None):
@@ -126,21 +128,112 @@ class TestRegistrationAndLogin:
 
         assert resp.status_code == 401
 
-    def test_duplicate_email_rejected(self, client):
-        _register(client, "dupe@example.com")
-        resp = client.post(
+    def test_registration_response_does_not_reveal_duplicate_email(self, client):
+        first = client.post(
             "/auth/register",
             json={"email": "dupe@example.com", "password": "correct-horse-battery"},
         )
-        assert resp.status_code == 409
+        duplicate = client.post(
+            "/auth/register",
+            json={"email": "dupe@example.com", "password": "correct-horse-battery"},
+        )
+        assert first.status_code == duplicate.status_code == 202
+        assert first.json() == duplicate.json()
 
     def test_email_is_case_insensitive_for_uniqueness(self, client):
-        _register(client, "Case@Example.com")
-        resp = client.post(
+        first = client.post(
+            "/auth/register",
+            json={"email": "Case@Example.com", "password": "correct-horse-battery"},
+        )
+        duplicate = client.post(
             "/auth/register",
             json={"email": "case@example.COM", "password": "correct-horse-battery"},
         )
-        assert resp.status_code == 409
+        assert first.status_code == duplicate.status_code == 202
+        assert first.json() == duplicate.json()
+
+    def test_verification_link_is_single_use_and_registration_is_generic(self, client, monkeypatch):
+        sent_tokens = []
+        monkeypatch.setattr(notifications, "email_verification_required", lambda: True)
+        monkeypatch.setattr(notifications, "smtp_configured", lambda: True)
+        monkeypatch.setattr(
+            notifications,
+            "send_email_verification_email",
+            lambda email, token: sent_tokens.append((email, token)) or "sent",
+        )
+
+        created = client.post(
+            "/auth/register",
+            json={"email": "verify@example.com", "password": "correct-horse-battery"},
+        )
+        duplicate = client.post(
+            "/auth/register",
+            json={"email": "verify@example.com", "password": "correct-horse-battery"},
+        )
+        assert created.status_code == duplicate.status_code == 202
+        assert created.json() == duplicate.json()
+        assert len(sent_tokens) == 1
+        assert "access_token" not in created.json()
+
+        token = sent_tokens[0][1]
+        verified = client.post("/auth/verify-email", json={"token": token})
+        assert verified.status_code == 200, verified.text
+        assert client.post("/auth/verify-email", json={"token": token}).status_code == 400
+        assert client.post(
+            "/auth/login",
+            json={"email": "verify@example.com", "password": "correct-horse-battery"},
+        ).status_code == 200
+
+    def test_password_reset_is_generic_single_use_and_revokes_existing_sessions(self, client, monkeypatch):
+        token = _register(client, "reset@example.com")
+        reset_tokens = []
+        monkeypatch.setattr(
+            notifications,
+            "send_password_reset_email",
+            lambda email, reset_token: reset_tokens.append((email, reset_token)) or "sent",
+        )
+
+        unknown = client.post("/auth/password-reset/request", json={"email": "missing@example.com"})
+        known = client.post("/auth/password-reset/request", json={"email": "reset@example.com"})
+        assert unknown.status_code == known.status_code == 202
+        assert unknown.json() == known.json()
+        assert len(reset_tokens) == 1
+
+        reset = client.post(
+            "/auth/password-reset/confirm",
+            json={"token": reset_tokens[0][1], "new_password": "a-new-sufficient-password"},
+        )
+        assert reset.status_code == 200, reset.text
+        assert client.post(
+            "/auth/password-reset/confirm",
+            json={"token": reset_tokens[0][1], "new_password": "another-new-password"},
+        ).status_code == 400
+        assert client.get("/auth/me", headers=_auth(token)).status_code == 401
+        assert client.post(
+            "/auth/login",
+            json={"email": "reset@example.com", "password": "a-new-sufficient-password"},
+        ).status_code == 200
+
+    def test_expired_password_reset_token_is_rejected(self, client, isolated_db):
+        from datetime import datetime, timedelta, timezone
+
+        token = "expired-reset-token-with-enough-entropy"
+        user_id = isolated_db.create_user(
+            "expired@example.com",
+            security.hash_password("correct-horse-battery"),
+        )
+        expires_at = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+        assert isolated_db.create_account_token(
+            user_id,
+            "PASSWORD_RESET",
+            security.hash_account_token(token),
+            expires_at,
+        )
+        response = client.post(
+            "/auth/password-reset/confirm",
+            json={"token": token, "new_password": "a-new-sufficient-password"},
+        )
+        assert response.status_code == 400
 
     def test_short_password_rejected(self, client):
         resp = client.post(
@@ -459,6 +552,30 @@ class TestAuditTrail:
         result = isolated_db.verify_audit_chain()
         assert result["valid"] is False
         assert result["broken_at_id"] == target["id"]
+
+
+class TestDataSubjectNotifications:
+    def test_notifications_are_exported_and_removed_on_account_deletion(self, client, isolated_db):
+        from app.shared import notification_repository as notification_db
+
+        token = _register(client, "privacy-inbox@example.com")
+        user_id = db.get_user_by_email("privacy-inbox@example.com")["id"]
+        notification_db.create_notification(
+            user_id,
+            "APPLICATION_UPDATE",
+            "Application received",
+            "Your application is in review.",
+            dedupe_key="privacy-inbox-test",
+        )
+
+        exported = client.get("/auth/me/export", headers=_auth(token))
+        assert exported.status_code == 200, exported.text
+        assert exported.json()["notifications"][0]["title"] == "Application received"
+
+        deleted = client.delete("/auth/me", headers=_auth(token))
+        assert deleted.status_code == 204
+        assert notification_db.list_notifications(user_id)["notifications"] == []
+        assert client.get("/auth/me", headers=_auth(token)).status_code == 401
 
     def test_deleting_an_event_breaks_the_chain(self, client, isolated_db):
         _register(client, "del1@example.com")

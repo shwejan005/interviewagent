@@ -55,17 +55,33 @@ class TestSchemaMigrations:
     def test_schema_ledger_applies_current_version(self, isolated_db):
         with isolated_db._get_conn() as (conn, cur):
             cur.execute("SELECT version FROM schema_migrations ORDER BY version")
-            assert [row["version"] for row in cur.fetchall()] == [1, 2, 3, 4, 5, 6]
+            assert [row["version"] for row in cur.fetchall()] == list(range(1, 11))
 
             cur.execute("PRAGMA table_info(agent_verdicts)")
             verdict_columns = {row["name"] for row in cur.fetchall()}
             assert {"attempt_id", "model_name", "usage_json", "completed_at"} <= verdict_columns
 
+            cur.execute("PRAGMA table_info(users)")
+            user_columns = {row["name"] for row in cur.fetchall()}
+            assert "auth_version" in user_columns
+
+            cur.execute("PRAGMA table_info(application_ai_interview_turns)")
+            turn_columns = {row["name"] for row in cur.fetchall()}
+            assert {"draft_answer_text", "draft_updated_at", "answer_source"} <= turn_columns
+
+            cur.execute("PRAGMA table_info(application_ai_interviews)")
+            interview_columns = {row["name"] for row in cur.fetchall()}
+            assert {"modality", "invitation_expires_at", "invite_reminders_sent", "reinvite_count"} <= interview_columns
+
+            cur.execute("PRAGMA table_info(user_notifications)")
+            notification_columns = {row["name"] for row in cur.fetchall()}
+            assert {"user_id", "dedupe_key", "read_at"} <= notification_columns
+
     def test_init_db_is_idempotent_after_migrations(self, isolated_db):
         isolated_db.init_db()
         with isolated_db._get_conn() as (conn, cur):
             cur.execute("SELECT COUNT(*) AS count FROM schema_migrations")
-            assert cur.fetchone()["count"] == 6
+            assert cur.fetchone()["count"] == 10
 
     def test_legacy_sqlite_job_table_is_rebuilt_without_losing_rows(
         self, isolated_db, tmp_path, monkeypatch

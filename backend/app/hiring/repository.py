@@ -21,6 +21,9 @@ from typing import Optional
 from app.config.database import _get_conn, _ph, _row_to_dict, USE_POSTGRES, _IntegrityError
 
 logger = logging.getLogger(__name__)
+_SQLITE_BEGIN_IMMEDIATE = "BEGIN IMMEDIATE"
+_POSTGRES_FOR_UPDATE = " FOR UPDATE"
+_APPLICATION_NOT_FOUND = "Application not found."
 
 
 def _now() -> str:
@@ -118,6 +121,14 @@ class DuplicateInterviewError(Exception):
     """Raised when an application already has an active scheduled interview."""
 
 
+class InterviewScorecardConflictError(Exception):
+    """Raised when a scorecard or interview run is no longer accepting submissions."""
+
+
+class HiringLifecycleConflictError(ValueError):
+    """Raised when a campaign/posting lifecycle state disallows an action."""
+
+
 def can_transition(from_stage: str, to_stage: str) -> bool:
     try:
         source = ApplicationStage(from_stage)
@@ -207,11 +218,11 @@ def is_user_assigned_to_application(application_id: int, org_id: int, user_id: i
 
 
 def get_campaign(campaign_id: int, org_id: int) -> Optional[dict]:
-    """Always org-scoped — a campaign cannot be read across tenants."""
+    """Always org-scoped; archived campaigns remain readable for audit/history."""
     p = _ph()
     with _get_conn() as (conn, cur):
         cur.execute(
-            f"SELECT * FROM campaigns WHERE id = {p} AND org_id = {p} AND deleted_at IS NULL",
+            f"SELECT * FROM campaigns WHERE id = {p} AND org_id = {p}",
             (campaign_id, org_id),
         )
         return _row_to_dict(cur.fetchone())
@@ -222,6 +233,7 @@ def list_campaigns(
     limit: int = 50,
     offset: int = 0,
     assigned_user_id: Optional[int] = None,
+    include_archived: bool = False,
 ) -> list[dict]:
     """Campaign overview, with per-campaign role/applicant counts so the
     recruiter dashboard can render its stats without an N+1 fetch per card."""
@@ -235,13 +247,14 @@ def list_campaigns(
             assignment_where = " AND cm.id IS NOT NULL"
             params.append(assigned_user_id)
         params.append(org_id)
+        archived_filter = "" if include_archived else " AND c.deleted_at IS NULL"
         cur.execute(
             f"SELECT c.*, "
             f"(SELECT COUNT(*) FROM job_postings jp WHERE jp.campaign_id = c.id "
             f"AND jp.deleted_at IS NULL) AS posting_count, "
             f"(SELECT COUNT(*) FROM applications a JOIN job_postings jp2 "
             f"ON jp2.id = a.posting_id WHERE jp2.campaign_id = c.id) AS applicant_count "
-            f"FROM campaigns c{assignment_join} WHERE c.org_id = {p} AND c.deleted_at IS NULL {assignment_where} "
+            f"FROM campaigns c{assignment_join} WHERE c.org_id = {p}{archived_filter}{assignment_where} "
             f"ORDER BY c.created_at DESC LIMIT {p} OFFSET {p}",
             (*params, limit, offset),
         )
@@ -253,16 +266,79 @@ def update_campaign(campaign_id: int, org_id: int, **fields) -> bool:
         "name", "description", "status", "department", "hiring_manager",
         "priority", "target_hires", "target_close_date",
     }
-    data = {k: v for k, v in fields.items() if k in allowed and v is not None}
+    data = {k: v for k, v in fields.items() if k in allowed}
     if not data:
         return False
-    data["updated_at"] = _now()
     p = _ph()
-    clause = ", ".join(f"{k} = {p}" for k in data)
+    now = _now()
+    lock = _POSTGRES_FOR_UPDATE if USE_POSTGRES else ""
+    with _get_conn() as (conn, cur):
+        if not USE_POSTGRES:
+            conn.execute(_SQLITE_BEGIN_IMMEDIATE)
+        cur.execute(
+            f"SELECT status, deleted_at FROM campaigns WHERE id = {p} AND org_id = {p}{lock}",
+            (campaign_id, org_id),
+        )
+        current = cur.fetchone()
+        if current is None or current["deleted_at"] is not None:
+            return False
+
+        data["updated_at"] = now
+        clause = ", ".join(f"{k} = {p}" for k in data)
+        cur.execute(
+            f"UPDATE campaigns SET {clause} WHERE id = {p} AND org_id = {p} AND deleted_at IS NULL",
+            (*data.values(), campaign_id, org_id),
+        )
+        updated = cur.rowcount > 0
+        if updated and data.get("status") == "CLOSED" and current["status"] != "CLOSED":
+            cur.execute(
+                f"UPDATE job_postings SET status = 'CLOSED', closed_at = COALESCE(closed_at, {p}), "
+                f"updated_at = {p} WHERE campaign_id = {p} AND org_id = {p} "
+                f"AND status = 'PUBLISHED' AND deleted_at IS NULL",
+                (now, now, campaign_id, org_id),
+            )
+        return updated
+
+
+def archive_campaign(campaign_id: int, org_id: int) -> bool:
+    """Soft-archive a campaign and close its published roles without deleting applications."""
+    p = _ph()
+    now = _now()
+    lock = _POSTGRES_FOR_UPDATE if USE_POSTGRES else ""
+    with _get_conn() as (conn, cur):
+        if not USE_POSTGRES:
+            conn.execute(_SQLITE_BEGIN_IMMEDIATE)
+        cur.execute(
+            f"SELECT id FROM campaigns WHERE id = {p} AND org_id = {p} AND deleted_at IS NULL{lock}",
+            (campaign_id, org_id),
+        )
+        if cur.fetchone() is None:
+            return False
+        cur.execute(
+            f"UPDATE campaigns SET status = 'CLOSED', deleted_at = {p}, updated_at = {p} "
+            f"WHERE id = {p} AND org_id = {p} AND deleted_at IS NULL",
+            (now, now, campaign_id, org_id),
+        )
+        if cur.rowcount != 1:
+            return False
+        cur.execute(
+            f"UPDATE job_postings SET status = 'CLOSED', closed_at = COALESCE(closed_at, {p}), "
+            f"updated_at = {p} WHERE campaign_id = {p} AND org_id = {p} "
+            f"AND status = 'PUBLISHED' AND deleted_at IS NULL",
+            (now, now, campaign_id, org_id),
+        )
+        return True
+
+
+def restore_campaign(campaign_id: int, org_id: int) -> bool:
+    """Restore campaign visibility but leave it closed until a recruiter reopens it."""
+    p = _ph()
+    now = _now()
     with _get_conn() as (conn, cur):
         cur.execute(
-            f"UPDATE campaigns SET {clause} WHERE id = {p} AND org_id = {p}",
-            (*data.values(), campaign_id, org_id),
+            f"UPDATE campaigns SET deleted_at = NULL, status = 'CLOSED', updated_at = {p} "
+            f"WHERE id = {p} AND org_id = {p} AND deleted_at IS NOT NULL",
+            (now, campaign_id, org_id),
         )
         return cur.rowcount > 0
 
@@ -305,6 +381,18 @@ def create_posting(org_id: int, campaign_id: int, title: str, created_by: Option
     p = _ph()
     placeholders = ", ".join([p] * len(payload))
     with _get_conn() as (conn, cur):
+        if not USE_POSTGRES:
+            conn.execute(_SQLITE_BEGIN_IMMEDIATE)
+        lock = _POSTGRES_FOR_UPDATE if USE_POSTGRES else ""
+        cur.execute(
+            f"SELECT status, deleted_at FROM campaigns WHERE id = {p} AND org_id = {p}{lock}",
+            (campaign_id, org_id),
+        )
+        campaign = cur.fetchone()
+        if campaign is None:
+            raise LookupError("Campaign not found.")
+        if campaign["deleted_at"] is not None or campaign["status"] != "ACTIVE":
+            raise HiringLifecycleConflictError("Reopen the campaign before adding a role.")
         if USE_POSTGRES:
             cur.execute(
                 f"INSERT INTO job_postings ({', '.join(payload)}) "
@@ -322,10 +410,8 @@ def create_posting(org_id: int, campaign_id: int, title: str, created_by: Option
 def get_posting(posting_id: int, org_id: Optional[int] = None) -> Optional[dict]:
     """Fetch a posting.
 
-    org_id is optional because candidates legitimately read *published*
-    postings across organizations — that is the job board. Callers passing
-    None must not expose draft or closed postings; use
-    :func:`get_published_posting` for candidate-facing reads.
+    Org-scoped recruiter reads include archived postings so applicant history
+    remains accessible. Public access must use :func:`get_published_posting`.
     """
     p = _ph()
     with _get_conn() as (conn, cur):
@@ -336,8 +422,7 @@ def get_posting(posting_id: int, org_id: Optional[int] = None) -> Optional[dict]
             )
         else:
             cur.execute(
-                f"SELECT * FROM job_postings WHERE id = {p} AND org_id = {p} "
-                f"AND deleted_at IS NULL",
+                f"SELECT * FROM job_postings WHERE id = {p} AND org_id = {p}",
                 (posting_id, org_id),
             )
         return _decode_posting(_row_to_dict(cur.fetchone()))
@@ -345,19 +430,29 @@ def get_posting(posting_id: int, org_id: Optional[int] = None) -> Optional[dict]
 
 def get_published_posting(posting_id: int) -> Optional[dict]:
     """Candidate-facing read: published postings only, any organization."""
-    posting = get_posting(posting_id)
-    if posting is None or posting["status"] != PostingStatus.PUBLISHED:
-        return None
-    return posting
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"SELECT jp.* FROM job_postings jp JOIN campaigns c ON c.id = jp.campaign_id "
+            f"WHERE jp.id = {p} AND jp.status = {p} AND jp.deleted_at IS NULL "
+            f"AND c.status = 'ACTIVE' AND c.deleted_at IS NULL",
+            (posting_id, str(PostingStatus.PUBLISHED)),
+        )
+        return _decode_posting(_row_to_dict(cur.fetchone()))
 
 
 def list_postings(org_id: int, campaign_id: Optional[int] = None,
                   status: Optional[str] = None, limit: int = 50, offset: int = 0,
-                  assigned_user_id: Optional[int] = None) -> list[dict]:
+                  assigned_user_id: Optional[int] = None,
+                  include_archived: bool = False) -> list[dict]:
     """Recruiter-facing listing, always org-scoped, with an applicant count
     per posting so a campaign drill-down can render role cards at a glance."""
     p = _ph()
-    clauses = [f"jp.org_id = {p}", "jp.deleted_at IS NULL"]
+    clauses = [f"jp.org_id = {p}"]
+    if not include_archived:
+        clauses.append("jp.deleted_at IS NULL")
+    if campaign_id is None:
+        clauses.append("c.deleted_at IS NULL")
     params: list = []
     assignment_join = ""
     if assigned_user_id is not None:
@@ -375,7 +470,8 @@ def list_postings(org_id: int, campaign_id: Optional[int] = None,
         cur.execute(
             f"SELECT jp.*, "
             f"(SELECT COUNT(*) FROM applications a WHERE a.posting_id = jp.id) AS applicant_count "
-            f"FROM job_postings jp{assignment_join} WHERE {' AND '.join(clauses)} "
+            f"FROM job_postings jp JOIN campaigns c ON c.id = jp.campaign_id{assignment_join} "
+            f"WHERE {' AND '.join(clauses)} "
             f"ORDER BY jp.created_at DESC LIMIT {p} OFFSET {p}",
             tuple(params),
         )
@@ -387,7 +483,7 @@ def search_published_postings(query: Optional[str] = None, location: Optional[st
                               limit: int = 50, offset: int = 0) -> dict:
     """Public job board: published postings across all organizations."""
     p = _ph()
-    clauses = [f"p.status = {p}", "p.deleted_at IS NULL"]
+    clauses = [f"p.status = {p}", "p.deleted_at IS NULL", "c.status = 'ACTIVE'", "c.deleted_at IS NULL"]
     params: list = [str(PostingStatus.PUBLISHED)]
 
     if query:
@@ -403,11 +499,15 @@ def search_published_postings(query: Optional[str] = None, location: Optional[st
 
     where = " AND ".join(clauses)
     with _get_conn() as (conn, cur):
-        cur.execute(f"SELECT COUNT(*) AS c FROM job_postings p WHERE {where}", tuple(params))
+        cur.execute(
+            f"SELECT COUNT(*) AS c FROM job_postings p JOIN campaigns c ON c.id = p.campaign_id WHERE {where}",
+            tuple(params),
+        )
         total = cur.fetchone()["c"]
         cur.execute(
             f"SELECT p.*, o.name AS org_name, o.slug AS org_slug "
             f"FROM job_postings p JOIN organizations o ON o.id = p.org_id "
+            f"JOIN campaigns c ON c.id = p.campaign_id "
             f"WHERE {where} ORDER BY p.published_at DESC, p.id DESC LIMIT {p} OFFSET {p}",
             (*params, limit, offset),
         )
@@ -421,7 +521,11 @@ def update_posting(posting_id: int, org_id: int, **fields) -> bool:
         "min_experience", "max_experience", "salary_min", "salary_max",
         "currency", "auto_reject_enabled",
     }
-    data = {k: v for k, v in fields.items() if k in allowed and v is not None}
+    nullable_fields = {"min_experience", "max_experience", "salary_min", "salary_max"}
+    data = {
+        k: v for k, v in fields.items()
+        if k in allowed and (v is not None or k in nullable_fields)
+    }
     for json_field in _POSTING_JSON_FIELDS:
         if fields.get(json_field) is not None:
             data[json_field] = json.dumps(fields[json_field])
@@ -453,13 +557,124 @@ def set_posting_status(posting_id: int, org_id: int, status: str) -> bool:
         extra = f", closed_at = {p}"
         params.append(now)
 
+    lock = _POSTGRES_FOR_UPDATE if USE_POSTGRES else ""
     with _get_conn() as (conn, cur):
+        if not USE_POSTGRES:
+            conn.execute(_SQLITE_BEGIN_IMMEDIATE)
+        cur.execute(
+            f"SELECT campaign_id FROM job_postings WHERE id = {p} AND org_id = {p}",
+            (posting_id, org_id),
+        )
+        posting_ref = cur.fetchone()
+        if posting_ref is None:
+            return False
+        cur.execute(
+            f"SELECT status, deleted_at FROM campaigns WHERE id = {p} AND org_id = {p}{lock}",
+            (posting_ref["campaign_id"], org_id),
+        )
+        campaign = cur.fetchone()
+        if campaign is None:
+            return False
+        cur.execute(
+            f"SELECT deleted_at FROM job_postings WHERE id = {p} AND org_id = {p}{lock}",
+            (posting_id, org_id),
+        )
+        posting = cur.fetchone()
+        if posting is None:
+            return False
+        if posting["deleted_at"] is not None:
+            raise HiringLifecycleConflictError("Restore this archived role before changing its status.")
+        if status == PostingStatus.PUBLISHED and (
+            campaign["deleted_at"] is not None or campaign["status"] != "ACTIVE"
+        ):
+            raise HiringLifecycleConflictError("Reopen the campaign before publishing this role.")
         cur.execute(
             f"UPDATE job_postings SET status = {p}, updated_at = {p}{extra} "
             f"WHERE id = {p} AND org_id = {p} AND deleted_at IS NULL",
             (status, now, *params, posting_id, org_id),
         )
         return cur.rowcount > 0
+
+
+def archive_posting(posting_id: int, org_id: int) -> bool:
+    """Soft-archive a role; applications and their interview history remain intact."""
+    p = _ph()
+    now = _now()
+    lock = _POSTGRES_FOR_UPDATE if USE_POSTGRES else ""
+    with _get_conn() as (conn, cur):
+        if not USE_POSTGRES:
+            conn.execute(_SQLITE_BEGIN_IMMEDIATE)
+        cur.execute(
+            f"SELECT campaign_id FROM job_postings WHERE id = {p} AND org_id = {p}",
+            (posting_id, org_id),
+        )
+        posting_ref = cur.fetchone()
+        if posting_ref is None:
+            return False
+        cur.execute(
+            f"SELECT id FROM campaigns WHERE id = {p} AND org_id = {p}{lock}",
+            (posting_ref["campaign_id"], org_id),
+        )
+        if cur.fetchone() is None:
+            return False
+        cur.execute(
+            f"SELECT status, deleted_at FROM job_postings WHERE id = {p} AND org_id = {p}{lock}",
+            (posting_id, org_id),
+        )
+        posting = cur.fetchone()
+        if posting is None:
+            return False
+        if posting["deleted_at"] is not None:
+            return True
+        cur.execute(
+            f"UPDATE job_postings SET deleted_at = {p}, "
+            f"status = CASE WHEN status = 'PUBLISHED' THEN 'CLOSED' ELSE status END, "
+            f"closed_at = CASE WHEN status = 'PUBLISHED' THEN COALESCE(closed_at, {p}) ELSE closed_at END, "
+            f"updated_at = {p} WHERE id = {p} AND org_id = {p} AND deleted_at IS NULL",
+            (now, now, now, posting_id, org_id),
+        )
+        return cur.rowcount == 1
+
+
+def restore_posting(posting_id: int, org_id: int) -> bool:
+    """Restore role visibility without republishing or reopening it."""
+    p = _ph()
+    now = _now()
+    lock = _POSTGRES_FOR_UPDATE if USE_POSTGRES else ""
+    with _get_conn() as (conn, cur):
+        if not USE_POSTGRES:
+            conn.execute(_SQLITE_BEGIN_IMMEDIATE)
+        cur.execute(
+            f"SELECT campaign_id FROM job_postings WHERE id = {p} AND org_id = {p}",
+            (posting_id, org_id),
+        )
+        posting_ref = cur.fetchone()
+        if posting_ref is None:
+            return False
+        cur.execute(
+            f"SELECT status, deleted_at FROM campaigns WHERE id = {p} AND org_id = {p}{lock}",
+            (posting_ref["campaign_id"], org_id),
+        )
+        campaign = cur.fetchone()
+        if campaign is None:
+            return False
+        if campaign["deleted_at"] is not None or campaign["status"] != "ACTIVE":
+            raise HiringLifecycleConflictError("Restore and reopen the parent campaign before restoring this role.")
+        cur.execute(
+            f"SELECT deleted_at FROM job_postings WHERE id = {p} AND org_id = {p}{lock}",
+            (posting_id, org_id),
+        )
+        posting = cur.fetchone()
+        if posting is None:
+            return False
+        if posting["deleted_at"] is None:
+            return True
+        cur.execute(
+            f"UPDATE job_postings SET deleted_at = NULL, updated_at = {p} "
+            f"WHERE id = {p} AND org_id = {p} AND deleted_at IS NOT NULL",
+            (now, posting_id, org_id),
+        )
+        return cur.rowcount == 1
 
 
 # ── Applications ─────────────────────────────────────────────────────
@@ -480,6 +695,36 @@ def create_application(org_id: int, posting_id: int, candidate_user_id: int,
     p = _ph()
     try:
         with _get_conn() as (conn, cur):
+            if not USE_POSTGRES:
+                conn.execute(_SQLITE_BEGIN_IMMEDIATE)
+            lock = _POSTGRES_FOR_UPDATE if USE_POSTGRES else ""
+            cur.execute(
+                f"SELECT campaign_id FROM job_postings WHERE id = {p} AND org_id = {p}",
+                (posting_id, org_id),
+            )
+            posting_ref = cur.fetchone()
+            if posting_ref is None:
+                raise LookupError("Posting is not available.")
+            cur.execute(
+                f"SELECT status, deleted_at FROM campaigns WHERE id = {p} AND org_id = {p}{lock}",
+                (posting_ref["campaign_id"], org_id),
+            )
+            campaign = cur.fetchone()
+            cur.execute(
+                f"SELECT status, deleted_at FROM job_postings WHERE id = {p} AND org_id = {p}{lock}",
+                (posting_id, org_id),
+            )
+            posting = cur.fetchone()
+            if (
+                campaign is None
+                or campaign["deleted_at"] is not None
+                or campaign["status"] != "ACTIVE"
+                or posting is None
+                or posting["deleted_at"] is not None
+                or posting["status"] != str(PostingStatus.PUBLISHED)
+            ):
+                raise HiringLifecycleConflictError("This posting is no longer accepting applications.")
+
             columns = [
                 "org_id", "posting_id", "candidate_user_id", "profile_id",
                 "profile_snapshot", "source",
@@ -654,9 +899,181 @@ def list_applications_for_candidate(candidate_user_id: int, limit: int = 50,
         return [_row_to_dict(r) for r in cur.fetchall()]
 
 
+def _validated_interview_times(scheduled_start: str, scheduled_end: str) -> tuple[datetime, datetime]:
+    start = _parse_ts(scheduled_start)
+    end = _parse_ts(scheduled_end)
+    if start is None or end is None or end <= start:
+        raise ValueError("scheduled_end must be later than scheduled_start")
+    return start, end
+
+
+def _ensure_no_active_application_interview(cur, application_id: int, org_id: int) -> None:
+    p = _ph()
+    cur.execute(
+        f"SELECT id FROM interviews WHERE application_id = {p} AND org_id = {p} AND status = 'SCHEDULED'",
+        (application_id, org_id),
+    )
+    if cur.fetchone() is not None:
+        raise DuplicateInterviewError("This application already has a scheduled interview.")
+
+
+def _validate_interviewer_membership_and_capacity(cur, org_id: int, user_id: int) -> None:
+    p = _ph()
+    cur.execute(
+        f"SELECT id FROM org_memberships WHERE org_id = {p} AND user_id = {p} "
+        "AND status = 'ACTIVE' AND deleted_at IS NULL",
+        (org_id, user_id),
+    )
+    if cur.fetchone() is None:
+        raise LookupError("Every interviewer must be an active organization member.")
+    cur.execute(
+        f"SELECT available_for_interviews, weekly_capacity FROM interviewer_profiles WHERE org_id = {p} AND user_id = {p}",
+        (org_id, user_id),
+    )
+    profile = _row_to_dict(cur.fetchone())
+    if profile is None:
+        return
+    if not bool(profile["available_for_interviews"]):
+        raise DuplicateInterviewError("A selected interviewer is marked unavailable for interview assignments.")
+    if _scheduled_interviews_this_week(cur, user_id) >= int(profile["weekly_capacity"]):
+        raise DuplicateInterviewError("A selected interviewer has reached their weekly interview capacity.")
+
+
+def _scheduled_interviews_this_week(cur, user_id: int) -> int:
+    p = _ph()
+    now = datetime.now(timezone.utc)
+    week_start = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    week_end = week_start + timedelta(days=7)
+    if USE_POSTGRES:
+        cur.execute(
+            f"SELECT COUNT(DISTINCT i.id) AS scheduled_count FROM interviews i "
+            f"JOIN interview_participants ip ON ip.interview_id = i.id "
+            f"WHERE ip.user_id = {p} AND ip.participant_role = 'INTERVIEWER' AND i.status = 'SCHEDULED' "
+            f"AND i.scheduled_start >= {p} AND i.scheduled_start < {p}",
+            (user_id, week_start, week_end),
+        )
+    else:
+        cur.execute(
+            f"SELECT COUNT(DISTINCT i.id) AS scheduled_count FROM interviews i "
+            f"JOIN interview_participants ip ON ip.interview_id = i.id "
+            f"WHERE ip.user_id = {p} AND ip.participant_role = 'INTERVIEWER' AND i.status = 'SCHEDULED' "
+            f"AND datetime(i.scheduled_start) >= datetime({p}) AND datetime(i.scheduled_start) < datetime({p})",
+            (user_id, week_start.isoformat(), week_end.isoformat()),
+        )
+    return int(cur.fetchone()["scheduled_count"])
+
+
+def _ensure_participants_have_no_overlap(cur, user_ids: list[int], start: datetime, end: datetime) -> None:
+    p = _ph()
+    for user_id in user_ids:
+        if USE_POSTGRES:
+            cur.execute(
+                f"SELECT i.id FROM interviews i JOIN interview_participants ip ON ip.interview_id = i.id "
+                f"WHERE ip.user_id = {p} AND i.status = 'SCHEDULED' "
+                f"AND i.scheduled_start < {p} AND i.scheduled_end > {p} LIMIT 1",
+                (user_id, end.isoformat(), start.isoformat()),
+            )
+        else:
+            cur.execute(
+                f"SELECT i.id FROM interviews i JOIN interview_participants ip ON ip.interview_id = i.id "
+                f"WHERE ip.user_id = {p} AND i.status = 'SCHEDULED' "
+                f"AND datetime(i.scheduled_start) < datetime({p}) "
+                f"AND datetime(i.scheduled_end) > datetime({p}) LIMIT 1",
+                (user_id, end.isoformat(), start.isoformat()),
+            )
+        if cur.fetchone() is not None:
+            raise DuplicateInterviewError("An interview participant is already booked for this time.")
+
+
+def _insert_interview_row(
+    cur,
+    *,
+    org_id: int,
+    application_id: int,
+    title: str,
+    start: datetime,
+    end: datetime,
+    timezone_name: str,
+    meeting_url: str,
+    created_by: int,
+) -> int:
+    p = _ph()
+    columns = (
+        "org_id", "application_id", "title", "scheduled_start", "scheduled_end",
+        "timezone", "meeting_url", "created_by",
+    )
+    values = (
+        org_id, application_id, title, start.isoformat(), end.isoformat(),
+        timezone_name, meeting_url, created_by,
+    )
+    placeholders = ", ".join([p] * len(columns))
+    if USE_POSTGRES:
+        cur.execute(
+            f"INSERT INTO interviews ({', '.join(columns)}) VALUES ({placeholders}) RETURNING id",
+            values,
+        )
+        interview_id = int(cur.fetchone()["id"])
+    else:
+        cur.execute(
+            f"INSERT INTO interviews ({', '.join(columns)}) VALUES ({placeholders})",
+            values,
+        )
+        interview_id = int(cur.lastrowid)
+    return interview_id
+
+
+def _insert_interview_participants(cur, interview_id: int, candidate_user_id: int, interviewer_ids: list[int]) -> None:
+    p = _ph()
+    participants = [(candidate_user_id, "CANDIDATE")] + [
+        (user_id, "INTERVIEWER") for user_id in interviewer_ids
+    ]
+    for user_id, participant_role in participants:
+        cur.execute(
+            f"INSERT INTO interview_participants (interview_id, user_id, participant_role) VALUES ({p}, {p}, {p})",
+            (interview_id, user_id, participant_role),
+        )
+
+
+def _insert_interview_in_transaction(
+    cur,
+    *,
+    org_id: int,
+    application_id: int,
+    candidate_user_id: int,
+    title: str,
+    scheduled_start: str,
+    scheduled_end: str,
+    timezone_name: str,
+    meeting_url: str,
+    created_by: int,
+    interviewer_user_ids: list[int],
+) -> int:
+    start, end = _validated_interview_times(scheduled_start, scheduled_end)
+    _ensure_no_active_application_interview(cur, application_id, org_id)
+    interviewer_ids = list(dict.fromkeys(interviewer_user_ids))
+    for user_id in interviewer_ids:
+        _validate_interviewer_membership_and_capacity(cur, org_id, user_id)
+    participants = list(dict.fromkeys([candidate_user_id, *interviewer_ids]))
+    _ensure_participants_have_no_overlap(cur, participants, start, end)
+    interview_id = _insert_interview_row(
+        cur,
+        org_id=org_id,
+        application_id=application_id,
+        title=title,
+        start=start,
+        end=end,
+        timezone_name=timezone_name,
+        meeting_url=meeting_url,
+        created_by=created_by,
+    )
+    _insert_interview_participants(cur, interview_id, candidate_user_id, interviewer_ids)
+    return interview_id
+
+
 def transition_application(application_id: int, org_id: int, to_stage: str,
                            actor_user_id: Optional[int], note: str = "",
-                           is_automated: bool = False) -> dict:
+                           is_automated: bool = False,
+                           scheduled_interview: Optional[dict] = None) -> dict:
     """Move an application to a new stage, validating the transition.
 
     Reads the current stage and writes the new one inside a single connection
@@ -665,15 +1082,15 @@ def transition_application(application_id: int, org_id: int, to_stage: str,
     p = _ph()
     with _get_conn() as (conn, cur):
         if not USE_POSTGRES:
-            conn.execute("BEGIN IMMEDIATE")
-        select_suffix = " FOR UPDATE" if USE_POSTGRES else ""
+            conn.execute(_SQLITE_BEGIN_IMMEDIATE)
+        select_suffix = _POSTGRES_FOR_UPDATE if USE_POSTGRES else ""
         cur.execute(
-            f"SELECT current_stage FROM applications WHERE id = {p} AND org_id = {p}{select_suffix}",
+            f"SELECT current_stage, candidate_user_id FROM applications WHERE id = {p} AND org_id = {p}{select_suffix}",
             (application_id, org_id),
         )
         row = cur.fetchone()
         if row is None:
-            raise LookupError("Application not found.")
+            raise LookupError(_APPLICATION_NOT_FOUND)
 
         from_stage = row["current_stage"]
         if not can_transition(from_stage, to_stage):
@@ -695,8 +1112,83 @@ def transition_application(application_id: int, org_id: int, to_stage: str,
             (application_id, org_id, "stage_changed", from_stage, to_stage,
              actor_user_id, _bool(is_automated), note),
         )
+        interview_id = None
+        if scheduled_interview is not None:
+            interview_id = _insert_interview_in_transaction(
+                cur,
+                org_id=org_id,
+                application_id=application_id,
+                candidate_user_id=int(row["candidate_user_id"]),
+                created_by=int(actor_user_id),
+                **scheduled_interview,
+            )
 
-    return {"application_id": application_id, "from_stage": from_stage, "to_stage": to_stage}
+    result = {"application_id": application_id, "from_stage": from_stage, "to_stage": to_stage}
+    if interview_id is not None:
+        result["interview_id"] = interview_id
+    return result
+
+
+def record_application_hold(application_id: int, org_id: int, actor_user_id: int, reason: str) -> dict:
+    """Record a human hold while leaving the application in its review stage."""
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        if not USE_POSTGRES:
+            conn.execute(_SQLITE_BEGIN_IMMEDIATE)
+        suffix = _POSTGRES_FOR_UPDATE if USE_POSTGRES else ""
+        cur.execute(
+            f"SELECT current_stage FROM applications WHERE id = {p} AND org_id = {p}{suffix}",
+            (application_id, org_id),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise LookupError(_APPLICATION_NOT_FOUND)
+        stage = str(row["current_stage"])
+        if stage != str(ApplicationStage.PENDING_REVIEW):
+            raise InvalidTransitionError("Only an application awaiting review can be placed on hold.")
+        cur.execute(
+            f"INSERT INTO application_events (application_id, org_id, event_type, from_stage, to_stage, "
+            f"actor_user_id, is_automated, note) VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})",
+            (application_id, org_id, "application_held", stage, stage, actor_user_id, _bool(False), reason.strip()),
+        )
+    return {"application_id": application_id, "from_stage": stage, "to_stage": stage, "action": "HOLD"}
+
+
+def record_application_offer(application_id: int, org_id: int, actor_user_id: int, reason: str) -> dict:
+    """Move to OFFER only after a completed human interview and explicit recruiter decision."""
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        if not USE_POSTGRES:
+            conn.execute(_SQLITE_BEGIN_IMMEDIATE)
+        suffix = _POSTGRES_FOR_UPDATE if USE_POSTGRES else ""
+        cur.execute(
+            f"SELECT current_stage FROM applications WHERE id = {p} AND org_id = {p}{suffix}",
+            (application_id, org_id),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise LookupError(_APPLICATION_NOT_FOUND)
+        from_stage = str(row["current_stage"])
+        if from_stage != str(ApplicationStage.PENDING_REVIEW):
+            raise InvalidTransitionError("Only an application awaiting review can be moved to offer.")
+        cur.execute(
+            f"SELECT i.id FROM interviews i WHERE i.application_id = {p} AND i.org_id = {p} "
+            f"AND i.status = 'COMPLETED' LIMIT 1",
+            (application_id, org_id),
+        )
+        if cur.fetchone() is None:
+            raise InvalidTransitionError("A candidate must complete at least one human interview before an offer decision.")
+        cur.execute(
+            f"UPDATE applications SET current_stage = {p}, status = 'IN_PROGRESS', updated_at = {p} "
+            f"WHERE id = {p} AND org_id = {p}",
+            (str(ApplicationStage.OFFER), _now(), application_id, org_id),
+        )
+        cur.execute(
+            f"INSERT INTO application_events (application_id, org_id, event_type, from_stage, to_stage, actor_user_id, is_automated, note) "
+            f"VALUES ({p}, {p}, 'stage_changed', {p}, {p}, {p}, {p}, {p})",
+            (application_id, org_id, from_stage, str(ApplicationStage.OFFER), actor_user_id, _bool(False), reason.strip()),
+        )
+    return {"application_id": application_id, "from_stage": from_stage, "to_stage": str(ApplicationStage.OFFER), "action": "PROMOTE"}
 
 
 def withdraw_application(application_id: int, candidate_user_id: int) -> bool:
@@ -746,16 +1238,10 @@ def create_interview(
     interviewer_user_ids: list[int],
 ) -> dict:
     """Schedule one interview and persist its candidate/interviewer participants."""
-    start = _parse_ts(scheduled_start)
-    end = _parse_ts(scheduled_end)
-    if start is None or end is None or end <= start:
-        raise ValueError("scheduled_end must be later than scheduled_start")
-
     p = _ph()
-    participant_ids = list(dict.fromkeys(interviewer_user_ids))
     with _get_conn() as (conn, cur):
         if not USE_POSTGRES:
-            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(_SQLITE_BEGIN_IMMEDIATE)
         cur.execute(
             f"SELECT candidate_user_id, current_stage FROM applications "
             f"WHERE id = {p} AND org_id = {p}",
@@ -763,56 +1249,20 @@ def create_interview(
         )
         application = _row_to_dict(cur.fetchone())
         if application is None:
-            raise LookupError("Application not found.")
-
-        cur.execute(
-            f"SELECT id FROM interviews WHERE application_id = {p} AND org_id = {p} "
-            f"AND status = 'SCHEDULED'",
-            (application_id, org_id),
+            raise LookupError(_APPLICATION_NOT_FOUND)
+        interview_id = _insert_interview_in_transaction(
+            cur,
+            org_id=org_id,
+            application_id=application_id,
+            candidate_user_id=int(application["candidate_user_id"]),
+            title=title,
+            scheduled_start=scheduled_start,
+            scheduled_end=scheduled_end,
+            timezone_name=timezone_name,
+            meeting_url=meeting_url,
+            created_by=created_by,
+            interviewer_user_ids=interviewer_user_ids,
         )
-        if cur.fetchone() is not None:
-            raise DuplicateInterviewError("This application already has a scheduled interview.")
-
-        for user_id in participant_ids:
-            cur.execute(
-                f"SELECT id FROM org_memberships WHERE org_id = {p} AND user_id = {p} "
-                f"AND status = 'ACTIVE' AND deleted_at IS NULL",
-                (org_id, user_id),
-            )
-            if cur.fetchone() is None:
-                raise LookupError("Every interviewer must be an active organization member.")
-
-        columns = (
-            "org_id", "application_id", "title", "scheduled_start", "scheduled_end",
-            "timezone", "meeting_url", "created_by",
-        )
-        values = (
-            org_id, application_id, title, start.isoformat(), end.isoformat(),
-            timezone_name, meeting_url, created_by,
-        )
-        placeholders = ", ".join([p] * len(columns))
-        if USE_POSTGRES:
-            cur.execute(
-                f"INSERT INTO interviews ({', '.join(columns)}) VALUES ({placeholders}) "
-                f"RETURNING id",
-                values,
-            )
-            interview_id = cur.fetchone()["id"]
-        else:
-            cur.execute(
-                f"INSERT INTO interviews ({', '.join(columns)}) VALUES ({placeholders})",
-                values,
-            )
-            interview_id = cur.lastrowid
-
-        participants = [(application["candidate_user_id"], "CANDIDATE")]
-        participants.extend((user_id, "INTERVIEWER") for user_id in participant_ids)
-        for user_id, participant_role in participants:
-            cur.execute(
-                f"INSERT INTO interview_participants (interview_id, user_id, participant_role) "
-                f"VALUES ({p}, {p}, {p})",
-                (interview_id, user_id, participant_role),
-            )
 
     return get_interview(interview_id, org_id)
 
@@ -821,8 +1271,9 @@ def get_interview(interview_id: int, org_id: int) -> Optional[dict]:
     p = _ph()
     with _get_conn() as (conn, cur):
         cur.execute(
-            f"SELECT i.*, a.candidate_user_id, a.posting_id "
+            f"SELECT i.*, a.candidate_user_id, a.posting_id, jp.title AS posting_title, o.name AS org_name "
             f"FROM interviews i JOIN applications a ON a.id = i.application_id "
+            f"JOIN job_postings jp ON jp.id = a.posting_id JOIN organizations o ON o.id = i.org_id "
             f"WHERE i.id = {p} AND i.org_id = {p}",
             (interview_id, org_id),
         )
@@ -837,6 +1288,154 @@ def get_interview(interview_id: int, org_id: int) -> Optional[dict]:
         )
         interview["participants"] = [_row_to_dict(row) for row in cur.fetchall()]
         return interview
+
+
+def get_interview_for_participant(interview_id: int, user_id: int) -> Optional[dict]:
+    """Load a room only when the caller is an explicit interview participant."""
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"SELECT i.org_id FROM interviews i WHERE i.id = {p} AND EXISTS "
+            f"(SELECT 1 FROM interview_participants ip WHERE ip.interview_id = i.id AND ip.user_id = {p})",
+            (interview_id, user_id),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        org_id = int(row["org_id"])
+    return get_interview(interview_id, org_id)
+
+
+def submit_interview_scorecard(
+    interview_id: int,
+    org_id: int,
+    interviewer_user_id: int,
+    *,
+    ratings: list[dict],
+    recommendation: str,
+    notes: str,
+) -> dict:
+    if recommendation not in {"ADVANCE", "HOLD"}:
+        raise ValueError("Scorecard recommendation must be ADVANCE or HOLD")
+    p = _ph()
+    ratings_json = json.dumps(ratings, ensure_ascii=False, separators=(",", ":"))
+    with _get_conn() as (conn, cur):
+        if not USE_POSTGRES:
+            conn.execute(_SQLITE_BEGIN_IMMEDIATE)
+        lock = _POSTGRES_FOR_UPDATE if USE_POSTGRES else ""
+        cur.execute(
+            f"SELECT i.application_id, i.status AS interview_status, a.current_stage "
+            f"FROM interviews i JOIN applications a ON a.id = i.application_id "
+            f"WHERE i.id = {p} AND i.org_id = {p}{lock}",
+            (interview_id, org_id),
+        )
+        interview = _row_to_dict(cur.fetchone())
+        if interview is None:
+            raise LookupError("Interview not found.")
+        if interview["interview_status"] not in {"SCHEDULED", "COMPLETED"}:
+            raise InterviewScorecardConflictError("This interview is not accepting scorecards.")
+        cur.execute(
+            f"SELECT id FROM interview_participants WHERE interview_id = {p} AND user_id = {p} "
+            "AND participant_role = 'INTERVIEWER'",
+            (interview_id, interviewer_user_id),
+        )
+        if cur.fetchone() is None:
+            raise LookupError("Only an assigned interviewer can submit this scorecard.")
+        cur.execute(
+            f"SELECT ratings_json, recommendation, notes FROM interview_scorecards "
+            f"WHERE interview_id = {p} AND interviewer_user_id = {p}",
+            (interview_id, interviewer_user_id),
+        )
+        existing = _row_to_dict(cur.fetchone())
+        if existing is not None:
+            if existing["ratings_json"] == ratings_json and existing["recommendation"] == recommendation and existing["notes"] == notes:
+                return _scorecard_submission_state(cur, interview_id, org_id, duplicate=True)
+            raise InterviewScorecardConflictError("You have already submitted this interview scorecard.")
+        cur.execute(
+            f"INSERT INTO interview_scorecards (org_id, interview_id, interviewer_user_id, ratings_json, recommendation, notes) "
+            f"VALUES ({p}, {p}, {p}, {p}, {p}, {p})",
+            (org_id, interview_id, interviewer_user_id, ratings_json, recommendation, notes.strip()),
+        )
+        state = _scorecard_submission_state(cur, interview_id, org_id, duplicate=False)
+        if state["complete"] and interview["interview_status"] != "COMPLETED":
+            cur.execute(
+                f"UPDATE interviews SET status = 'COMPLETED', updated_at = {p} WHERE id = {p} AND org_id = {p} AND status = 'SCHEDULED'",
+                (_now(), interview_id, org_id),
+            )
+            current_stage = str(interview["current_stage"])
+            review_stage = str(ApplicationStage.PENDING_REVIEW)
+            if current_stage != review_stage and can_transition(current_stage, review_stage):
+                cur.execute(
+                    f"UPDATE applications SET current_stage = {p}, status = 'IN_PROGRESS', updated_at = {p} WHERE id = {p} AND org_id = {p}",
+                    (review_stage, _now(), interview["application_id"], org_id),
+                )
+                cur.execute(
+                    f"INSERT INTO application_events (application_id, org_id, event_type, from_stage, to_stage, actor_user_id, is_automated, note) "
+                    f"VALUES ({p}, {p}, 'stage_changed', {p}, {p}, {p}, {p}, {p})",
+                    (interview["application_id"], org_id, current_stage, review_stage, interviewer_user_id, _bool(False), "All assigned interviewers submitted scorecards; recruiter review is required."),
+                )
+        return state
+
+
+def _scorecard_submission_state(cur, interview_id: int, org_id: int, *, duplicate: bool) -> dict:
+    p = _ph()
+    cur.execute(
+        f"SELECT COUNT(*) AS expected FROM interview_participants WHERE interview_id = {p} AND participant_role = 'INTERVIEWER'",
+        (interview_id,),
+    )
+    expected = int(cur.fetchone()["expected"])
+    cur.execute(
+        f"SELECT COUNT(*) AS submitted FROM interview_scorecards WHERE interview_id = {p} AND org_id = {p}",
+        (interview_id, org_id),
+    )
+    submitted = int(cur.fetchone()["submitted"])
+    return {
+        "interview_id": interview_id,
+        "submitted": submitted,
+        "expected": expected,
+        "complete": expected > 0 and submitted >= expected,
+        "duplicate": duplicate,
+    }
+
+
+def get_interview_scorecards(
+    interview_id: int,
+    org_id: int,
+    viewer_user_id: int,
+    *,
+    assigned_interviewer: bool,
+    interview_evidence: Optional[list[dict]] = None,
+    screening_evidence: Optional[list[dict]] = None,
+) -> dict:
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        state = _scorecard_submission_state(cur, interview_id, org_id, duplicate=False)
+        context = {
+            "interview_evidence": interview_evidence or [],
+            "screening_evidence": screening_evidence or [],
+        }
+        if state["complete"]:
+            cur.execute(
+                f"SELECT interviewer_user_id, ratings_json, recommendation, notes, submitted_at "
+                f"FROM interview_scorecards WHERE interview_id = {p} AND org_id = {p} ORDER BY submitted_at, interviewer_user_id",
+                (interview_id, org_id),
+            )
+            rows = [_row_to_dict(row) for row in cur.fetchall()]
+            for row in rows:
+                row["ratings"] = json.loads(row.pop("ratings_json") or "[]")
+            return {**state, **context, "scorecards": rows, "hidden_until_complete": False}
+        if assigned_interviewer:
+            cur.execute(
+                f"SELECT interviewer_user_id, ratings_json, recommendation, notes, submitted_at "
+                f"FROM interview_scorecards WHERE interview_id = {p} AND org_id = {p} AND interviewer_user_id = {p}",
+                (interview_id, org_id, viewer_user_id),
+            )
+            row = _row_to_dict(cur.fetchone())
+            if row is not None:
+                row["ratings"] = json.loads(row.pop("ratings_json") or "[]")
+                return {**state, **context, "scorecards": [row], "hidden_until_complete": True}
+            return {**state, **context, "scorecards": [], "hidden_until_complete": True}
+        return {**state, **context, "scorecards": [], "hidden_until_complete": True}
 
 
 def list_interviews_for_application(application_id: int, org_id: int) -> list[dict]:
@@ -898,6 +1497,25 @@ def get_application_answers(application_id: int) -> list[dict]:
             (application_id,),
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
+
+
+def list_reports_ready_for_digest(org_id: int, start_at: str, end_at: str) -> list[dict]:
+    """List minimal role/application references for a recruiter digest window."""
+    p = _ph()
+    if USE_POSTGRES:
+        predicate = f"r.generated_at >= {p} AND r.generated_at < {p}"
+    else:
+        predicate = f"datetime(r.generated_at) >= datetime({p}) AND datetime(r.generated_at) < datetime({p})"
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"SELECT r.application_id, r.generated_at, jp.id AS posting_id, jp.title AS posting_title "
+            f"FROM application_interview_reports r JOIN applications a ON a.id = r.application_id "
+            f"JOIN job_postings jp ON jp.id = a.posting_id WHERE r.org_id = {p} AND {predicate} "
+            f"AND r.interview_details_json LIKE '%\"source\":\"application_ai_interview_v2\"%' "
+            f"ORDER BY r.generated_at DESC, r.application_id DESC",
+            (org_id, start_at, end_at),
+        )
+        return [_row_to_dict(row) for row in cur.fetchall()]
 
 
 def count_applications_for_posting(posting_id: int, org_id: int) -> dict:

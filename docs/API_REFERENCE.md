@@ -107,14 +107,19 @@ server-side on each request.
 ### `GET /auth/me/export`
 
 Returns the authenticated user's portable profile, memberships, applications,
-interviews, and owned evaluation summaries. Password hashes and token secrets
-are never included.
+AI-interview invitation/consent metadata and owned turns (including saved
+drafts and transcript/source), human interview agenda, notifications, and owned
+evaluation summaries. Recruiter-only screening inputs and assessment scores,
+password hashes, and token secrets are never included.
 
 ### `DELETE /auth/me`
 
 Anonymizes the account and removes candidate-owned profile/application/prep
-data. The request is rejected with `409` while the user is an active owner of
-an organization.
+data, including AI-interview turns/reports; queued or running AI-interview
+jobs are cancelled/requested to cancel. The request is rejected with `409`
+while the user is an active owner of an organization. Completed interview data
+for still-active accounts follows any configured retention policy; no universal
+automatic expiry policy is currently enabled.
 
 ---
 
@@ -215,18 +220,26 @@ by which one candidate reads another's profile.
 
 ### Candidate: application-linked AI interview
 
-The current candidate interview is **text-only**. There is no live microphone,
-transcription, video, or speech provider integration in this release. Valid
-applications are automatically screened by the durable worker; a clear,
-validated pass prepares the interview and notifies the candidate without a
-recruiter-per-applicant screen, invite, or scheduling action. Borderline,
-unsupported, or failed screening goes to human review, not model-only rejection.
+Applications are automatically checked against recruiter-set minimum
+criteria and evidence-screened by the durable worker. A clear pass prepares an
+AI interview invitation without per-applicant recruiter scheduling. Candidate
+answers are spoken in the browser, transcribed into captions, and submitted as
+voice-sourced text; the AI asks questions as text. Evalia stores the transcript,
+not raw audio. A text-answer accommodation remains available.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /me/applications/{application_id}/ai-interview` | Read the caller's own pipeline/interview status, persisted question turns, current question, pinned rubric version, and notice version. Other candidates receive 404 |
-| `POST /me/applications/{application_id}/ai-interview/start` | Start a ready interview after acknowledging `{ "accepted": true, "notice_version": "ai-interview-v1", "modality": "TEXT" }`. A stale notice version returns 409 |
-| `POST /me/applications/{application_id}/ai-interview/answers` | Submit `{ "turn_id": 123, "answer": "..." }`; returns 202 while a durable worker assesses the answer. Replaying the same answer is idempotent; conflicting or out-of-order answers return 409 |
+| `GET /me/applications/{application_id}/ai-interview` | Read own pipeline/interview state, question turns, modality, invitation expiry, rubric and notice versions. Other candidates receive 404 |
+| `POST /me/applications/{application_id}/ai-interview/start` | Start after acknowledging `{ "accepted": true, "notice_version": "ai-interview-v1", "modality": "VOICE" }`; `TEXT` is available as an accommodation. A stale notice version returns 409 |
+| `POST /me/applications/{application_id}/ai-interview/text-accommodation` | During an active voice interview, submit `{ "notice_version": "ai-interview-v1" }` to switch to text. Candidate ownership and the acknowledged notice version are re-checked; the choice is audited and idempotent |
+| `POST /me/applications/{application_id}/ai-interview/answers` | Submit `{ "turn_id": 123, "answer": "...", "source": "VOICE" }`; returns 202 while a durable worker assesses the transcript. `source` defaults to `TEXT` for older clients. Replays are idempotent |
+| `GET /me/interviews` | Unified candidate/interviewer agenda of AI screening/invitation state and scheduled human calls; AI items include `join_href`/`can_join` |
+| `POST /me/interviews/{interview_id}/join` | Return a two-minute, room-scoped WebSocket ticket and ICE server configuration for an assigned participant during the scheduled join window. Configured coturn URLs receive user/room-bound HMAC credentials expiring after 10 minutes; the shared secret is never returned |
+
+The WebSocket endpoint is `/ws/interviews/{interview_id}`. The client sends
+`Sec-WebSocket-Protocol: evalia-meeting-v1, <ticket>` and relays only WebRTC
+`offer`, `answer`, and `ice_candidate` messages. Media is peer-to-peer; the
+server is a process-local signaling relay.
 
 Candidate-visible session statuses include `SCREENING_QUEUED`, `SCREENING`,
 `INTERVIEW_READY`, `INTERVIEW_IN_PROGRESS`, `ANSWER_PROCESSING`,
@@ -235,7 +248,7 @@ Candidate-visible session statuses include `SCREENING_QUEUED`, `SCREENING`,
 clear screen advances the application to `AI_INTERVIEW`; report publication
 moves it to `PENDING_REVIEW` only if a recruiter has not already advanced it.
 
-### Recruiter: posting criteria, interview status, and report
+### Recruiter: criteria, reports, decisions, and team
 
 These routes require the organization header, tenant check, and campaign
 assignment check. Posting criteria writes require `campaign:update`; interview
@@ -249,6 +262,12 @@ requires `application:read` and `application:advance`.
 | `GET /orgs/{org_id}/applications/{application_id}/ai-interview` | Read screening status/evidence and recruiter-authorized persisted interview turns |
 | `POST /orgs/{org_id}/applications/{application_id}/ai-interview/approve-screening-exception` | Explicitly approve an uncertain screening exception with a required 10–2000 character reason; approval is audited and prepares the interview |
 | `GET /orgs/{org_id}/applications/{application_id}/report` | Read the application-linked screening and interview report. Returns 404 until the report is published |
+| `POST /orgs/{org_id}/applications/{application_id}/decision` | `{ "action": "PROMOTE", "target_stage": "TECHNICAL", "scheduled_start": "...", "scheduled_end": "...", "interviewer_user_ids": [42], "reason": "..." }`; human-only promote/hold/reject. Promotion schedules an in-app round atomically; rejection/hold and nudge overrides require a reason. `OFFER` is allowed only after a completed human round |
+| `POST /orgs/{org_id}/applications/{application_id}/ai-interview/reinvite` | Re-open an expired invitation with a required reason and a fresh expiry/reminder cycle |
+| `GET /orgs/{org_id}/team` | List active members with interview skills, timezone, availability, capacity, and scheduled load |
+| `PUT /orgs/{org_id}/members/{user_id}/interview-profile` | Update the caller's interview title/skills/timezone/capacity/availability; org role managers can update another member |
+| `POST /orgs/{org_id}/interviews/{interview_id}/scorecard` | Assigned interviewer submits independent 1–5 ratings; every category requires at least 10 characters of job-related evidence, plus an ADVANCE/HOLD recommendation and notes |
+| `GET /orgs/{org_id}/interviews/{interview_id}/scorecards` | Recruiter reads panel status; individual ratings are hidden until every assigned interviewer submits. Assigned interviewers can read only their own submission until then |
 
 AI interview report recommendations are `HUMAN_REVIEW_REQUIRED`; the
 adaptive-path weighted total is withheld pending calibration. The report is
@@ -262,12 +281,16 @@ well as checked at the route layer.
 | Endpoint | Capability |
 |---|---|
 | `POST /orgs/{org_id}/campaigns` | `campaign:create` |
-| `GET /orgs/{org_id}/campaigns` · `GET .../campaigns/{id}` | `campaign:read:assigned` |
-| `PATCH /orgs/{org_id}/campaigns/{id}` | `campaign:update` |
+| `GET /orgs/{org_id}/campaigns` · `GET .../campaigns/{id}` | `campaign:read:assigned`; list accepts `include_archived=true` for the archive view |
+| `PATCH /orgs/{org_id}/campaigns/{id}` | `campaign:update` — partial edit of name, description, department, hiring manager, priority, targets, close date, and `ACTIVE`/`CLOSED` status |
+| `DELETE /orgs/{org_id}/campaigns/{id}` | `campaign:update` — soft-archive; closes published roles and preserves application/interview history |
+| `POST /orgs/{org_id}/campaigns/{id}/restore` | `campaign:update` — restore as `CLOSED`; roles remain closed until individually reopened |
 | `POST /orgs/{org_id}/postings` | `campaign:create` — created as `DRAFT`; cannot attach to another org's campaign |
-| `GET /orgs/{org_id}/postings` · `GET .../postings/{id}` | `campaign:read:assigned` |
-| `PATCH /orgs/{org_id}/postings/{id}` | `campaign:update` |
-| `POST /orgs/{org_id}/postings/{id}/status` | `posting:publish` — publishing is gated separately from editing, since it exposes the posting publicly |
+| `GET /orgs/{org_id}/postings` · `GET .../postings/{id}` | `campaign:read:assigned`; list accepts `include_archived=true` |
+| `PATCH /orgs/{org_id}/postings/{id}` | `campaign:update` — edit role details, requirements, application questions, and compensation/experience ranges; in-flight applications retain their frozen snapshots |
+| `DELETE /orgs/{org_id}/postings/{id}` | `campaign:update` — soft-archive; hides the role from candidates and preserves applications/reports |
+| `POST /orgs/{org_id}/postings/{id}/restore` | `campaign:update` — restore as `DRAFT` or `CLOSED`; publishing is still a separate action |
+| `POST /orgs/{org_id}/postings/{id}/status` | `posting:publish` — publish, close, or explicitly reopen; publishing is blocked if the parent campaign is closed/archived |
 | `GET /orgs/{org_id}/postings/{id}/applications` | `application:read` — returns applicants plus per-stage funnel counts |
 | `GET /orgs/{org_id}/applications/{id}` | `application:read` — **audited at Tier 3** as a sensitive read |
 | `POST /orgs/{org_id}/applications/{id}/transition` | `application:advance`, **plus `application:reject` to reject** |
@@ -276,6 +299,19 @@ The legacy `POST /orgs/{org_id}/applications/{id}/screen` remains for older
 applications without an AI-interview workflow. It returns 409 for new
 applications already admitted to automatic screening; it is not part of the
 normal applicant flow.
+
+### Campaign and role lifecycle
+
+Closing a campaign also closes any published postings within it. Reopening a
+campaign does **not** republish its roles; each role must be explicitly
+reopened. The edit/delete icons on the campaign and role cards use reversible
+soft-archive operations rather than SQL `DELETE`, so applications, answers,
+events, AI-interview turns, and reports are not cascaded away. Archived items
+are available from the `Archived` filter and can be restored. Restoring a role
+does not publish it, and restoring a campaign leaves it closed until the
+recruiter reopens it. This prevents accidental public hiring or loss of
+applicant history while still allowing old campaigns and roles to be cleaned
+out of the active workspace.
 
 ### Application stages
 

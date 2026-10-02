@@ -20,6 +20,10 @@ CREATE TABLE IF NOT EXISTS application_ai_interviews (
     next_turn_sequence INTEGER NOT NULL DEFAULT 1,
     phase_question_index INTEGER NOT NULL DEFAULT 0,
     follow_ups_for_question INTEGER NOT NULL DEFAULT 0,
+    modality TEXT NOT NULL DEFAULT 'TEXT',
+    invitation_expires_at TIMESTAMPTZ,
+    invite_reminders_sent INTEGER NOT NULL DEFAULT 0,
+    reinvite_count INTEGER NOT NULL DEFAULT 0,
     consent_version TEXT,
     consent_at TIMESTAMPTZ,
     error_code TEXT,
@@ -33,7 +37,10 @@ CREATE TABLE IF NOT EXISTS application_ai_interviews (
     CHECK (phase IN ('SCREENING', 'TECHNICAL', 'BEHAVIORAL', 'COMPLETE')),
     CHECK (phase_question_index >= 0),
     CHECK (next_turn_sequence > 0),
-    CHECK (follow_ups_for_question >= 0)
+    CHECK (follow_ups_for_question >= 0),
+    CHECK (invite_reminders_sent >= 0),
+    CHECK (reinvite_count >= 0),
+    CHECK (modality IN ('TEXT', 'VOICE'))
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_application_ai_interview_active
@@ -56,7 +63,10 @@ CREATE TABLE IF NOT EXISTS application_ai_interview_turns (
     competency_key TEXT NOT NULL DEFAULT '',
     difficulty INTEGER NOT NULL DEFAULT 2,
     question_text TEXT NOT NULL,
+    draft_answer_text TEXT NOT NULL DEFAULT '',
+    draft_updated_at TIMESTAMPTZ,
     answer_text TEXT,
+    answer_source TEXT NOT NULL DEFAULT 'TEXT',
     state TEXT NOT NULL DEFAULT 'ASKED',
     assessment_json TEXT NOT NULL DEFAULT '{}',
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -66,7 +76,8 @@ CREATE TABLE IF NOT EXISTS application_ai_interview_turns (
     CHECK (phase IN ('TECHNICAL', 'BEHAVIORAL')),
     CHECK (question_type IN ('CORE', 'FOLLOW_UP')),
     CHECK (difficulty BETWEEN 1 AND 3),
-    CHECK (state IN ('ASKED', 'ANSWER_QUEUED', 'ASSESSED'))
+    CHECK (state IN ('ASKED', 'ANSWER_QUEUED', 'ASSESSED')),
+    CHECK (answer_source IN ('TEXT', 'VOICE'))
 );
 CREATE INDEX IF NOT EXISTS idx_ai_interview_turns_app_sequence
     ON application_ai_interview_turns(application_id, sequence_no);
@@ -94,6 +105,10 @@ CREATE TABLE IF NOT EXISTS application_ai_interviews (
     next_turn_sequence INTEGER NOT NULL DEFAULT 1,
     phase_question_index INTEGER NOT NULL DEFAULT 0,
     follow_ups_for_question INTEGER NOT NULL DEFAULT 0,
+    modality TEXT NOT NULL DEFAULT 'TEXT' CHECK (modality IN ('TEXT', 'VOICE')),
+    invitation_expires_at TEXT,
+    invite_reminders_sent INTEGER NOT NULL DEFAULT 0 CHECK (invite_reminders_sent >= 0),
+    reinvite_count INTEGER NOT NULL DEFAULT 0 CHECK (reinvite_count >= 0),
     consent_version TEXT,
     consent_at TEXT,
     error_code TEXT,
@@ -130,7 +145,10 @@ CREATE TABLE IF NOT EXISTS application_ai_interview_turns (
     competency_key TEXT NOT NULL DEFAULT '',
     difficulty INTEGER NOT NULL DEFAULT 2,
     question_text TEXT NOT NULL,
+    draft_answer_text TEXT NOT NULL DEFAULT '',
+    draft_updated_at TEXT,
     answer_text TEXT,
+    answer_source TEXT NOT NULL DEFAULT 'TEXT' CHECK (answer_source IN ('TEXT', 'VOICE')),
     state TEXT NOT NULL DEFAULT 'ASKED',
     assessment_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),

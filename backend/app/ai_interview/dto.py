@@ -1,5 +1,6 @@
 """Strict request and model-output contracts for application AI interviews."""
 
+from datetime import datetime
 from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -68,7 +69,11 @@ class AnswerAssessment(BaseModel):
 class StartInterviewRequest(BaseModel):
     accepted: bool
     notice_version: str = Field(min_length=1, max_length=80)
-    modality: Literal["TEXT"] = "TEXT"
+    modality: Literal["TEXT", "VOICE"] = "TEXT"
+
+
+class RequestTextAccommodation(BaseModel):
+    notice_version: str = Field(min_length=1, max_length=80)
 
 
 class ScreeningOverrideRequest(BaseModel):
@@ -78,6 +83,12 @@ class ScreeningOverrideRequest(BaseModel):
 class SubmitInterviewAnswerRequest(BaseModel):
     turn_id: int = Field(ge=1)
     answer: str = Field(min_length=1, max_length=12000)
+    source: Literal["TEXT", "VOICE"] = "TEXT"
+
+
+class SaveInterviewDraftRequest(BaseModel):
+    turn_id: int = Field(ge=1)
+    draft_answer_text: str = Field(default="", max_length=12000)
 
 
 class CandidateInterviewTurn(BaseModel):
@@ -88,7 +99,10 @@ class CandidateInterviewTurn(BaseModel):
     competency_key: str
     difficulty: int
     question_text: str
+    draft_answer_text: str = ""
+    draft_updated_at: Optional[datetime | str] = None
     answer_text: Optional[str] = None
+    answer_source: Literal["TEXT", "VOICE"] = "TEXT"
     state: Literal["ASKED", "ANSWER_QUEUED", "ASSESSED"]
 
 
@@ -99,6 +113,8 @@ class CandidateInterviewResponse(BaseModel):
     rubric_version: str
     role_level: str
     candidate_notice_version: str
+    modality: Literal["TEXT", "VOICE"] = "TEXT"
+    invitation_expires_at: Optional[datetime | str] = None
     consent_required: bool
     current_question: Optional[CandidateInterviewTurn] = None
     turns: list[CandidateInterviewTurn] = Field(default_factory=list)

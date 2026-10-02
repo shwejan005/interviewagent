@@ -6,7 +6,7 @@ are explicit and expected to run with the organization RLS context set.
 """
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from app.config.database import USE_POSTGRES, _get_conn, _ph, _row_to_dict
@@ -15,6 +15,9 @@ from app.hiring.repository import ApplicationStage, can_transition
 _SQLITE_BEGIN_IMMEDIATE = "BEGIN IMMEDIATE"
 _POSTGRES_FOR_UPDATE = " FOR UPDATE"
 _AI_INTERVIEW_NOT_FOUND = "AI interview not found"
+_INTERVIEW_TURN_NOT_FOUND = "Interview turn not found"
+_DEFAULT_ROLE_LABEL = "this role"
+_UTC_SUFFIX = "+00:00"
 
 
 def _db_bool(value: bool):
@@ -39,17 +42,32 @@ def _json(value, fallback):
     return json.loads(value) if isinstance(value, str) else value
 
 
-def _enqueue_job(cur, job_type: str, payload: dict, idempotency_key: str, tenant_key: str) -> int:
+def _apply_pinned_posting_context(run: dict) -> dict:
+    policy = run.get("policy_snapshot") or {}
+    run["role"] = policy.get("posting_title") or run.get("role", "")
+    run["posting_description"] = policy.get("posting_description") or run.get("posting_description", "")
+    return run
+
+
+def _enqueue_job(
+    cur,
+    job_type: str,
+    payload: dict,
+    idempotency_key: str,
+    tenant_key: str,
+    *,
+    delay_seconds: float = 0,
+) -> int:
     p = _ph()
     encoded = json.dumps(payload, separators=(",", ":"))
     if USE_POSTGRES:
         cur.execute(
             f"""INSERT INTO background_jobs
-                (job_type, payload, max_attempts, idempotency_key, tenant_key)
-                VALUES ({p}, {p}, 5, {p}, {p})
+                (job_type, payload, max_attempts, idempotency_key, tenant_key, available_at)
+                VALUES ({p}, {p}, 5, {p}, {p}, CURRENT_TIMESTAMP + ({p} * INTERVAL '1 second'))
                 ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
                 DO NOTHING RETURNING id""",
-            (job_type, encoded, idempotency_key, tenant_key),
+            (job_type, encoded, idempotency_key, tenant_key, delay_seconds),
         )
         row = cur.fetchone()
         if row is not None:
@@ -62,9 +80,9 @@ def _enqueue_job(cur, job_type: str, payload: dict, idempotency_key: str, tenant
     try:
         cur.execute(
             f"""INSERT INTO background_jobs
-                (job_type, payload, max_attempts, idempotency_key, tenant_key)
-                VALUES ({p}, {p}, 5, {p}, {p})""",
-            (job_type, encoded, idempotency_key, tenant_key),
+                (job_type, payload, max_attempts, idempotency_key, tenant_key, available_at)
+                VALUES ({p}, {p}, 5, {p}, {p}, datetime('now', {p}))""",
+            (job_type, encoded, idempotency_key, tenant_key, f"+{delay_seconds} seconds"),
         )
         return int(cur.lastrowid)
     except Exception as exc:
@@ -74,6 +92,49 @@ def _enqueue_job(cur, job_type: str, payload: dict, idempotency_key: str, tenant
         if existing is None:
             raise exc
         return int(existing["id"])
+
+
+def _queue_invitation_lifecycle_jobs(
+    cur,
+    *,
+    application_id: int,
+    interview_id: int,
+    org_id: int,
+    candidate_user_id: int,
+    role: str,
+    window_days: int,
+    invitation_round: int = 0,
+) -> datetime:
+    window_days = max(1, min(30, int(window_days)))
+    expires_at = datetime.now(timezone.utc) + timedelta(days=window_days)
+    payload = {
+        "application_id": application_id,
+        "interview_id": interview_id,
+        "candidate_user_id": candidate_user_id,
+        "org_id": org_id,
+        "role": role,
+        "invitation_round": invitation_round,
+    }
+    seconds = window_days * 24 * 60 * 60
+    reminder_delays = (max(60, seconds // 2), max(60, seconds - 24 * 60 * 60))
+    for reminder_number, delay in enumerate(reminder_delays, start=1):
+        _enqueue_job(
+            cur,
+            "application_ai_interview_invitation_reminder",
+            {**payload, "reminder_number": reminder_number},
+            f"application-ai-invitation-reminder:{application_id}:{interview_id}:{invitation_round}:{reminder_number}",
+            f"org:{org_id}",
+            delay_seconds=delay,
+        )
+    _enqueue_job(
+        cur,
+        "application_ai_interview_invitation_expiry",
+        payload,
+        f"application-ai-invitation-expiry:{application_id}:{interview_id}:{invitation_round}",
+        f"org:{org_id}",
+        delay_seconds=seconds,
+    )
+    return expires_at
 
 
 def insert_application_workflow_in_transaction(
@@ -159,7 +220,7 @@ def get_internal(application_id: int, org_id: Optional[int] = None) -> Optional[
     row["screening_result"] = _json(row.pop("screening_result_json", None), {})
     row["technical_questions"] = _json(row.pop("technical_questions_json", None), [])
     row["behavioral_questions"] = _json(row.pop("behavioral_questions_json", None), [])
-    return row
+    return _apply_pinned_posting_context(row)
 
 
 def get_internal_by_id(interview_id: int) -> Optional[dict]:
@@ -182,7 +243,7 @@ def get_internal_by_id(interview_id: int) -> Optional[dict]:
     row["screening_result"] = _json(row.pop("screening_result_json", None), {})
     row["technical_questions"] = _json(row.pop("technical_questions_json", None), [])
     row["behavioral_questions"] = _json(row.pop("behavioral_questions_json", None), [])
-    return row
+    return _apply_pinned_posting_context(row)
 
 
 def get_candidate_view(application_id: int, candidate_user_id: int) -> Optional[dict]:
@@ -190,8 +251,8 @@ def get_candidate_view(application_id: int, candidate_user_id: int) -> Optional[
     p = _ph()
     with _get_conn() as (conn, cur):
         cur.execute(
-            f"SELECT id, application_id, status, phase, rubric_version, consent_version, current_question_id, "
-            f"policy_snapshot_json, "
+            f"SELECT id, application_id, status, phase, modality, rubric_version, consent_version, current_question_id, "
+            f"invitation_expires_at, policy_snapshot_json, "
             f"created_at, updated_at, started_at, completed_at "
             f"FROM application_ai_interviews WHERE application_id = {p} AND candidate_user_id = {p} "
             f"ORDER BY attempt_no DESC LIMIT 1",
@@ -202,7 +263,7 @@ def get_candidate_view(application_id: int, candidate_user_id: int) -> Optional[
             return None
         cur.execute(
             f"SELECT id, sequence_no, phase, question_type, competency_key, difficulty, "
-            f"question_text, answer_text, state FROM application_ai_interview_turns "
+            f"question_text, draft_answer_text, draft_updated_at, answer_text, answer_source, state FROM application_ai_interview_turns "
             f"WHERE interview_id = {p} ORDER BY sequence_no",
             (run["id"],),
         )
@@ -213,6 +274,29 @@ def get_candidate_view(application_id: int, candidate_user_id: int) -> Optional[
     run["role_level"] = settings.get("role_level", "MID")
     run["candidate_notice_version"] = policy.get("candidate_notice_version", "ai-interview-v1")
     return run
+
+
+def list_candidate_agenda(user_id: int, limit: int = 50, offset: int = 0) -> list[dict]:
+    """Return candidate-safe AI interview invitations and progress for the agenda."""
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            f"SELECT ai.application_id, ai.status, ai.phase, ai.modality, ai.created_at, "
+            f"ai.updated_at, ai.started_at, ai.completed_at, ai.invitation_expires_at, jp.title AS posting_title, "
+            f"o.name AS org_name FROM application_ai_interviews ai "
+            f"JOIN applications a ON a.id = ai.application_id "
+            f"JOIN job_postings jp ON jp.id = a.posting_id "
+            f"JOIN organizations o ON o.id = ai.org_id "
+            f"WHERE ai.candidate_user_id = {p} AND a.withdrawn_at IS NULL "
+            f"AND ai.status IN ('SCREENING_QUEUED', 'SCREENING', 'INTERVIEW_READY', 'INTERVIEW_IN_PROGRESS', 'ANSWER_PROCESSING', "
+            f"'REPORT_PENDING', 'REPORT_READY', 'REVIEW_REQUIRED', 'EXPIRED') "
+            f"AND ai.attempt_no = (SELECT MAX(latest.attempt_no) FROM application_ai_interviews latest "
+            f"WHERE latest.application_id = ai.application_id) "
+            f"ORDER BY COALESCE(ai.started_at, ai.created_at) DESC, ai.application_id DESC "
+            f"LIMIT {p} OFFSET {p}",
+            (user_id, limit, offset),
+        )
+        return [_row_to_dict(row) for row in cur.fetchall()]
 
 
 def get_recruiter_view(application_id: int, org_id: int) -> Optional[dict]:
@@ -239,7 +323,7 @@ def ensure_evaluation(interview_id: int) -> int:
             conn.execute(_SQLITE_BEGIN_IMMEDIATE)
         lock = _POSTGRES_FOR_UPDATE if USE_POSTGRES else ""
         cur.execute(
-            f"SELECT ai.evaluation_id, ai.application_id, ai.org_id, ai.candidate_user_id, "
+            f"SELECT ai.evaluation_id, ai.application_id, ai.org_id, ai.candidate_user_id, ai.policy_snapshot_json, "
             f"jp.title AS role, u.full_name AS candidate_name "
             f"FROM application_ai_interviews ai JOIN applications a ON a.id = ai.application_id "
             f"JOIN job_postings jp ON jp.id = a.posting_id JOIN users u ON u.id = a.candidate_user_id "
@@ -251,18 +335,20 @@ def ensure_evaluation(interview_id: int) -> int:
             raise InterviewNotFoundError(_AI_INTERVIEW_NOT_FOUND)
         if row["evaluation_id"]:
             return int(row["evaluation_id"])
+        policy_snapshot = _json(row.pop("policy_snapshot_json", None), {})
+        role = policy_snapshot.get("posting_title") or row["role"]
         if USE_POSTGRES:
             cur.execute(
                 f"INSERT INTO evaluations (candidate_name, resume_text, role, org_id, owner_user_id) "
                 f"VALUES ({p}, '', {p}, {p}, {p}) RETURNING id",
-                (row["candidate_name"] or "", row["role"], row["org_id"], row["candidate_user_id"]),
+                (row["candidate_name"] or "", role, row["org_id"], row["candidate_user_id"]),
             )
             evaluation_id = int(cur.fetchone()["id"])
         else:
             cur.execute(
                 f"INSERT INTO evaluations (candidate_name, resume_text, role, org_id, owner_user_id) "
                 f"VALUES ({p}, '', {p}, {p}, {p})",
-                (row["candidate_name"] or "", row["role"], row["org_id"], row["candidate_user_id"]),
+                (row["candidate_name"] or "", role, row["org_id"], row["candidate_user_id"]),
             )
             evaluation_id = int(cur.lastrowid)
         cur.execute(
@@ -471,17 +557,30 @@ def save_screening_pass(interview_id: int, result: dict, raw_output: str, plan: 
         behavioral = plan.get("behavioral_questions", [])
         if not technical or not behavioral:
             raise ValueError("Question plan must include technical and behavioral questions")
+        policy_snapshot = _json(run.get("policy_snapshot_json"), {})
+        invitation_window_days = int((policy_snapshot.get("interview_settings") or {}).get("invitation_window_days", 7))
+        invitation_expires_at = _queue_invitation_lifecycle_jobs(
+            cur,
+            application_id=int(run["application_id"]),
+            interview_id=interview_id,
+            org_id=int(run["org_id"]),
+            candidate_user_id=int(run["candidate_user_id"]),
+            role=str(run.get("role") or _DEFAULT_ROLE_LABEL),
+            window_days=invitation_window_days,
+        )
         cur.execute(
             f"UPDATE application_ai_interviews SET evaluation_id = {p}, status = 'INTERVIEW_READY', "
             f"phase = 'TECHNICAL', technical_questions_json = {p}, behavioral_questions_json = {p}, "
             f"screening_result_json = {p}, screening_input_json = '{{}}', phase_question_index = 0, "
             f"next_turn_sequence = 2, current_question_id = NULL, "
-            f"follow_ups_for_question = 0, updated_at = {_now_sql()} WHERE id = {p}",
+            f"follow_ups_for_question = 0, invitation_expires_at = {p}, invite_reminders_sent = 0, "
+            f"updated_at = {_now_sql()} WHERE id = {p}",
             (
                 evaluation_id,
                 json.dumps(technical, separators=(",", ":")),
                 json.dumps(behavioral, separators=(",", ":")),
                 json.dumps({**result, "raw_summary": raw_output[:4000]}, separators=(",", ":")),
+                invitation_expires_at.isoformat(),
                 interview_id,
             ),
         )
@@ -562,16 +661,29 @@ def approve_screening_exception(
             actor_user_id=reviewer_user_id,
             is_automated=False,
         )
+        policy = _json(run.get("policy_snapshot_json"), {})
+        invitation_window_days = int((policy.get("interview_settings") or {}).get("invitation_window_days", 7))
+        invitation_expires_at = _queue_invitation_lifecycle_jobs(
+            cur,
+            application_id=application_id,
+            interview_id=int(run["id"]),
+            org_id=org_id,
+            candidate_user_id=int(run["candidate_user_id"]),
+            role=str(run.get("role") or _DEFAULT_ROLE_LABEL),
+            window_days=invitation_window_days,
+            invitation_round=int(run.get("reinvite_count") or 0),
+        )
         cur.execute(
             f"UPDATE application_ai_interviews SET evaluation_id = {p}, status = 'INTERVIEW_READY', "
             f"phase = 'TECHNICAL', technical_questions_json = {p}, behavioral_questions_json = {p}, "
             f"screening_input_json = '{{}}', current_question_id = NULL, next_turn_sequence = 2, "
             f"phase_question_index = 0, follow_ups_for_question = 0, error_code = NULL, "
-            f"error_message = NULL, updated_at = {_now_sql()} WHERE id = {p}",
+            f"error_message = NULL, invitation_expires_at = {p}, invite_reminders_sent = 0, updated_at = {_now_sql()} WHERE id = {p}",
             (
                 evaluation_id,
                 json.dumps(technical, separators=(",", ":")),
                 json.dumps(behavioral, separators=(",", ":")),
+                invitation_expires_at.isoformat(),
                 run["id"],
             ),
         )
@@ -629,14 +741,22 @@ def mark_review_required(interview_id: int, code: str, message: str, screening_r
         return True
 
 
-def start_interview(application_id: int, candidate_user_id: int, notice_version: str) -> Optional[dict]:
+def start_interview(
+    application_id: int,
+    candidate_user_id: int,
+    notice_version: str,
+    modality: str = "TEXT",
+) -> Optional[dict]:
+    if modality not in {"TEXT", "VOICE"}:
+        raise ValueError("Unsupported interview modality")
     p = _ph()
     with _get_conn() as (conn, cur):
         if not USE_POSTGRES:
             conn.execute(_SQLITE_BEGIN_IMMEDIATE)
         lock = _POSTGRES_FOR_UPDATE if USE_POSTGRES else ""
         cur.execute(
-            f"SELECT ai.id, ai.status, ai.consent_version, a.withdrawn_at, a.current_stage "
+            f"SELECT ai.id, ai.status, ai.modality, ai.consent_version, ai.invitation_expires_at, "
+            f"a.withdrawn_at, a.current_stage "
             f"FROM application_ai_interviews ai JOIN applications a ON a.id = ai.application_id "
             f"WHERE ai.application_id = {p} AND ai.candidate_user_id = {p} "
             f"ORDER BY ai.attempt_no DESC LIMIT 1{lock}",
@@ -645,32 +765,146 @@ def start_interview(application_id: int, candidate_user_id: int, notice_version:
         run = _row_to_dict(cur.fetchone())
         if run is None or run["withdrawn_at"]:
             return None
-        if run["current_stage"] != str(ApplicationStage.AI_INTERVIEW):
-            raise InterviewConflictError("Application is not currently in the AI interview stage")
-        if run["status"] == "INTERVIEW_IN_PROGRESS" and run.get("consent_version") == notice_version:
+        should_start = _validate_interview_start(run, notice_version, modality)
+        if not should_start:
             return {"status": run["status"], "started": False}
-        if run["status"] != "INTERVIEW_READY":
-            raise InterviewConflictError(f"Interview cannot start from {run['status']}")
         cur.execute(
-            f"UPDATE application_ai_interviews SET status = 'INTERVIEW_IN_PROGRESS', "
+            f"UPDATE application_ai_interviews SET status = 'INTERVIEW_IN_PROGRESS', modality = {p}, "
             f"consent_version = {p}, consent_at = {_now_sql()}, started_at = COALESCE(started_at, {_now_sql()}), "
             f"updated_at = {_now_sql()} WHERE id = {p} AND status = 'INTERVIEW_READY'",
-            (notice_version, run["id"]),
+            (modality, notice_version, run["id"]),
         )
-        return {"status": "INTERVIEW_IN_PROGRESS", "started": cur.rowcount == 1}
+        started = cur.rowcount == 1
+        for job_prefix in (
+            f"application-ai-invitation-reminder:{application_id}:{run['id']}:",
+            f"application-ai-invitation-expiry:{application_id}:{run['id']}:",
+        ):
+            cur.execute(
+                f"UPDATE background_jobs SET status = 'CANCELLED', cancellation_requested = {'TRUE' if USE_POSTGRES else '1'}, "
+                f"updated_at = {_now_sql()} WHERE status = 'PENDING' AND substr(idempotency_key, 1, {p}) = {p}",
+                (len(job_prefix), job_prefix),
+            )
+        return {"status": "INTERVIEW_IN_PROGRESS", "started": started}
 
 
-def _enqueue_job(cur, job_type: str, payload: dict, idempotency_key: str, tenant_key: str) -> int:
+def switch_to_text_accommodation(
+    application_id: int,
+    candidate_user_id: int,
+    notice_version: str,
+) -> dict:
+    """Let a candidate switch from browser speech to the disclosed text fallback."""
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        if not USE_POSTGRES:
+            conn.execute(_SQLITE_BEGIN_IMMEDIATE)
+        lock = _POSTGRES_FOR_UPDATE if USE_POSTGRES else ""
+        cur.execute(
+            f"SELECT ai.id, ai.status, ai.modality, ai.consent_version "
+            f"FROM application_ai_interviews ai JOIN applications a ON a.id = ai.application_id "
+            f"WHERE ai.application_id = {p} AND ai.candidate_user_id = {p} "
+            f"AND a.withdrawn_at IS NULL ORDER BY ai.attempt_no DESC LIMIT 1{lock}",
+            (application_id, candidate_user_id),
+        )
+        run = _row_to_dict(cur.fetchone())
+        if run is None:
+            raise InterviewNotFoundError(_AI_INTERVIEW_NOT_FOUND)
+        if run["status"] != "INTERVIEW_IN_PROGRESS":
+            raise InterviewConflictError("Text accommodation can only be selected during an active interview")
+        if run.get("consent_version") != notice_version:
+            raise InterviewConflictError("The interview notice changed. Review the current notice before changing modality.")
+        if run.get("modality") == "TEXT":
+            return {"modality": "TEXT", "duplicate": True}
+        cur.execute(
+            f"UPDATE application_ai_interviews SET modality = 'TEXT', updated_at = {_now_sql()} "
+            f"WHERE id = {p} AND status = 'INTERVIEW_IN_PROGRESS' AND modality = 'VOICE'",
+            (run["id"],),
+        )
+        if cur.rowcount != 1:
+            raise InterviewConflictError("The interview changed while selecting the text accommodation")
+        return {"modality": "TEXT", "duplicate": False}
+
+
+def save_answer_draft(
+    application_id: int,
+    candidate_user_id: int,
+    turn_id: int,
+    draft_answer_text: str,
+) -> dict:
+    """Save a private draft for the candidate's current, unanswered interview turn."""
+    p = _ph()
+    draft_updated_at = _now()
+    with _get_conn() as (conn, cur):
+        if not USE_POSTGRES:
+            conn.execute(_SQLITE_BEGIN_IMMEDIATE)
+        lock = _POSTGRES_FOR_UPDATE if USE_POSTGRES else ""
+        cur.execute(
+            f"SELECT ai.id AS interview_id, ai.status, ai.current_question_id, t.answer_text, "
+            f"a.withdrawn_at, a.current_stage "
+            f"FROM application_ai_interviews ai JOIN application_ai_interview_turns t "
+            f"ON t.interview_id = ai.id JOIN applications a ON a.id = ai.application_id "
+            f"WHERE ai.application_id = {p} AND ai.candidate_user_id = {p} "
+            f"AND ai.id = (SELECT latest.id FROM application_ai_interviews latest "
+            f"WHERE latest.application_id = {p} AND latest.candidate_user_id = {p} "
+            f"ORDER BY latest.attempt_no DESC LIMIT 1) AND t.id = {p} "
+            f"AND t.application_id = {p} AND t.candidate_user_id = {p}{lock}",
+            (
+                application_id,
+                candidate_user_id,
+                application_id,
+                candidate_user_id,
+                turn_id,
+                application_id,
+                candidate_user_id,
+            ),
+        )
+        row = _row_to_dict(cur.fetchone())
+        if row is None:
+            raise InterviewNotFoundError(_INTERVIEW_TURN_NOT_FOUND)
+        if row.get("withdrawn_at") or row.get("current_stage") != str(ApplicationStage.AI_INTERVIEW):
+            raise InterviewConflictError("This application is no longer accepting interview drafts")
+        if row["status"] != "INTERVIEW_IN_PROGRESS" or int(row.get("current_question_id") or 0) != turn_id:
+            raise InterviewConflictError("Drafts can only be saved for the current interview question")
+        if row.get("answer_text") is not None:
+            raise InterviewConflictError("This interview question already has a submitted answer")
+        cur.execute(
+            f"UPDATE application_ai_interview_turns SET draft_answer_text = {p}, draft_updated_at = {p} "
+            f"WHERE id = {p} AND candidate_user_id = {p} AND answer_text IS NULL",
+            (draft_answer_text, draft_updated_at, turn_id, candidate_user_id),
+        )
+        if cur.rowcount != 1:
+            raise InterviewConflictError("This interview question no longer accepts a draft")
+        cur.execute(
+            f"UPDATE application_ai_interviews SET updated_at = {_now_sql()} "
+            f"WHERE id = {p} AND candidate_user_id = {p} AND status = 'INTERVIEW_IN_PROGRESS'",
+            (row["interview_id"], candidate_user_id),
+        )
+        return {
+            "turn_id": turn_id,
+            "saved": True,
+            "draft_answer_text": draft_answer_text,
+            "draft_updated_at": draft_updated_at,
+        }
+
+
+def _enqueue_job(
+    cur,
+    job_type: str,
+    payload: dict,
+    idempotency_key: str,
+    tenant_key: str,
+    *,
+    delay_seconds: float = 0,
+) -> int:
     p = _ph()
     encoded = json.dumps(payload, separators=(",", ":"))
     if USE_POSTGRES:
         cur.execute(
             f"""INSERT INTO background_jobs
-                (job_type, payload, max_attempts, idempotency_key, tenant_key)
-                VALUES ({p}, {p}, 5, {p}, {p})
+                (job_type, payload, max_attempts, idempotency_key, tenant_key, available_at)
+                VALUES ({p}, {p}, 5, {p}, {p}, CURRENT_TIMESTAMP + ({p} * INTERVAL '1 second'))
                 ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
                 DO NOTHING RETURNING id""",
-            (job_type, encoded, idempotency_key, tenant_key),
+            (job_type, encoded, idempotency_key, tenant_key, delay_seconds),
         )
         row = cur.fetchone()
         if row is not None:
@@ -682,9 +916,9 @@ def _enqueue_job(cur, job_type: str, payload: dict, idempotency_key: str, tenant
         return int(row["id"])
     try:
         cur.execute(
-            f"INSERT INTO background_jobs (job_type, payload, max_attempts, idempotency_key, tenant_key) "
-            f"VALUES ({p}, {p}, 5, {p}, {p})",
-            (job_type, encoded, idempotency_key, tenant_key),
+            f"INSERT INTO background_jobs (job_type, payload, max_attempts, idempotency_key, tenant_key, available_at) "
+            f"VALUES ({p}, {p}, 5, {p}, {p}, datetime('now', {p}))",
+            (job_type, encoded, idempotency_key, tenant_key, f"+{delay_seconds} seconds"),
         )
         return int(cur.lastrowid)
     except Exception as exc:
@@ -695,7 +929,50 @@ def _enqueue_job(cur, job_type: str, payload: dict, idempotency_key: str, tenant
         return int(row["id"])
 
 
-def submit_answer(application_id: int, candidate_user_id: int, turn_id: int, answer: str) -> dict:
+def _validate_answer_application(run: Optional[dict]) -> dict:
+    if run is None or run.get("withdrawn_at"):
+        raise InterviewNotFoundError("Interview not found")
+    terminal = {str(ApplicationStage.REJECTED), str(ApplicationStage.HIRED), str(ApplicationStage.WITHDRAWN)}
+    if run["current_stage"] in terminal:
+        raise InterviewConflictError("This application is no longer accepting interview answers")
+    return run
+
+
+def _answer_retry_result(cur, run: dict, turn: dict, application_id: int, turn_id: int, answer: str, source: str) -> Optional[dict]:
+    if turn["answer_text"] is None:
+        return None
+    if turn["answer_text"] != answer or turn.get("answer_source", "TEXT") != source:
+        raise InterviewConflictError("This question already has a different submitted answer")
+    p = _ph()
+    cur.execute(
+        f"SELECT id FROM background_jobs WHERE idempotency_key = {p}",
+        (f"application-ai-answer:{application_id}:{turn_id}",),
+    )
+    job = cur.fetchone()
+    return {"status": run["status"], "job_id": int(job["id"]) if job else None, "duplicate": True}
+
+
+def _validate_current_answer_turn(cur, run: dict, turn_id: int) -> None:
+    p = _ph()
+    cur.execute(
+        f"SELECT id FROM application_ai_interview_turns WHERE interview_id = {p} "
+        "AND state IN ('ASKED', 'ANSWER_QUEUED') ORDER BY sequence_no DESC LIMIT 1",
+        (run["id"],),
+    )
+    current = cur.fetchone()
+    if current is None or int(current["id"]) != turn_id:
+        raise InterviewConflictError("Answer the current interview question before continuing")
+
+
+def submit_answer(
+    application_id: int,
+    candidate_user_id: int,
+    turn_id: int,
+    answer: str,
+    source: str = "TEXT",
+) -> dict:
+    if source not in {"TEXT", "VOICE"}:
+        raise ValueError("Unsupported answer source")
     p = _ph()
     with _get_conn() as (conn, cur):
         if not USE_POSTGRES:
@@ -707,11 +984,7 @@ def submit_answer(application_id: int, candidate_user_id: int, turn_id: int, ans
             f"AND ai.candidate_user_id = {p} ORDER BY ai.attempt_no DESC LIMIT 1{lock}",
             (application_id, candidate_user_id),
         )
-        run = _row_to_dict(cur.fetchone())
-        if run is None or run["withdrawn_at"]:
-            raise InterviewNotFoundError("Interview not found")
-        if run["current_stage"] in (str(ApplicationStage.REJECTED), str(ApplicationStage.HIRED), str(ApplicationStage.WITHDRAWN)):
-            raise InterviewConflictError("This application is no longer accepting interview answers")
+        run = _validate_answer_application(_row_to_dict(cur.fetchone()))
         cur.execute(
             f"SELECT * FROM application_ai_interview_turns WHERE id = {p} AND interview_id = {p} "
             f"AND application_id = {p} AND candidate_user_id = {p}",
@@ -719,30 +992,18 @@ def submit_answer(application_id: int, candidate_user_id: int, turn_id: int, ans
         )
         turn = _row_to_dict(cur.fetchone())
         if turn is None:
-            raise InterviewNotFoundError("Interview turn not found")
-        if turn["answer_text"] is not None:
-            if turn["answer_text"] != answer:
-                raise InterviewConflictError("This question already has a different submitted answer")
-            cur.execute(
-                f"SELECT id FROM background_jobs WHERE idempotency_key = {p}",
-                (f"application-ai-answer:{application_id}:{turn_id}",),
-            )
-            job = cur.fetchone()
-            return {"status": run["status"], "job_id": int(job["id"]) if job else None, "duplicate": True}
+            raise InterviewNotFoundError(_INTERVIEW_TURN_NOT_FOUND)
+        retry = _answer_retry_result(cur, run, turn, application_id, turn_id, answer, source)
+        if retry is not None:
+            return retry
         if run["status"] != "INTERVIEW_IN_PROGRESS":
             raise InterviewConflictError(f"Interview is not accepting answers ({run['status']})")
+        _validate_current_answer_turn(cur, run, turn_id)
         cur.execute(
-            f"SELECT id FROM application_ai_interview_turns WHERE interview_id = {p} "
-            f"AND state IN ('ASKED', 'ANSWER_QUEUED') ORDER BY sequence_no DESC LIMIT 1",
-            (run["id"],),
-        )
-        current = cur.fetchone()
-        if current is None or int(current["id"]) != turn_id:
-            raise InterviewConflictError("Answer the current interview question before continuing")
-        cur.execute(
-            f"UPDATE application_ai_interview_turns SET answer_text = {p}, state = 'ANSWER_QUEUED', "
+            f"UPDATE application_ai_interview_turns SET answer_text = {p}, answer_source = {p}, draft_answer_text = '', "
+            f"draft_updated_at = NULL, state = 'ANSWER_QUEUED', "
             f"answered_at = {_now_sql()} WHERE id = {p} AND answer_text IS NULL",
-            (answer, turn_id),
+            (answer, source, turn_id),
         )
         if cur.rowcount != 1:
             raise InterviewConflictError("This answer has already been submitted")
@@ -788,7 +1049,7 @@ def get_answer_context(interview_id: int, turn_id: int) -> Optional[dict]:
     row["policy_snapshot"] = _json(row.pop("policy_snapshot_json", None), {})
     row["technical_questions"] = _json(row.pop("technical_questions_json", None), [])
     row["behavioral_questions"] = _json(row.pop("behavioral_questions_json", None), [])
-    return row
+    return _apply_pinned_posting_context(row)
 
 
 def _apply_assessment_row(cur, *, run: dict, turn: dict, assessment: dict) -> dict:
@@ -908,7 +1169,7 @@ def apply_answer_assessment(interview_id: int, turn_id: int, assessment: dict) -
         )
         turn = _row_to_dict(cur.fetchone())
         if turn is None:
-            raise InterviewNotFoundError("Interview turn not found")
+            raise InterviewNotFoundError(_INTERVIEW_TURN_NOT_FOUND)
         run = dict(run_row)
         run["policy_snapshot"] = _json(run.pop("policy_snapshot_json", None), {})
         run["technical_questions"] = _json(run.pop("technical_questions_json", None), [])
@@ -938,7 +1199,7 @@ def _report_run(cur, interview_id: int) -> Optional[dict]:
     p = _ph()
     lock = _POSTGRES_FOR_UPDATE if USE_POSTGRES else ""
     cur.execute(
-        f"SELECT ai.application_id, ai.org_id, ai.evaluation_id, ai.rubric_version, ai.status, "
+        f"SELECT ai.application_id, ai.org_id, ai.candidate_user_id, ai.evaluation_id, ai.rubric_version, ai.status, "
         f"a.posting_id, a.current_stage, a.withdrawn_at "
         f"FROM application_ai_interviews ai JOIN applications a ON a.id = ai.application_id "
         f"WHERE ai.id = {p}{lock}",
@@ -1067,6 +1328,32 @@ def persist_application_report(
         )
         _complete_linked_evaluation(cur, run, overall_weighted_score)
         _publish_report_state(cur, interview_id, run)
+        _enqueue_job(
+            cur,
+            "application_interview_report_ready_notification",
+            {
+                "application_id": int(run["application_id"]),
+                "interview_id": interview_id,
+                "org_id": int(run["org_id"]),
+                "candidate_user_id": int(run["candidate_user_id"]),
+            },
+            f"application-ai-report-ready-notification:{run['application_id']}:{interview_id}",
+            f"org:{run['org_id']}",
+        )
+        now = datetime.now(timezone.utc)
+        digest_at = now.replace(hour=17, minute=0, second=0, microsecond=0)
+        if now >= digest_at:
+            digest_at += timedelta(days=1)
+        digest_delay = max(1.0, (digest_at - now).total_seconds())
+        digest_day = digest_at.date().isoformat()
+        _enqueue_job(
+            cur,
+            "application_ai_interview_daily_digest",
+            {"org_id": int(run["org_id"]), "digest_day": digest_day},
+            f"application-ai-daily-digest:{run['org_id']}:{digest_day}",
+            f"org:{run['org_id']}",
+            delay_seconds=digest_delay,
+        )
         return True
 
 
@@ -1101,6 +1388,169 @@ def mark_job_failure(interview_id: int, code: str, message: str) -> bool:
         return True
 
 
+def record_invitation_reminder(interview_id: int, reminder_number: int, invitation_round: int) -> Optional[dict]:
+    """Claim a reminder only while the matching invitation is still ready."""
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        if not USE_POSTGRES:
+            conn.execute(_SQLITE_BEGIN_IMMEDIATE)
+        lock = _POSTGRES_FOR_UPDATE if USE_POSTGRES else ""
+        cur.execute(
+            f"SELECT ai.application_id, ai.org_id, ai.candidate_user_id, ai.status, ai.invite_reminders_sent, "
+            f"ai.reinvite_count, ai.invitation_expires_at, jp.title AS role "
+            f"FROM application_ai_interviews ai JOIN applications a ON a.id = ai.application_id "
+            f"JOIN job_postings jp ON jp.id = a.posting_id WHERE ai.id = {p}{lock}",
+            (interview_id,),
+        )
+        row = _row_to_dict(cur.fetchone())
+        if row is None or row["status"] != "INTERVIEW_READY":
+            return None
+        if int(row.get("reinvite_count") or 0) != invitation_round:
+            return None
+        expires = row.get("invitation_expires_at")
+        if expires is not None:
+            expires_at = expires if isinstance(expires, datetime) else datetime.fromisoformat(str(expires).replace("Z", _UTC_SUFFIX))
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            if expires_at <= datetime.now(timezone.utc):
+                return None
+        cur.execute(
+            f"UPDATE application_ai_interviews SET invite_reminders_sent = CASE "
+            f"WHEN invite_reminders_sent < {p} THEN {p} ELSE invite_reminders_sent END, updated_at = {_now_sql()} "
+            f"WHERE id = {p} AND status = 'INTERVIEW_READY' AND reinvite_count = {p}",
+            (reminder_number, reminder_number, interview_id, invitation_round),
+        )
+        if cur.rowcount != 1:
+            return None
+        return row
+
+
+def expire_invitation(interview_id: int, invitation_round: int) -> bool:
+    """Expire an unstarted AI invite and move it to the recruiter review queue."""
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        if not USE_POSTGRES:
+            conn.execute(_SQLITE_BEGIN_IMMEDIATE)
+        lock = _POSTGRES_FOR_UPDATE if USE_POSTGRES else ""
+        cur.execute(
+            f"SELECT ai.application_id, ai.org_id, ai.status, ai.reinvite_count, ai.invitation_expires_at, "
+            f"a.current_stage, a.withdrawn_at FROM application_ai_interviews ai "
+            f"JOIN applications a ON a.id = ai.application_id WHERE ai.id = {p}{lock}",
+            (interview_id,),
+        )
+        run = _row_to_dict(cur.fetchone())
+        if run is None or run["status"] != "INTERVIEW_READY" or int(run.get("reinvite_count") or 0) != invitation_round:
+            return False
+        expires = run.get("invitation_expires_at")
+        if expires is None:
+            return False
+        expires_at = expires if isinstance(expires, datetime) else datetime.fromisoformat(str(expires).replace("Z", _UTC_SUFFIX))
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at > datetime.now(timezone.utc):
+            return False
+        if run.get("withdrawn_at") or run["current_stage"] != str(ApplicationStage.AI_INTERVIEW):
+            return False
+        cur.execute(
+            f"UPDATE application_ai_interviews SET status = 'EXPIRED', screening_input_json = '{{}}', "
+            f"updated_at = {_now_sql()} WHERE id = {p} AND status = 'INTERVIEW_READY'",
+            (interview_id,),
+        )
+        if cur.rowcount != 1:
+            return False
+        _stage_change(
+            cur,
+            int(run["application_id"]),
+            int(run["org_id"]),
+            str(ApplicationStage.PENDING_REVIEW),
+            "AI interview invitation expired without a candidate start; recruiter follow-up is required.",
+        )
+        return True
+
+
+def _validate_interview_start(run: dict, notice_version: str, modality: str) -> bool:
+    if run["current_stage"] != str(ApplicationStage.AI_INTERVIEW):
+        raise InterviewConflictError("Application is not currently in the AI interview stage")
+    expiry_value = run.get("invitation_expires_at")
+    if expiry_value is not None:
+        expiry = expiry_value if isinstance(expiry_value, datetime) else datetime.fromisoformat(str(expiry_value).replace("Z", _UTC_SUFFIX))
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=timezone.utc)
+        if expiry <= datetime.now(timezone.utc):
+            raise InterviewConflictError("This AI interview invitation has expired. Contact the hiring team to request a new invitation.")
+    if run["status"] == "INTERVIEW_IN_PROGRESS" and run.get("consent_version") == notice_version:
+        if run.get("modality", "TEXT") != modality:
+            raise InterviewConflictError("Interview modality cannot be changed after it starts")
+        return False
+    if run["status"] != "INTERVIEW_READY":
+        raise InterviewConflictError(f"Interview cannot start from {run['status']}")
+    return True
+
+
+def reinvite_expired_interview(
+    application_id: int,
+    org_id: int,
+    recruiter_user_id: int,
+    reason: str,
+) -> dict:
+    """Re-open an expired invitation with new timer jobs and an audit timeline event."""
+    p = _ph()
+    with _get_conn() as (conn, cur):
+        if not USE_POSTGRES:
+            conn.execute(_SQLITE_BEGIN_IMMEDIATE)
+        lock = _POSTGRES_FOR_UPDATE if USE_POSTGRES else ""
+        cur.execute(
+            f"SELECT ai.*, a.current_stage, a.withdrawn_at, jp.title AS role "
+            f"FROM application_ai_interviews ai JOIN applications a ON a.id = ai.application_id "
+            f"JOIN job_postings jp ON jp.id = a.posting_id WHERE ai.application_id = {p} AND ai.org_id = {p} "
+            f"ORDER BY ai.attempt_no DESC LIMIT 1{lock}",
+            (application_id, org_id),
+        )
+        run = _row_to_dict(cur.fetchone())
+        if run is None or run.get("withdrawn_at"):
+            raise InterviewNotFoundError(_AI_INTERVIEW_NOT_FOUND)
+        if run["status"] != "EXPIRED" or run["current_stage"] != str(ApplicationStage.PENDING_REVIEW):
+            raise InterviewConflictError("Only an expired AI interview awaiting review can be re-invited.")
+        policy = _json(run.get("policy_snapshot_json"), {})
+        invitation_round = int(run.get("reinvite_count") or 0) + 1
+        window_days = int((policy.get("interview_settings") or {}).get("invitation_window_days", 7))
+        deadline = _queue_invitation_lifecycle_jobs(
+            cur,
+            application_id=application_id,
+            interview_id=int(run["id"]),
+            org_id=org_id,
+            candidate_user_id=int(run["candidate_user_id"]),
+            role=str(run.get("role") or _DEFAULT_ROLE_LABEL),
+            window_days=window_days,
+            invitation_round=invitation_round,
+        )
+        cur.execute(
+            f"UPDATE application_ai_interviews SET status = 'INTERVIEW_READY', phase = 'TECHNICAL', "
+            f"invitation_expires_at = {p}, invite_reminders_sent = 0, reinvite_count = {p}, "
+            f"consent_version = NULL, consent_at = NULL, updated_at = {_now_sql()} "
+            f"WHERE id = {p} AND status = 'EXPIRED'",
+            (deadline.isoformat(), invitation_round, run["id"]),
+        )
+        if cur.rowcount != 1:
+            raise InterviewConflictError("This AI interview changed while it was being re-invited.")
+        _stage_change(
+            cur,
+            application_id,
+            org_id,
+            str(ApplicationStage.AI_INTERVIEW),
+            f"Recruiter re-invited the candidate to the AI interview: {reason.strip()}",
+            actor_user_id=recruiter_user_id,
+        )
+        _enqueue_job(
+            cur,
+            "application_interview_ready_notification",
+            {"application_id": application_id, "interview_id": int(run["id"]), "candidate_user_id": int(run["candidate_user_id"]), "org_id": org_id, "role": run.get("role", _DEFAULT_ROLE_LABEL), "invitation_round": invitation_round},
+            f"application-ai-ready-notification:{application_id}:{run['id']}:reinvite:{invitation_round}",
+            f"org:{org_id}",
+        )
+        return {"application_id": application_id, "status": "INTERVIEW_READY", "invitation_expires_at": deadline.isoformat(), "invitation_round": invitation_round}
+
+
 def cancel_for_withdrawal(cur, application_id: int) -> None:
     p = _ph()
     cur.execute(
@@ -1119,7 +1569,40 @@ def cancel_for_withdrawal(cur, application_id: int) -> None:
     for interview_id in interview_ids:
         prefixes.extend((
             f"application-ai-ready-notification:{application_id}:{interview_id}",
+            f"application-ai-report-ready-notification:{application_id}:{interview_id}",
             f"application-ai-report:{application_id}:{interview_id}",
+            f"application-ai-invitation-reminder:{application_id}:{interview_id}:",
+            f"application-ai-invitation-expiry:{application_id}:{interview_id}:",
+        ))
+    for prefix in prefixes:
+        cur.execute(
+            f"UPDATE background_jobs SET status = CASE WHEN status = 'PENDING' THEN 'CANCELLED' ELSE status END, "
+            f"cancellation_requested = {'TRUE' if USE_POSTGRES else '1'}, updated_at = {_now_sql()} "
+            f"WHERE status IN ('PENDING', 'RUNNING') AND substr(idempotency_key, 1, {p}) = {p}",
+            (len(prefix), prefix),
+        )
+
+
+def cancel_for_account_deletion(cur, application_id: int) -> None:
+    """Cancel all application AI jobs before deleting the candidate's records.
+
+    Unlike withdrawal, account deletion also cancels post-completion delivery
+    jobs so a late notification cannot recreate inbox data for a deleted user.
+    """
+    p = _ph()
+    cur.execute(
+        f"SELECT id FROM application_ai_interviews WHERE application_id = {p}",
+        (application_id,),
+    )
+    interview_ids = [int(row["id"]) for row in cur.fetchall()]
+    prefixes = [f"application-screening:{application_id}", f"application-ai-answer:{application_id}:"]
+    for interview_id in interview_ids:
+        prefixes.extend((
+            f"application-ai-ready-notification:{application_id}:{interview_id}",
+            f"application-ai-report-ready-notification:{application_id}:{interview_id}",
+            f"application-ai-report:{application_id}:{interview_id}",
+            f"application-ai-invitation-reminder:{application_id}:{interview_id}:",
+            f"application-ai-invitation-expiry:{application_id}:{interview_id}:",
         ))
     for prefix in prefixes:
         cur.execute(
